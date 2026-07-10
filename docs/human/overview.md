@@ -4,6 +4,9 @@ Il servizio monitora Fedora anche dopo logout e riavvio. Non richiede terminali,
 Android Studio, sessioni grafiche o container. Usa timer systemd per i campioni e
 fonti native per gli eventi, mantenendo la cronologia in SQLite.
 
+Versione installata: `1.0.1`. L’ultimo [audit tecnico](audit-593184.md) copre
+udev, hardening, concorrenza, crescita, retention e aggregati.
+
 ## Stato e consultazione
 
 ```bash

@@ -31,7 +31,9 @@ KUMA.mapping=Internet,gateway,Wi-Fi,VPN,and NetworkManager alerts map to network
 KUMA.mapping=failed service,restart,and restart loop alerts map to services
 KUMA.mapping=updates,DNF,Flatpak,inventory,and software transaction alerts map to software
 SECURITY.units=NoNewPrivileges,ProtectSystem strict,ProtectHome,ProtectKernelTunables,ProtectKernelModules,ProtectControlGroups,ProtectKernelLogs,ProtectHostname,ProtectClock,RestrictSUIDSGID,RestrictNamespaces,LockPersonality,and MemoryDenyWriteExecute
-SECURITY.capabilities=Collector template receives only DAC read,setuid/setgid,SYS_ADMIN,and SYS_RAWIO capabilities required for user inventory and hardware health; event daemon receives DAC read only
+SECURITY.capabilities=Base collectors receive CAP_DAC_READ_SEARCH,CAP_SETGID,and CAP_SETUID for read-only user inventory
+SECURITY.daily_capability=Only the daily instance receives CAP_SYS_ADMIN because a sandbox test proved the NVMe admin ioctl fails without it
+SECURITY.removed_capabilities=CAP_SYS_RAWIO and CAP_DAC_OVERRIDE are absent from all monitor units; event,device,and lifecycle units have an empty capability bounding set
 SECURITY.paths=Write access is limited to state and runtime directories and sensitive home credential paths are inaccessible
 SECURITY.network=Only UNIX,IPv4,IPv6,and netlink families are permitted where required
 OPS.add_expected_disk=Set storage.expected_devices to an inline array such as [{ label = "Ventoy", required = true }] in /etc/fedora-system-monitor/config.toml then run config-check
@@ -40,3 +42,5 @@ OPS.change_threshold=Edit the relevant thresholds table then run config-check an
 OPS.kuma_secret=Never copy endpoint values into repository files, issue reports, or command lines
 OPS.logs=Use journalctl units because no separate unbounded text log is maintained
 OPS.wakeups=Approximately 60 fast timer wake-ups per hour plus one hourly run and event-native wakes; five and fifteen minute work is folded into fast wakes
+OPS.udev_remove=RUN systemctl --no-block is retained only for remove because live udev and device-mapper tests prove it exits immediately and starts a bounded oneshot outside the worker
+OPS.database_compact=WAL checkpoint TRUNCATE plus PRAGMA optimize reuses free pages and intentionally avoids automatic full VACUUM

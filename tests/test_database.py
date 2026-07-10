@@ -1,8 +1,11 @@
 from datetime import datetime, timedelta, timezone
+from concurrent.futures import ThreadPoolExecutor
+import json
 from pathlib import Path
 import sqlite3
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
 from fedora_system_monitor.capsules.database import Database, SCHEMA_VERSION, StorageError
 
@@ -230,6 +233,244 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(aggregate["percentile_95"], 30.0)
         self.assertEqual(aggregate["sample_count"], 2)
         self.assertEqual(aggregate["problematic_seconds"], 60)
+
+    def test_retention_only_aggregates_complete_utc_buckets(self) -> None:
+        now = datetime(2026, 7, 10, 12, 0, tzinfo=timezone.utc)
+        complete_day = datetime(2026, 6, 25, tzinfo=timezone.utc)
+        boundary_day = datetime(2026, 6, 26, tzinfo=timezone.utc)
+        for instant, value in (
+            (complete_day + timedelta(hours=1), 10),
+            (complete_day + timedelta(hours=23), 20),
+            (boundary_day + timedelta(hours=1), 30),
+            (boundary_day + timedelta(hours=13), 40),
+        ):
+            self.db.insert_metrics(
+                {"name": "bucket.metric", "value": value, "timestamp_utc": instant},
+                cadence_seconds=60,
+            )
+
+        result = self.db.apply_retention(now=now, metric_days_by_cadence={60: 14})
+
+        self.assertEqual(result["metrics_deleted"], 2)
+        self.assertEqual(result["aggregates_written"], 1)
+        remaining = self.db.query("SELECT value FROM periodic_metrics ORDER BY timestamp_utc")
+        self.assertEqual([row["value"] for row in remaining], [30.0, 40.0])
+        aggregate = self.db.query(
+            "SELECT bucket_start_utc,bucket_end_utc,period_seconds,sample_count FROM metric_aggregates"
+        )[0]
+        self.assertEqual(aggregate["bucket_start_utc"], "2026-06-25T00:00:00Z")
+        self.assertEqual(aggregate["bucket_end_utc"], "2026-06-26T00:00:00Z")
+        self.assertEqual(aggregate["period_seconds"], 86400)
+        self.assertEqual(aggregate["sample_count"], 2)
+
+    def test_aggregate_handles_duplicates_null_boolean_and_counter_reset(self) -> None:
+        now = datetime(2026, 7, 10, 12, 0, tzinfo=timezone.utc)
+        day = datetime(2026, 6, 24, tzinfo=timezone.utc)
+        self.db.insert_metrics(
+            [
+                {"name": "boolean.metric", "value": 0, "unit": "boolean", "timestamp_utc": day},
+                {"name": "boolean.metric", "value": 1, "unit": "boolean", "timestamp_utc": day + timedelta(minutes=1)},
+                {"name": "nullable.metric", "value": None, "timestamp_utc": day},
+                {"name": "nullable.metric", "value": 4, "timestamp_utc": day + timedelta(minutes=1)},
+                {"name": "duplicate.metric", "value": 10, "timestamp_utc": day},
+                {"name": "duplicate.metric", "value": 20, "timestamp_utc": day},
+                {"name": "duplicate.metric", "value": 30, "timestamp_utc": day + timedelta(minutes=1)},
+                {"name": "interface_rx_bytes", "value": 100, "unit": "bytes", "device_id": "eth0", "timestamp_utc": day},
+                {"name": "interface_rx_bytes", "value": 150, "unit": "bytes", "device_id": "eth0", "timestamp_utc": day + timedelta(minutes=1)},
+                {"name": "interface_rx_bytes", "value": 20, "unit": "bytes", "device_id": "eth0", "timestamp_utc": day + timedelta(minutes=2)},
+                {"name": "interface_rx_bytes", "value": 50, "unit": "bytes", "device_id": "eth0", "timestamp_utc": day + timedelta(minutes=3)},
+            ],
+            cadence_seconds=60,
+        )
+
+        self.db.apply_retention(now=now, metric_days_by_cadence={60: 14})
+        rows = {row["name"]: row for row in self.db.query("SELECT * FROM metric_aggregates")}
+
+        self.assertEqual(rows["boolean.metric"]["minimum"], 0)
+        self.assertEqual(rows["boolean.metric"]["maximum"], 1)
+        self.assertEqual(rows["boolean.metric"]["average"], 0.5)
+        nullable_details = json.loads(rows["nullable.metric"]["details_json"])
+        self.assertEqual(rows["nullable.metric"]["sample_count"], 2)
+        self.assertEqual(nullable_details["numeric_sample_count"], 1)
+        self.assertEqual(rows["duplicate.metric"]["sample_count"], 2)
+        self.assertEqual(rows["duplicate.metric"]["average"], 25)
+        duplicate_details = json.loads(rows["duplicate.metric"]["details_json"])
+        self.assertEqual(duplicate_details["duplicate_samples_discarded"], 1)
+        counter_details = json.loads(rows["interface_rx_bytes"]["details_json"])
+        self.assertEqual(counter_details["metric_kind"], "cumulative_counter")
+        self.assertEqual(counter_details["counter_resets"], 1)
+        self.assertEqual(counter_details["positive_delta_total"], 80)
+
+    def test_late_metric_merge_updates_canonical_average_and_is_idempotent(self) -> None:
+        now = datetime(2026, 7, 10, 12, 0, tzinfo=timezone.utc)
+        day = datetime(2026, 6, 24, tzinfo=timezone.utc)
+        self.db.insert_metrics(
+            [
+                {"name": "late.metric", "value": 10, "timestamp_utc": day},
+                {"name": "late.metric", "value": 30, "timestamp_utc": day + timedelta(minutes=1)},
+            ],
+            cadence_seconds=60,
+        )
+        self.db.apply_retention(now=now, metric_days_by_cadence={60: 14})
+        self.db.insert_metrics(
+            {"name": "late.metric", "value": 50, "timestamp_utc": day + timedelta(minutes=2)},
+            cadence_seconds=60,
+        )
+        self.db.apply_retention(now=now, metric_days_by_cadence={60: 14})
+        second = self.db.apply_retention(now=now, metric_days_by_cadence={60: 14})
+
+        row = self.db.query(
+            "SELECT value,average,sample_count,details_json FROM metric_aggregates WHERE name='late.metric'"
+        )[0]
+        self.assertEqual(row["average"], 30)
+        self.assertEqual(row["value"], 30)
+        self.assertEqual(row["sample_count"], 3)
+        self.assertEqual(second["aggregates_written"], 0)
+
+    def test_concurrent_alert_open_has_one_transition(self) -> None:
+        def open_once(_: int) -> bool:
+            database = Database(self.database_path, hostname="test-host")
+            try:
+                _, transitioned = database.open_alert_transition(
+                    "concurrent-alert",
+                    category="system",
+                    name="concurrent",
+                    severity="critical",
+                )
+                return transitioned
+            finally:
+                database.close()
+
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            transitions = list(executor.map(open_once, range(24)))
+
+        self.assertEqual(sum(transitions), 1)
+        rows = self.db.query(
+            "SELECT status,occurrence_count FROM alerts WHERE alert_key='concurrent-alert'"
+        )
+        self.assertEqual(rows, [{"status": "active", "occurrence_count": 24}])
+
+    def test_compact_does_not_run_blocking_full_vacuum(self) -> None:
+        old = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        self.db.insert_metrics(
+            [
+                {"name": "vacuum.metric", "value": index, "timestamp_utc": old + timedelta(seconds=index)}
+                for index in range(4000)
+            ],
+            cadence_seconds=60,
+        )
+        self.db.apply_retention(
+            now=datetime(2026, 7, 10, tzinfo=timezone.utc),
+            metric_days_by_cadence={60: 14},
+            compact=False,
+        )
+        before = self.db.query("PRAGMA page_count")[0]["page_count"]
+
+        self.db.compact()
+
+        after = self.db.query("PRAGMA page_count")[0]["page_count"]
+        self.assertEqual(after, before)
+        self.assertGreater(self.db.query("PRAGMA freelist_count")[0]["freelist_count"], 0)
+
+    def test_retention_processes_backlog_in_one_day_batches(self) -> None:
+        start = datetime(2026, 6, 20, tzinfo=timezone.utc)
+        for day in range(3):
+            for minute in range(2):
+                self.db.insert_metrics(
+                    {
+                        "name": "batch.metric",
+                        "value": day * 10 + minute,
+                        "timestamp_utc": start
+                        + timedelta(days=day, minutes=minute),
+                    },
+                    cadence_seconds=60,
+                )
+        batch_sizes: list[int] = []
+        original = self.db._aggregate_metrics
+
+        def record_batch(connection: sqlite3.Connection, rows: object) -> int:
+            batch_sizes.append(len(rows))  # type: ignore[arg-type]
+            return original(connection, rows)  # type: ignore[arg-type]
+
+        with patch.object(self.db, "_aggregate_metrics", side_effect=record_batch):
+            self.db.apply_retention(
+                now=datetime(2026, 7, 10, tzinfo=timezone.utc),
+                metric_days_by_cadence={60: 14},
+            )
+
+        self.assertEqual(batch_sizes, [2, 2, 2])
+
+    def test_utc_bucket_is_stable_across_copenhagen_dst_change(self) -> None:
+        day = datetime(2026, 3, 29, tzinfo=timezone.utc)
+        self.db.insert_metrics(
+            [
+                {"name": "dst.metric", "value": 1, "timestamp_utc": day + timedelta(minutes=30)},
+                {"name": "dst.metric", "value": 2, "timestamp_utc": day + timedelta(hours=22, minutes=30)},
+            ],
+            cadence_seconds=3600,
+        )
+
+        self.db.apply_retention(
+            now=datetime(2026, 4, 20, tzinfo=timezone.utc),
+            metric_days_by_cadence={3600: 14},
+        )
+
+        row = self.db.query(
+            "SELECT timestamp_local,bucket_start_utc,bucket_end_utc,period_seconds,details_json "
+            "FROM metric_aggregates WHERE name='dst.metric'"
+        )[0]
+        self.assertEqual(row["bucket_start_utc"], "2026-03-29T00:00:00Z")
+        self.assertEqual(row["bucket_end_utc"], "2026-03-30T00:00:00Z")
+        self.assertEqual(row["period_seconds"], 86400)
+        self.assertEqual(row["timestamp_local"], "2026-03-29T01:00:00+01:00")
+        self.assertEqual(json.loads(row["details_json"])["missing_sample_count"], 22)
+
+    def test_event_alert_and_inventory_retention_contract(self) -> None:
+        now = datetime(2026, 7, 10, 12, 0, tzinfo=timezone.utc)
+        very_old = now - timedelta(days=900)
+        hardware_old = now - timedelta(days=366)
+        hardware_kept = now - timedelta(days=364)
+        self.db.insert_events(
+            [
+                {"category": "hardware", "name": "old_hardware", "timestamp_utc": hardware_old},
+                {"category": "hardware", "name": "kept_hardware", "timestamp_utc": hardware_kept},
+                {"category": "software", "name": "permanent_software", "timestamp_utc": very_old},
+                {"category": "system", "name": "important_warning", "severity": "warning", "timestamp_utc": very_old},
+                {"category": "system", "name": "old_info", "timestamp_utc": hardware_old},
+            ],
+            dedup_window_seconds=0,
+        )
+        self.db.open_alert(
+            "old-recovered",
+            category="system",
+            name="old",
+            occurred_at=very_old,
+        )
+        self.db.recover_alert("old-recovered", recovered_at=now - timedelta(days=731))
+        self.db.open_alert(
+            "active-old",
+            category="system",
+            name="active",
+            occurred_at=very_old,
+        )
+
+        result = self.db.apply_retention(
+            now=now,
+            event_days=365,
+            hardware_event_days=365,
+            alert_days=730,
+            software_events_permanent=True,
+        )
+
+        names = {row["name"] for row in self.db.query("SELECT name FROM events")}
+        self.assertEqual(
+            names,
+            {"kept_hardware", "permanent_software", "important_warning"},
+        )
+        alerts = self.db.query("SELECT alert_key,status FROM alerts ORDER BY alert_key")
+        self.assertEqual(alerts, [{"alert_key": "active-old", "status": "active"}])
+        self.assertEqual(result["events_deleted"], 2)
+        self.assertEqual(result["alerts_deleted"], 1)
 
     def test_summary_backup_integrity_and_index_checks(self) -> None:
         start = datetime(2026, 7, 9, tzinfo=timezone.utc)

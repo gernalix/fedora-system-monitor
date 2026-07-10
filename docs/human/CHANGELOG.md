@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.1 - 2026-07-10
+
+- Corretto escaping delle istanze udev e race della cache su remove immediato.
+- Ridotte le capability: `CAP_SYS_ADMIN` solo sul daily; rimossa `CAP_SYS_RAWIO`.
+- Rese atomiche e ordinate le notifiche alert concorrenti.
+- Corretti bucket completi, merge, duplicati, null e contatori negli aggregati.
+- Sostituito il full VACUUM automatico con checkpoint WAL e optimize.
+- Aggiunti audit sintetico di crescita e test di concorrenza; 84 test PASS.
+
 ## 1.0.0 - 2026-07-10
 
 - Attività 593184 completata con architettura Python, SQLite WAL e systemd.

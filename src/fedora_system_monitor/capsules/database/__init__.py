@@ -891,7 +891,47 @@ class Database:
         error_message: str | None = None,
         occurred_at: datetime | str | None = None,
     ) -> int:
-        """Open an alert or update the already-active instance."""
+        """Open or update an alert and return its durable row id."""
+
+        alert_id, _ = self.open_alert_transition(
+            alert_key,
+            category=category,
+            name=name,
+            severity=severity,
+            source=source,
+            value=value,
+            unit=unit,
+            device_id=device_id,
+            threshold=threshold,
+            hysteresis=hysteresis,
+            direction=direction,
+            details=details,
+            message=message,
+            error_message=error_message,
+            occurred_at=occurred_at,
+        )
+        return alert_id
+
+    def open_alert_transition(
+        self,
+        alert_key: str,
+        *,
+        category: str,
+        name: str,
+        severity: str = "warning",
+        source: str = "threshold",
+        value: float | None = None,
+        unit: str | None = None,
+        device_id: str | None = None,
+        threshold: float | None = None,
+        hysteresis: float = 0.0,
+        direction: str = "above",
+        details: Mapping[str, Any] | None = None,
+        message: str | None = None,
+        error_message: str | None = None,
+        occurred_at: datetime | str | None = None,
+    ) -> tuple[int, bool]:
+        """Open/update an alert and atomically report a state/severity transition."""
 
         if direction not in {"above", "below"}:
             raise StorageError("alert direction must be 'above' or 'below'")
@@ -900,7 +940,7 @@ class Database:
         utc, local = self._timestamps(occurred_at)
         with self._transaction() as connection:
             row = connection.execute(
-                "SELECT id, occurrence_count FROM alerts WHERE alert_key = ? AND status = 'active'",
+                "SELECT id, occurrence_count, severity FROM alerts WHERE alert_key = ? AND status = 'active'",
                 (alert_key,),
             ).fetchone()
             if row:
@@ -919,7 +959,7 @@ class Database:
                         threshold, hysteresis, direction, redact_text(message) if message else None, row["id"],
                     ),
                 )
-                return int(row["id"])
+                return int(row["id"]), str(row["severity"]) != severity
             cursor = connection.execute(
                 """
                 INSERT INTO alerts(
@@ -936,7 +976,7 @@ class Database:
                     redact_text(message) if message else None,
                 ),
             )
-            return int(cursor.lastrowid)
+            return int(cursor.lastrowid), True
 
     def update_alert(
         self,
@@ -1442,22 +1482,39 @@ class Database:
             )
             grouped[key].append(row)
 
+        cumulative_names = {
+            "interface_rx_bytes",
+            "interface_tx_bytes",
+            "disk_reads_completed",
+            "disk_writes_completed",
+        }
         count = 0
-        for key, samples in grouped.items():
+        for key, raw_samples in grouped.items():
             bucket, cadence, hostname, category, name, unit, source, device_id = key
             bucket_end = bucket + timedelta(days=1)
             bucket_utc, bucket_local = self._timestamps(bucket)
             bucket_end_utc, _ = self._timestamps(bucket_end)
+            by_timestamp: dict[str, sqlite3.Row] = {}
+            for row in raw_samples:
+                timestamp = str(row["timestamp_utc"])
+                previous = by_timestamp.get(timestamp)
+                if previous is None or int(row["id"]) > int(previous["id"]):
+                    by_timestamp[timestamp] = row
+            samples = sorted(
+                by_timestamp.values(),
+                key=lambda row: (str(row["timestamp_utc"]), int(row["id"])),
+            )
+            duplicates_discarded = len(raw_samples) - len(samples)
             values = [float(row["value"]) for row in samples if row["value"] is not None]
             severity = max(
                 (str(row["severity"]) for row in samples),
                 key=lambda item: _SEVERITY_RANK.get(item, 1),
             )
-            problematic = sum(
+            problematic = min(86400, sum(
                 int(cadence)
                 for row in samples
                 if _SEVERITY_RANK.get(str(row["severity"]), 1) >= _SEVERITY_RANK["warning"]
-            )
+            ))
             identity = [bucket_utc, cadence, hostname, category, name, unit, source, device_id]
             aggregate_key = hashlib.sha256(_json_dumps(identity).encode("utf-8")).hexdigest()
             minimum = min(values) if values else None
@@ -1465,49 +1522,131 @@ class Database:
             average = sum(values) / len(values) if values else None
             p95 = _percentile_95(values)
             sample_count = len(samples)
-            details = _json_dumps({"numeric_sample_count": len(values), "aggregation": "daily"})
-            connection.execute(
-                """
-                INSERT INTO metric_aggregates(
-                    timestamp_utc, timestamp_local, hostname, category, name, value, unit, severity,
-                    source, device_id, details_json, aggregate_key, bucket_start_utc, bucket_end_utc,
-                    period_seconds, source_cadence_seconds, minimum, maximum, average, percentile_95,
-                    sample_count, problematic_seconds
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 86400, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(aggregate_key) DO UPDATE SET
-                    minimum = CASE
-                        WHEN metric_aggregates.minimum IS NULL THEN excluded.minimum
-                        WHEN excluded.minimum IS NULL THEN metric_aggregates.minimum
-                        ELSE MIN(metric_aggregates.minimum, excluded.minimum) END,
-                    maximum = CASE
-                        WHEN metric_aggregates.maximum IS NULL THEN excluded.maximum
-                        WHEN excluded.maximum IS NULL THEN metric_aggregates.maximum
-                        ELSE MAX(metric_aggregates.maximum, excluded.maximum) END,
-                    average = CASE
-                        WHEN metric_aggregates.average IS NULL THEN excluded.average
-                        WHEN excluded.average IS NULL THEN metric_aggregates.average
-                        ELSE ((metric_aggregates.average * metric_aggregates.sample_count) +
-                              (excluded.average * excluded.sample_count)) /
-                             (metric_aggregates.sample_count + excluded.sample_count) END,
-                    percentile_95 = CASE
-                        WHEN metric_aggregates.percentile_95 IS NULL THEN excluded.percentile_95
-                        WHEN excluded.percentile_95 IS NULL THEN metric_aggregates.percentile_95
-                        ELSE MAX(metric_aggregates.percentile_95, excluded.percentile_95) END,
-                    sample_count = metric_aggregates.sample_count + excluded.sample_count,
-                    problematic_seconds = metric_aggregates.problematic_seconds + excluded.problematic_seconds,
-                    severity = CASE
-                        WHEN excluded.severity IN ('critical', 'emergency') THEN excluded.severity
-                        WHEN metric_aggregates.severity IN ('critical', 'emergency') THEN metric_aggregates.severity
-                        WHEN excluded.severity = 'warning' THEN excluded.severity
-                        ELSE metric_aggregates.severity END,
-                    details_json = excluded.details_json
-                """,
-                (
-                    bucket_utc, bucket_local, hostname, category, name, average, unit, severity, source,
-                    device_id, details, aggregate_key, bucket_utc, bucket_end_utc, cadence, minimum,
-                    maximum, average, p95, sample_count, problematic,
-                ),
+            expected_samples = max(1, 86400 // max(1, int(cadence)))
+            metric_kind = (
+                "cumulative_counter"
+                if name in cumulative_names
+                else "boolean"
+                if unit == "boolean"
+                else "gauge"
             )
+            details: dict[str, Any] = {
+                "aggregation": "daily_utc",
+                "bucket_complete": True,
+                "metric_kind": metric_kind,
+                "numeric_sample_count": len(values),
+                "duplicate_samples_discarded": duplicates_discarded,
+                "expected_sample_count": expected_samples,
+                "missing_sample_count": max(0, expected_samples - sample_count),
+                "percentile_95_exact": True,
+            }
+            if metric_kind == "cumulative_counter" and values:
+                resets = 0
+                positive_delta = 0.0
+                for previous, current in zip(values, values[1:]):
+                    if current < previous:
+                        resets += 1
+                    else:
+                        positive_delta += current - previous
+                details.update(
+                    {
+                        "counter_resets": resets,
+                        "positive_delta_total": positive_delta,
+                        "first_value": values[0],
+                        "last_value": values[-1],
+                    }
+                )
+            existing = connection.execute(
+                "SELECT * FROM metric_aggregates WHERE aggregate_key = ?",
+                (aggregate_key,),
+            ).fetchone()
+            if existing is None:
+                connection.execute(
+                    """
+                    INSERT INTO metric_aggregates(
+                        timestamp_utc, timestamp_local, hostname, category, name, value, unit,
+                        severity, source, device_id, details_json, aggregate_key, bucket_start_utc,
+                        bucket_end_utc, period_seconds, source_cadence_seconds, minimum, maximum,
+                        average, percentile_95, sample_count, problematic_seconds
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 86400, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        bucket_utc, bucket_local, hostname, category, name, average, unit, severity,
+                        source, device_id, _json_dumps(details), aggregate_key, bucket_utc,
+                        bucket_end_utc, cadence, minimum, maximum, average, p95, sample_count,
+                        problematic,
+                    ),
+                )
+            else:
+                previous_details = _json_loads(existing["details_json"], {})
+                old_numeric = int(previous_details.get("numeric_sample_count", existing["sample_count"]))
+                new_numeric = len(values)
+                total_numeric = old_numeric + new_numeric
+                if total_numeric:
+                    old_total = float(existing["average"] or 0.0) * old_numeric
+                    new_total = float(average or 0.0) * new_numeric
+                    merged_average = (old_total + new_total) / total_numeric
+                else:
+                    merged_average = None
+                merged_count = int(existing["sample_count"]) + sample_count
+                details["numeric_sample_count"] = total_numeric
+                details["duplicate_samples_discarded"] += int(
+                    previous_details.get("duplicate_samples_discarded", 0)
+                )
+                details["missing_sample_count"] = max(0, expected_samples - merged_count)
+                details["percentile_95_exact"] = False
+                details["merged_segments"] = int(previous_details.get("merged_segments", 1)) + 1
+                if metric_kind == "cumulative_counter":
+                    old_last = previous_details.get("last_value")
+                    new_first = details.get("first_value")
+                    cross_resets = 0
+                    cross_delta = 0.0
+                    if isinstance(old_last, (int, float)) and isinstance(new_first, (int, float)):
+                        if new_first < old_last:
+                            cross_resets = 1
+                        else:
+                            cross_delta = float(new_first) - float(old_last)
+                    details["counter_resets"] = (
+                        int(previous_details.get("counter_resets", 0))
+                        + int(details.get("counter_resets", 0))
+                        + cross_resets
+                    )
+                    details["positive_delta_total"] = (
+                        float(previous_details.get("positive_delta_total", 0.0))
+                        + float(details.get("positive_delta_total", 0.0))
+                        + cross_delta
+                    )
+                    details["first_value"] = previous_details.get(
+                        "first_value", details.get("first_value")
+                    )
+                old_minimum = existing["minimum"]
+                old_maximum = existing["maximum"]
+                merged_minimum = minimum if old_minimum is None else old_minimum if minimum is None else min(old_minimum, minimum)
+                merged_maximum = maximum if old_maximum is None else old_maximum if maximum is None else max(old_maximum, maximum)
+                old_severity = str(existing["severity"])
+                merged_severity = max(
+                    (old_severity, severity), key=lambda item: _SEVERITY_RANK.get(item, 1)
+                )
+                connection.execute(
+                    """
+                    UPDATE metric_aggregates
+                    SET value = ?, severity = ?, details_json = ?, minimum = ?, maximum = ?,
+                        average = ?, percentile_95 = NULL, sample_count = ?,
+                        problematic_seconds = ?
+                    WHERE aggregate_key = ?
+                    """,
+                    (
+                        merged_average,
+                        merged_severity,
+                        _json_dumps(details),
+                        merged_minimum,
+                        merged_maximum,
+                        merged_average,
+                        merged_count,
+                        min(86400, int(existing["problematic_seconds"]) + problematic),
+                        aggregate_key,
+                    ),
+                )
             count += 1
         return count
 
@@ -1615,26 +1754,54 @@ class Database:
             "hardware_inventory_deleted": 0,
             "software_inventory_deleted": 0,
         }
-        with self._transaction() as connection:
-            cadences = [int(row[0]) for row in connection.execute(
-                "SELECT DISTINCT cadence_seconds FROM periodic_metrics"
-            ).fetchall()]
-            for cadence in cadences:
-                days = retention.get(cadence, float(unknown_metric_days))
-                cutoff, _ = self._timestamps(current - timedelta(days=days))
-                expired = connection.execute(
-                    "SELECT * FROM periodic_metrics WHERE cadence_seconds = ? AND timestamp_utc < ?",
-                    (cadence, cutoff),
-                ).fetchall()
-                if not expired:
-                    continue
-                result["aggregates_written"] += self._aggregate_metrics(connection, expired)
-                cursor = connection.execute(
-                    "DELETE FROM periodic_metrics WHERE cadence_seconds = ? AND timestamp_utc < ?",
+        cadences = [
+            int(row["cadence_seconds"])
+            for row in self.query("SELECT DISTINCT cadence_seconds FROM periodic_metrics")
+        ]
+        for cadence in cadences:
+            days = retention.get(cadence, float(unknown_metric_days))
+            raw_cutoff = current - timedelta(days=days)
+            complete_bucket_cutoff = raw_cutoff.replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
+            cutoff, _ = self._timestamps(complete_bucket_cutoff)
+            bucket_days = [
+                str(row["bucket_day"])
+                for row in self.query(
+                    """
+                    SELECT DISTINCT substr(timestamp_utc, 1, 10) AS bucket_day
+                    FROM periodic_metrics
+                    WHERE cadence_seconds = ? AND timestamp_utc < ?
+                    ORDER BY bucket_day
+                    """,
                     (cadence, cutoff),
                 )
-                result["metrics_deleted"] += cursor.rowcount
+            ]
+            for bucket_day in bucket_days:
+                bucket_start = self._coerce_datetime(f"{bucket_day}T00:00:00Z")
+                bucket_start_utc, _ = self._timestamps(bucket_start)
+                bucket_end_utc, _ = self._timestamps(bucket_start + timedelta(days=1))
+                with self._transaction() as connection:
+                    expired = connection.execute(
+                        """
+                        SELECT * FROM periodic_metrics
+                        WHERE cadence_seconds = ? AND timestamp_utc >= ? AND timestamp_utc < ?
+                        """,
+                        (cadence, bucket_start_utc, bucket_end_utc),
+                    ).fetchall()
+                    if not expired:
+                        continue
+                    result["aggregates_written"] += self._aggregate_metrics(connection, expired)
+                    cursor = connection.execute(
+                        """
+                        DELETE FROM periodic_metrics
+                        WHERE cadence_seconds = ? AND timestamp_utc >= ? AND timestamp_utc < ?
+                        """,
+                        (cadence, bucket_start_utc, bucket_end_utc),
+                    )
+                    result["metrics_deleted"] += cursor.rowcount
 
+        with self._transaction() as connection:
             event_cutoff, _ = self._timestamps(current - timedelta(days=float(event_days)))
             hardware_cutoff, _ = self._timestamps(
                 current - timedelta(days=float(event_days if hardware_event_days is None else hardware_event_days))
@@ -1693,12 +1860,16 @@ class Database:
         return result
 
     def compact(self) -> None:
-        """Checkpoint WAL, optimize indexes, and reclaim free database pages."""
+        """Checkpoint WAL and optimize indexes without an exclusive full VACUUM.
+
+        Freed pages remain reusable inside the database. This avoids blocking
+        event writers for the potentially long duration of a multi-gigabyte
+        VACUUM while still bounding WAL growth.
+        """
 
         with self._connection() as connection:
             connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             connection.execute("PRAGMA optimize")
-            connection.execute("VACUUM")
 
 
 __all__ = [

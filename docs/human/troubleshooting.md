@@ -34,6 +34,10 @@ Non copiare a caldo il file SQLite con `cp`: usare i backup online creati dal
 collector giornaliero. La CLI utente usa snapshot immutabili brevi; durante una
 scrittura concorrente può mostrare per pochi istanti l’ultimo checkpoint.
 
+Il file fisico non si riduce dopo retention perché il monitor evita il full
+`VACUUM`, che bloccherebbe gli eventi. Controllare la freelist e il riuso con
+`sudo sqlite3 /var/lib/fedora-system-monitor/monitor.sqlite3 'PRAGMA freelist_count;'`.
+
 ## Alert obsoleto
 
 Verificare prima la condizione reale, poi risolvere una chiave specifica:

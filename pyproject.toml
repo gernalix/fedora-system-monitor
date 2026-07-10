@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fedora-system-monitor"
-version = "1.0.0"
+version = "1.0.1"
 description = "Low-overhead Fedora host monitoring with systemd, Python, and SQLite"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -23,4 +23,3 @@ where = ["src"]
 
 [tool.unittest]
 start-directory = "tests"
-

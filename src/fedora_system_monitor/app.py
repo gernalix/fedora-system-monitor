@@ -40,7 +40,6 @@ from fedora_system_monitor.capsules.kuma_admin import configure_push_monitors
 from fedora_system_monitor.capsules.notifications import (
     endpoint_key,
     integration_status,
-    notify_signals,
     send_category_heartbeat,
 )
 from fedora_system_monitor.capsules.reporting import (
@@ -137,16 +136,70 @@ def _alert_transition_events(signals: Iterable[AlertSignal]) -> list[dict[str, A
     ]
 
 
+def _endpoint_alert_snapshot(db: Database, endpoint: str) -> tuple[dict[str, Any], str]:
+    rows = [
+        row for row in db.active_alerts() if endpoint_key(str(row["category"])) == endpoint
+    ]
+    signature = {
+        "healthy": not rows,
+        "alerts": sorted(
+            (str(row["alert_key"]), str(row["severity"])) for row in rows
+        ),
+    }
+    if rows:
+        messages = [str(row.get("message") or row["name"]) for row in rows[:3]]
+        message = f"{endpoint}: " + "; ".join(messages)
+    else:
+        message = f"{endpoint}: recovered"
+    return signature, message
+
+
+def _flush_transition_notifications(
+    db: Database,
+    transitions: list[AlertSignal],
+    config: dict[str, Any],
+) -> None:
+    endpoints = sorted({endpoint_key(signal.category) for signal in transitions})
+    lock_directory = Path(str(config.get("monitor", {}).get("lock_path", db.path))).parent
+    if not os.access(lock_directory, os.W_OK):
+        lock_directory = db.path.parent
+    try:
+        with exclusive_lock(lock_directory / "notifications.lock", timeout=0.25):
+            for endpoint in endpoints:
+                for _ in range(3):
+                    signature, message = _endpoint_alert_snapshot(db, endpoint)
+                    previous = db.get_state(
+                        f"endpoint:{endpoint}", {}, namespace="notification"
+                    )
+                    if previous == signature:
+                        break
+                    result = send_category_heartbeat(
+                        config,
+                        endpoint,
+                        healthy=bool(signature["healthy"]),
+                        message=message,
+                    )
+                    if not result.delivered:
+                        break
+                    db.set_state(
+                        f"endpoint:{endpoint}", signature, namespace="notification"
+                    )
+                    for signal in transitions:
+                        if endpoint_key(signal.category) == endpoint:
+                            db.mark_alert_notification(signal.key, "delivered")
+                    current, _ = _endpoint_alert_snapshot(db, endpoint)
+                    if current == signature:
+                        break
+    except LockUnavailable:
+        # The holder reconciles state after each send; heartbeat is the fallback.
+        return
+
+
 def _persist_signals(db: Database, signals: Iterable[AlertSignal], config: dict[str, Any]) -> list[AlertSignal]:
     transitions: list[AlertSignal] = []
     for signal in signals:
-        rows = db.query(
-            "SELECT severity,last_notified_utc FROM alerts WHERE alert_key=? AND status='active' LIMIT 1",
-            (signal.key,),
-        )
         if signal.active:
-            is_transition = not rows or rows[0]["severity"] != signal.severity
-            db.open_alert(
+            _, is_transition = db.open_alert_transition(
                 signal.key,
                 category=signal.category,
                 name=signal.name,
@@ -165,24 +218,7 @@ def _persist_signals(db: Database, signals: Iterable[AlertSignal], config: dict[
         return []
     db.insert_events(_alert_transition_events(transitions), dedup_window_seconds=30)
 
-    # Never send UP for a shared Kuma endpoint while another alert is active.
-    active_endpoints = {endpoint_key(row["category"]) for row in db.active_alerts()}
-    notifyable = [
-        signal
-        for signal in transitions
-        if signal.active or endpoint_key(signal.category) not in active_endpoints
-    ]
-    results = notify_signals(notifyable, config)
-    by_endpoint = {result.category: result for result in results}
-    for signal in transitions:
-        result = by_endpoint.get(endpoint_key(signal.category))
-        if result is None:
-            continue
-        db.mark_alert_notification(
-            signal.key,
-            "delivered" if result.delivered else result.status,
-            result.error,
-        )
+    _flush_transition_notifications(db, transitions, config)
     return transitions
 
 
@@ -568,6 +604,11 @@ def _hook_command(args: argparse.Namespace, config: dict[str, Any], db: Database
         cache_key = f"device-cache:{args.device}"
         properties = _udev_properties(args.device) if normalized != "remove" else {}
         cached = db.get_state(cache_key, {})
+        if normalized == "remove" and not cached:
+            deadline = time.monotonic() + 1.0
+            while time.monotonic() < deadline and not cached:
+                time.sleep(0.05)
+                cached = db.get_state(cache_key, {})
         identity_input = f"/dev/{args.device}" if Path("/sys/class/block", args.device).exists() else f"/sys/bus/usb/devices/{args.device}"
         event = build_device_event(normalized, identity_input, properties, cached)
         if normalized != "remove":

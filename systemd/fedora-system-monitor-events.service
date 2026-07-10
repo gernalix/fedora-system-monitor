@@ -37,7 +37,7 @@ LockPersonality=yes
 MemoryDenyWriteExecute=yes
 SystemCallArchitectures=native
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
-CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH
+CapabilityBoundingSet=
 ReadWritePaths=/var/lib/fedora-system-monitor /run/fedora-system-monitor
 InaccessiblePaths=-/home/daniele/.ssh -/home/daniele/.config/gh -/home/daniele/.codex -/home/daniele/.mozilla -/home/daniele/.config/google-chrome -/home/daniele/.pki
 

@@ -14,6 +14,7 @@ systemctl disable --now fedora-system-monitor-fast.timer fedora-system-monitor-h
 systemctl disable fedora-system-monitor-lifecycle.service 2>/dev/null || true
 systemctl stop fedora-system-monitor-lifecycle.service 'fedora-system-monitor-collect@*.service' 'fedora-system-monitor-device-*@*.service' 2>/dev/null || true
 rm -f /etc/systemd/system/fedora-system-monitor-*.service /etc/systemd/system/fedora-system-monitor-*.timer /etc/systemd/system/fedora-system-monitor-*.path
+rm -rf /etc/systemd/system/fedora-system-monitor-collect@daily.service.d
 rm -f /etc/udev/rules.d/90-fedora-system-monitor.rules /etc/NetworkManager/dispatcher.d/90-fedora-system-monitor /usr/lib/systemd/system-sleep/fedora-system-monitor
 rm -rf /usr/local/libexec/fedora-system-monitor
 rm -f /usr/local/bin/fedora-system-monitor

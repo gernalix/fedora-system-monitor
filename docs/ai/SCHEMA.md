@@ -26,6 +26,14 @@ INDEX.summaries=period plus timestamp
 RETENTION.software_events=permanent
 RETENTION.important_events=365 days minimum
 RETENTION.alerts=730 days
+RETENTION.bucket=Only complete UTC calendar days older than each cadence cutoff are processed
+RETENTION.batch=Each cadence and UTC day commits independently to bound memory and writer lock duration
+AGGREGATE.identity=UTC day,cadence,hostname,category,name,unit,source,and device
+AGGREGATE.duplicates=Rows with identical aggregate identity and timestamp keep the latest row id and record discarded count
+AGGREGATE.nulls=Sample count includes null observations while numeric sample count controls mean weighting
+AGGREGATE.counters=Cumulative interface and disk counters record positive deltas and reset count without treating a reset as negative throughput
+AGGREGATE.merge=Late segments merge exact min,max,mean,count,and problem seconds; p95 becomes null and percentile_95_exact=false because raw distribution is no longer complete
+COMPACTION.policy=No automatic full VACUUM because it blocks event writers; freed pages stay on the freelist and are reused
 BACKUP.method=SQLite online backup API followed by integrity_check
 BACKUP.path=/var/lib/fedora-system-monitor/backups
 EXPORT.formats=JSON,CSV,text

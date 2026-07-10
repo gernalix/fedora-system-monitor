@@ -75,6 +75,8 @@ if [[ ! -f "$ETC/uptime-kuma.toml" ]]; then
 fi
 
 install -m 0644 "$ROOT/systemd/"*.service "$ROOT/systemd/"*.timer "$ROOT/systemd/"*.path /etc/systemd/system/
+install -d -m 0755 /etc/systemd/system/fedora-system-monitor-collect@daily.service.d
+install -m 0644 "$ROOT/systemd/fedora-system-monitor-collect@daily.service.d/10-nvme-capability.conf" /etc/systemd/system/fedora-system-monitor-collect@daily.service.d/
 install -m 0644 "$ROOT/udev/90-fedora-system-monitor.rules" /etc/udev/rules.d/90-fedora-system-monitor.rules
 install -d -m 0755 /etc/NetworkManager/dispatcher.d /usr/lib/systemd/system-sleep
 install -m 0755 "$ROOT/hooks/NetworkManager/90-fedora-system-monitor" /etc/NetworkManager/dispatcher.d/90-fedora-system-monitor
