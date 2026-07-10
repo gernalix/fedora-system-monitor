@@ -1,0 +1,16 @@
+{
+  "project_name": "Fedora System Monitor",
+  "project_slug": "fedora-system-monitor",
+  "project_root": "/home/daniele/MegaVault/projects/fedora-system-monitor",
+  "git_remote": "https://github.com/gernalix/fedora-system-monitor.git",
+  "global_protocol": "/home/daniele/MegaVault/ai/MEGAVAULT_PROTOCOL.md",
+  "host_profile": "/home/daniele/MegaVault/ai/global/HOST_PROFILE.md",
+  "ai_doc": "docs/ai/PROJECT.md",
+  "human_doc": "docs/human/overview.md",
+  "legacy_docs": "docs/legacy",
+  "metadata_version": 1,
+  "project_version": "1.0.0",
+  "activity_id": "593184",
+  "branch": "codex/593184-fedora-system-monitor",
+  "last_indexed_at": "2026-07-10T11:25:00+02:00"
+}

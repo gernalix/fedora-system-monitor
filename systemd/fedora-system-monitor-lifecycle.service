@@ -1,0 +1,44 @@
+[Unit]
+Description=Fedora System Monitor boot and clean-shutdown recorder
+DefaultDependencies=no
+After=local-fs.target
+Before=shutdown.target sleep.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+User=root
+Group=daniele
+ExecStart=/usr/local/bin/fedora-system-monitor hook boot
+ExecStop=/usr/local/bin/fedora-system-monitor hook shutdown --only-if-stopping
+RemainAfterExit=yes
+TimeoutStartSec=20s
+TimeoutStopSec=20s
+UMask=0027
+StateDirectory=fedora-system-monitor
+StateDirectoryMode=0750
+RuntimeDirectory=fedora-system-monitor
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectKernelLogs=yes
+ProtectHostname=yes
+ProtectClock=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX
+CapabilityBoundingSet=
+ReadWritePaths=/var/lib/fedora-system-monitor /run/fedora-system-monitor
+
+[Install]
+WantedBy=multi-user.target

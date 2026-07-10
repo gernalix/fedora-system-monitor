@@ -1,0 +1,15 @@
+#!/bin/bash
+set -u
+
+interface=${1:-unknown}
+action=${2:-unknown}
+
+case "$action" in
+    up|down|vpn-up|vpn-down|connectivity-change|dhcp4-change|dhcp6-change)
+        if ! /usr/bin/timeout 3 /usr/local/bin/fedora-system-monitor hook network --interface "$interface" --action "$action" >/dev/null 2>&1; then
+            /usr/bin/logger -t fedora-system-monitor-hook '{"event":"hook_failed","hook":"NetworkManager"}'
+        fi
+        ;;
+esac
+
+exit 0

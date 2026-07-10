@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.coverage
+.pytest_cache/
+.venv/
+build/
+dist/
+*.sqlite*
+*.db
+*.log
+config/uptime-kuma.toml
+artifacts/
+

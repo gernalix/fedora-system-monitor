@@ -1,0 +1,35 @@
+[Unit]
+Description=Record device state change for %I
+After=local-fs.target
+
+[Service]
+Type=oneshot
+User=root
+Group=daniele
+ExecStart=/usr/local/bin/fedora-system-monitor hook device-change --device %I
+TimeoutStartSec=10s
+UMask=0027
+StateDirectory=fedora-system-monitor
+StateDirectoryMode=0750
+RuntimeDirectory=fedora-system-monitor
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectKernelLogs=yes
+ProtectHostname=yes
+ProtectClock=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX
+CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH
+ReadWritePaths=/var/lib/fedora-system-monitor /run/fedora-system-monitor

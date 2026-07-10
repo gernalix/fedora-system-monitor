@@ -1,0 +1,13 @@
+[Unit]
+Description=Run Fedora System Monitor daily maintenance
+
+[Timer]
+OnCalendar=*-*-* 03:15:00
+AccuracySec=10min
+RandomizedDelaySec=10min
+Persistent=true
+Unit=fedora-system-monitor-collect@daily.service
+
+[Install]
+WantedBy=timers.target
+

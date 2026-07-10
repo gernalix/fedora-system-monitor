@@ -1,0 +1,344 @@
+from __future__ import annotations
+
+import io
+import json
+import unittest
+from unittest.mock import patch
+
+from fedora_system_monitor.capsules.eventing import (
+    build_device_event,
+    build_lifecycle_event,
+    build_network_event,
+    classify_journal,
+    stream_journal,
+)
+
+
+class JournalClassificationTests(unittest.TestCase):
+    def test_real_oom_is_critical_and_minimal(self) -> None:
+        event = classify_journal(
+            {
+                "_TRANSPORT": "kernel",
+                "_BOOT_ID": "boot-a",
+                "MESSAGE": "Out of memory: Killed process 4242 (python3) total-vm:1000kB, anon-rss:500kB",
+            }
+        )
+        self.assertIsNotNone(event)
+        assert event is not None
+        self.assertEqual(event["name"], "oom_kill")
+        self.assertEqual(event["severity"], "critical")
+        self.assertEqual(event["details"], {"pid": 4242, "executable": "python3"})
+        self.assertNotIn("total-vm", json.dumps(event))
+
+    def test_oom_words_from_application_are_not_classified(self) -> None:
+        self.assertIsNone(
+            classify_journal(
+                {
+                    "_TRANSPORT": "stdout",
+                    "_SYSTEMD_UNIT": "example.service",
+                    "MESSAGE": "Out of memory: Killed process 4242 (python3) total-vm:1000kB",
+                }
+            )
+        )
+        self.assertIsNone(
+            classify_journal(
+                {
+                    "_TRANSPORT": "kernel",
+                    "MESSAGE": "No Out of memory: Killed process events were found",
+                }
+            )
+        )
+
+    def test_read_only_requires_exact_kernel_record(self) -> None:
+        event = classify_journal(
+            {
+                "_TRANSPORT": "kernel",
+                "MESSAGE": "EXT4-fs (dm-0): Remounting filesystem read-only",
+            }
+        )
+        self.assertIsNotNone(event)
+        assert event is not None
+        self.assertEqual(event["name"], "filesystem_read_only")
+        self.assertEqual(event["severity"], "critical")
+
+        false_entries = (
+            {
+                "_TRANSPORT": "stdout",
+                "MESSAGE": "EXT4-fs (dm-0): Remounting filesystem read-only",
+            },
+            {
+                "_TRANSPORT": "kernel",
+                "MESSAGE": "EXT4-fs (dm-0): Remounting filesystem read-only was avoided",
+            },
+            {
+                "_TRANSPORT": "kernel",
+                "MESSAGE": "documentation: filesystem remounted read-only",
+            },
+        )
+        for entry in false_entries:
+            with self.subTest(entry=entry):
+                self.assertIsNone(classify_journal(entry))
+
+    def test_real_udisks_unsafe_removal_format(self) -> None:
+        event = classify_journal(
+            {
+                "_SYSTEMD_UNIT": "udisks2.service",
+                "_COMM": "udisksd",
+                "MESSAGE": (
+                    "Cleaning up mount point /run/media/daniele/09FA16D309FA16D3 "
+                    "(device 8:3 no longer exists)"
+                ),
+            }
+        )
+        self.assertIsNotNone(event)
+        assert event is not None
+        self.assertEqual(event["name"], "unsafe_device_removal")
+        self.assertEqual(event["severity"], "warning")
+        self.assertEqual(event["details"]["major_minor"], "8:3")
+
+    def test_coredump_drops_raw_sensitive_fields(self) -> None:
+        event = classify_journal(
+            {
+                "MESSAGE_ID": "fc2e22bc6ee647b6b90729ab34a250b1",
+                "SYSLOG_IDENTIFIER": "systemd-coredump",
+                "COREDUMP_EXE": "/home/daniele/bin/example",
+                "COREDUMP_SIGNAL_NAME": "SIGSEGV",
+                "COREDUMP_UNIT": "example.service",
+                "COREDUMP_UID": "1000",
+                "COREDUMP_CMDLINE": "example --password=do-not-store",
+                "COREDUMP_FILENAME": "/var/lib/systemd/coredump/private",
+                "MESSAGE": "secret stack trace",
+            }
+        )
+        self.assertIsNotNone(event)
+        assert event is not None
+        self.assertEqual(
+            event["details"],
+            {
+                "executable": "example",
+                "signal": "SIGSEGV",
+                "uid": 1000,
+                "unit": "example.service",
+            },
+        )
+        rendered = json.dumps(event)
+        self.assertNotIn("password", rendered)
+        self.assertNotIn("stack trace", rendered)
+        self.assertNotIn("/home/daniele", rendered)
+        self.assertIsNone(
+            classify_journal(
+                {
+                    "MESSAGE_ID": "fc2e22bc6ee647b6b90729ab34a250b1",
+                    "SYSLOG_IDENTIFIER": "untrusted-application",
+                    "COREDUMP_EXE": "/tmp/fake",
+                }
+            )
+        )
+
+    def test_udisks_mount_failure_with_spaced_mount_path(self) -> None:
+        event = classify_journal(
+            {
+                "_SYSTEMD_UNIT": "udisks2.service",
+                "MESSAGE": (
+                    "Error mounting /dev/sdb1 at /run/media/daniele/External Drive: "
+                    "unknown filesystem type"
+                ),
+            }
+        )
+        self.assertIsNotNone(event)
+        assert event is not None
+        self.assertEqual(event["name"], "device_mount_failed")
+        self.assertEqual(event["details"]["mount_point"], "/run/media/daniele/External Drive")
+
+    def test_networkmanager_offline_and_vpn_final_states(self) -> None:
+        offline = classify_journal(
+            {
+                "_SYSTEMD_UNIT": "NetworkManager.service",
+                "MESSAGE": "<info>  [123.4] manager: NetworkManager state is now DISCONNECTED",
+            }
+        )
+        self.assertIsNotNone(offline)
+        assert offline is not None
+        self.assertEqual(offline["name"], "networkmanager_offline")
+
+        vpn = classify_journal(
+            {
+                "_SYSTEMD_UNIT": "NetworkManager.service",
+                "MESSAGE": (
+                    '<info>  [123.5] vpn[0x123,deadbeef,"Private profile"]: '
+                    "state changed: activated (5)"
+                ),
+            }
+        )
+        self.assertIsNotNone(vpn)
+        assert vpn is not None
+        self.assertEqual(vpn["name"], "vpn_connected")
+        self.assertNotIn("Private profile", json.dumps(vpn))
+
+
+class BuilderTests(unittest.TestCase):
+    def test_device_id_is_stable_and_serial_is_hashed(self) -> None:
+        properties = {
+            "DEVNAME": "/dev/sdb",
+            "SUBSYSTEM": "block",
+            "ID_BUS": "usb",
+            "ID_VENDOR": "Samsung",
+            "ID_MODEL": "Portable_SSD_T7",
+            "ID_SERIAL_SHORT": "raw-private-serial",
+            "ID_FS_UUID": "A1B2-C3D4",
+            "ID_FS_LABEL": "Ventoy",
+        }
+        added = build_device_event("add", "/dev/sdb", properties, {})
+        self.assertTrue(added["device_id"].startswith("serial-sha256:"))
+        self.assertNotEqual(added["device_id"], "node:/dev/sdb")
+        rendered = json.dumps(added)
+        self.assertNotIn("raw-private-serial", rendered)
+        self.assertIn("serial_sha256", added["details"])
+
+        removed = build_device_event("device-remove", "/dev/sdb", {}, {"/dev/sdb": added})
+        self.assertEqual(removed["device_id"], added["device_id"])
+        self.assertEqual(removed["name"], "device_disconnected")
+
+    def test_device_without_identity_does_not_use_sdx_as_id(self) -> None:
+        event = build_device_event("add", "/dev/sdz", {"DEVNAME": "/dev/sdz"}, {})
+        self.assertEqual(event["device_id"], "")
+        self.assertEqual(event["details"]["device_node"], "/dev/sdz")
+
+    def test_network_dispatcher_environment_is_allowlisted(self) -> None:
+        event = build_network_event(
+            "wlp2s0",
+            "up",
+            {
+                "CONNECTION_TYPE": "802-11-wireless",
+                "CONNECTION_ID": "Current-WiFi",
+                "IP4_ADDRESS_0": "192.0.2.25/24 192.0.2.1",
+                "IP4_GATEWAY": "192.0.2.1",
+                "DEVICE_MAC": "AA:BB:CC:DD:EE:FF",
+                "BSSID": "11:22:33:44:55:66",
+                "PASSWORD": "never-store-this",
+                "TOKEN": "never-store-this-either",
+                "CONNECTION_FILENAME": "/etc/NetworkManager/system-connections/private.nmconnection",
+            },
+        )
+        self.assertEqual(event["name"], "wifi_connected")
+        self.assertEqual(event["details"]["ssid"], "Current-WiFi")
+        self.assertEqual(event["details"]["ip_address"], "192.0.2.25/24")
+        rendered = json.dumps(event)
+        for forbidden in (
+            "AA:BB:CC:DD:EE:FF",
+            "11:22:33:44:55:66",
+            "never-store",
+            "nmconnection",
+            "PASSWORD",
+            "TOKEN",
+        ):
+            self.assertNotIn(forbidden, rendered)
+
+        disconnected = build_network_event(
+            "wlp2s0",
+            "down",
+            {"CONNECTION_TYPE": "802-11-wireless", "CONNECTION_ID": "Old-WiFi"},
+        )
+        self.assertNotIn("ssid", disconnected["details"])
+
+    def test_lifecycle_resume_is_recovery(self) -> None:
+        event = build_lifecycle_event("post-suspend")
+        self.assertEqual(event["name"], "system_resume")
+        self.assertEqual(event["outcome"], "recovery")
+
+
+class _FakeDatabase:
+    def __init__(self) -> None:
+        self.events: list[dict[str, object]] = []
+        self.state: dict[str, object] = {}
+
+    def get_state(self, key: str, default: object = None) -> object:
+        return self.state.get(key, default)
+
+    def set_state(self, key: str, value: object) -> None:
+        self.state[key] = value
+
+    def insert_events(self, events: list[dict[str, object]], **_: object) -> int:
+        self.events.extend(events)
+        return len(events)
+
+
+class _FakeProcess:
+    def __init__(self, output: str) -> None:
+        self.stdout = io.StringIO(output)
+        self.returncode = 0
+
+    def poll(self) -> int:
+        return self.returncode
+
+    def terminate(self) -> None:
+        self.returncode = 0
+
+    def wait(self, timeout: int | None = None) -> int:
+        del timeout
+        return self.returncode
+
+    def kill(self) -> None:
+        self.returncode = -9
+
+
+class StreamTests(unittest.TestCase):
+    def test_stream_persists_cursor_only_for_matched_events_and_calls_callback(self) -> None:
+        ignored = {"MESSAGE": "ordinary application log", "__CURSOR": "ignored"}
+        matched = {
+            "_TRANSPORT": "kernel",
+            "_BOOT_ID": "boot-a",
+            "MESSAGE": "usb 2-2: USB disconnect, device number 2",
+            "__CURSOR": "cursor-a",
+            "__MONOTONIC_TIMESTAMP": "123",
+            "__REALTIME_TIMESTAMP": "456",
+        }
+        process = _FakeProcess("\n".join((json.dumps(ignored), json.dumps(matched))) + "\n")
+        database = _FakeDatabase()
+        callbacks: list[dict[str, object]] = []
+        with patch(
+            "fedora_system_monitor.capsules.eventing.subprocess.Popen",
+            return_value=process,
+        ) as popen:
+            count = stream_journal(
+                {"events": {"journal_lookback_seconds": 900}},
+                database,
+                on_event=callbacks.append,
+            )
+
+        self.assertEqual(count, 1)
+        self.assertEqual(len(database.events), 1)
+        self.assertEqual(callbacks, database.events)
+        self.assertEqual(database.events[0]["timestamp_utc"], "1970-01-01T00:00:00.000456Z")
+        self.assertEqual(
+            database.events[0]["details"]["journal_identity"],
+            {"cursor": "cursor-a", "boot_id": "boot-a", "monotonic": 123, "realtime": 456},
+        )
+        self.assertEqual(
+            database.state["journal_cursor"],
+            {"cursor": "cursor-a", "boot_id": "boot-a", "monotonic": 123, "realtime": 456},
+        )
+        command = popen.call_args.args[0]
+        self.assertIn("--since=-900s", command)
+        self.assertTrue(any(value.startswith("--output-fields=") for value in command))
+
+    def test_existing_valid_cursor_is_used(self) -> None:
+        database = _FakeDatabase()
+        database.state["journal_cursor"] = {"cursor": "stored-cursor"}
+        process = _FakeProcess("")
+        with (
+            patch(
+                "fedora_system_monitor.capsules.eventing._cursor_is_valid",
+                return_value=True,
+            ),
+            patch(
+                "fedora_system_monitor.capsules.eventing.subprocess.Popen",
+                return_value=process,
+            ) as popen,
+        ):
+            stream_journal({}, database)
+        self.assertIn("--after-cursor=stored-cursor", popen.call_args.args[0])
+
+
+if __name__ == "__main__":
+    unittest.main()

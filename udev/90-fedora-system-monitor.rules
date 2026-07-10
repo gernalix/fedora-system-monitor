@@ -1,0 +1,7 @@
+# Device metadata is resolved and sanitized by the oneshot service.
+ACTION=="add", SUBSYSTEM=="block", TAG+="systemd", ENV{SYSTEMD_WANTS}+="fedora-system-monitor-device-add@%k.service"
+ACTION=="change", SUBSYSTEM=="block", TAG+="systemd", ENV{SYSTEMD_WANTS}+="fedora-system-monitor-device-change@%k.service"
+ACTION=="remove", SUBSYSTEM=="block", RUN+="/usr/bin/systemctl --no-block start fedora-system-monitor-device-remove@%k.service"
+ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", TAG+="systemd", ENV{SYSTEMD_WANTS}+="fedora-system-monitor-device-add@%k.service"
+ACTION=="remove", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", RUN+="/usr/bin/systemctl --no-block start fedora-system-monitor-device-remove@%k.service"
+

@@ -1,0 +1,104 @@
+config_version = 1
+
+[monitor]
+hostname = ""
+timezone = "Europe/Copenhagen"
+operator_user = "daniele"
+database_path = "/var/lib/fedora-system-monitor/monitor.sqlite3"
+backup_directory = "/var/lib/fedora-system-monitor/backups"
+lock_path = "/run/fedora-system-monitor/collector.lock"
+command_timeout_seconds = 12
+log_level = "INFO"
+
+[collection]
+critical_filesystems = ["/", "/home", "/var", "/tmp", "/boot", "/boot/efi"]
+ignore_filesystem_types = ["autofs", "bpf", "cgroup", "cgroup2", "configfs", "debugfs", "devpts", "devtmpfs", "efivarfs", "fusectl", "hugetlbfs", "mqueue", "nsfs", "proc", "pstore", "ramfs", "securityfs", "sysfs", "tmpfs", "tracefs"]
+top_process_limit = 5
+internet_check_enabled = true
+internet_host = "1.1.1.1"
+internet_port = 443
+internet_timeout_seconds = 2.0
+gateway_ping_timeout_seconds = 2
+journal_lookback_minutes = 20
+
+[services]
+auto_detect = true
+essential = ["NetworkManager.service", "firewalld.service"]
+secondary = ["bluetooth.service", "libvirtd.service", "podman.service", "docker.service", "rustdesk.service", "smartd.service", "sshd.service", "uptime-kuma.service"]
+name_patterns = ["backup", "adb", "kuma", "megavault", "monitor"]
+
+[storage]
+known_labels = ["Ventoy", "VTOYEFI", "VEEAMRE", "Seagate Expansion Drive"]
+known_model_patterns = ["Samsung Portable SSD T7", "Seagate"]
+small_filesystem_max_gib = 5.0
+small_filesystem_min_free_mib = 128
+expected_devices = []
+
+[inventory]
+user_home = "/home/daniele"
+android_sdk = "/home/daniele/Android/Sdk"
+manual_paths = ["/opt", "/usr/local", "/home/daniele/.local/opt", "/home/daniele/.local/bin"]
+launcher_paths = ["/usr/share/applications", "/usr/local/share/applications", "/home/daniele/.local/share/applications"]
+appimage_paths = ["/home/daniele/Applications", "/home/daniele/.local/opt", "/home/daniele/Downloads"]
+directory_size_paths = ["/var", "/home/daniele/MegaVault", "/home/daniele/Downloads"]
+max_scan_depth = 4
+metadata_hash_max_bytes = 16777216
+
+[thresholds.disk]
+warning_free_percent = 20.0
+critical_free_percent = 10.0
+emergency_free_percent = 5.0
+absolute_free_gib = 10.0
+recovery_hysteresis_percent = 2.0
+
+[thresholds.inode]
+warning_free_percent = 15.0
+critical_free_percent = 5.0
+recovery_hysteresis_percent = 2.0
+
+[thresholds.temperature]
+cpu_warning_c = 90.0
+cpu_warning_duration_seconds = 300
+cpu_critical_c = 95.0
+nvme_warning_c = 70.0
+nvme_warning_duration_seconds = 300
+nvme_critical_c = 80.0
+recovery_hysteresis_c = 5.0
+
+[thresholds.memory]
+ram_warning_percent = 90.0
+ram_warning_duration_seconds = 300
+ram_critical_percent = 95.0
+swap_warning_percent = 20.0
+swap_critical_percent = 50.0
+recovery_hysteresis_percent = 5.0
+
+[thresholds.network]
+wifi_down_duration_seconds = 120
+internet_down_duration_seconds = 180
+disconnect_count = 3
+disconnect_window_minutes = 30
+recovery_samples = 2
+
+[thresholds.services]
+restart_loop_count = 3
+restart_loop_window_minutes = 15
+
+[retention]
+minute_days = 14
+five_minute_days = 60
+fifteen_minute_days = 180
+hourly_days = 365
+daily_days = 1825
+hardware_event_days = 365
+general_event_days = 365
+alert_days = 730
+inventory_daily_days = 35
+backup_daily_count = 14
+backup_weekly_count = 8
+backup_monthly_count = 12
+
+[notifications]
+uptime_kuma_credentials = "/etc/fedora-system-monitor/uptime-kuma.toml"
+reminder_seconds = 21600
+timeout_seconds = 5

@@ -1,0 +1,15 @@
+REGISTRY.version=1
+INCIDENT.id=external-ntfs-disconnect-during-mounted-io
+INCIDENT.status=OPEN
+INCIDENT.severity=critical
+INCIDENT.first_seen=2026-07-09T19:07:00+02:00
+INCIDENT.scope=host-storage
+INCIDENT.device=external NTFS volume with stable identity redacted from documentation
+INCIDENT.symptom=Mounted device disappeared and ntfs-3g reported sync and close I/O errors
+INCIDENT.impact=Filesystem operations failed until the volume reappeared and remounted approximately ten seconds later
+INCIDENT.root_cause=UNKNOWN
+INCIDENT.evidence=Kernel and udisks journal events reconstructed by Fedora System Monitor backfill
+INCIDENT.mitigation=Permanent event capture, stable device identity, critical I/O alert, Uptime Kuma Storage mapping, and unsafe-removal recovery tracking installed
+INCIDENT.follow_up=Inspect cable,power path,and drive diagnostics before trusting long writes
+INCIDENT.data_safety=No physical disconnect or destructive reproduction was attempted
+INCIDENT.global_ref=/home/daniele/MegaVault/ai/global/INCIDENT_REGISTRY.md

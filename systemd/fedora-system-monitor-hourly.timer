@@ -1,0 +1,13 @@
+[Unit]
+Description=Run Fedora System Monitor hourly collectors
+
+[Timer]
+OnCalendar=hourly
+AccuracySec=2min
+RandomizedDelaySec=2min
+Persistent=true
+Unit=fedora-system-monitor-collect@hourly.service
+
+[Install]
+WantedBy=timers.target
+

@@ -1,0 +1,13 @@
+[Unit]
+Description=Run Fedora System Monitor weekly validation
+
+[Timer]
+OnCalendar=Sun *-*-* 04:15:00
+AccuracySec=20min
+RandomizedDelaySec=15min
+Persistent=true
+Unit=fedora-system-monitor-collect@weekly.service
+
+[Install]
+WantedBy=timers.target
+

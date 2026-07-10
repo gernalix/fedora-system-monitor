@@ -1,0 +1,11 @@
+# Copy only to /etc/fedora-system-monitor/uptime-kuma.toml with mode 0600.
+# Values stay blank until push monitors are created in Uptime Kuma.
+[push]
+system = ""
+storage = ""
+network = ""
+services = ""
+software = ""
+
+[transport]
+allow_insecure_http = false

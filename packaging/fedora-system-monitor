@@ -1,0 +1,4 @@
+#!/bin/sh
+export PYTHONPATH=/usr/local/libexec/fedora-system-monitor
+exec /usr/bin/python3 -m fedora_system_monitor "$@"
+

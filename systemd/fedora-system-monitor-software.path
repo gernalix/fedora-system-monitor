@@ -1,0 +1,15 @@
+[Unit]
+Description=Watch software and launcher directories for changes
+
+[Path]
+PathChanged=/usr/share/applications
+PathChanged=/usr/local/bin
+PathChanged=/opt
+PathChanged=/home/daniele/.local/bin
+PathChanged=/home/daniele/.local/opt
+PathChanged=/home/daniele/.local/share/applications
+Unit=fedora-system-monitor-collect@software_event.service
+
+[Install]
+WantedBy=multi-user.target
+

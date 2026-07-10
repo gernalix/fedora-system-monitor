@@ -1,0 +1,45 @@
+[Unit]
+Description=Fedora System Monitor event listener
+Documentation=file:/home/daniele/MegaVault/projects/fedora-system-monitor/docs/human/overview.md
+After=local-fs.target systemd-journald.service
+Requires=systemd-journald.service
+StartLimitIntervalSec=5min
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=root
+Group=daniele
+ExecStart=/usr/local/bin/fedora-system-monitor daemon
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=15s
+UMask=0027
+StateDirectory=fedora-system-monitor
+StateDirectoryMode=0750
+RuntimeDirectory=fedora-system-monitor
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectKernelLogs=yes
+ProtectHostname=yes
+ProtectClock=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH
+ReadWritePaths=/var/lib/fedora-system-monitor /run/fedora-system-monitor
+InaccessiblePaths=-/home/daniele/.ssh -/home/daniele/.config/gh -/home/daniele/.codex -/home/daniele/.mozilla -/home/daniele/.config/google-chrome -/home/daniele/.pki
+
+[Install]
+WantedBy=multi-user.target
