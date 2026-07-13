@@ -112,6 +112,18 @@ class DatabaseTests(unittest.TestCase):
         )
         self.assertEqual(self.db.table_counts()["events"], 2)
 
+    def test_consolidation_merges_exact_non_journal_duplicates(self) -> None:
+        instant = datetime(2026, 7, 10, 8, 0, tzinfo=timezone.utc)
+        event = {"category": "system", "name": "system_boot", "source": "systemd", "dedup_key": "boot:one", "details": {"boot_id": "one"}}
+        self.db.insert_events(event, occurred_at=instant, dedup_window_seconds=0)
+        self.db.insert_events(event, occurred_at=instant, dedup_window_seconds=0)
+        self.assertEqual(self.db.table_counts()["events"], 2)
+        result = self.db.consolidate_journal_events()
+        self.assertEqual(result["duplicates_removed"], 1)
+        rows = self.db.query("SELECT occurrence_count FROM events")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["occurrence_count"], 2)
+
     def test_json_state_and_secret_redaction(self) -> None:
         self.db.set_state("network", {"online": True, "token": "do-not-store"})
         self.assertEqual(

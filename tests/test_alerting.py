@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from fedora_system_monitor.capsules.alerting import evaluate_metric_alerts
+from fedora_system_monitor.capsules.alerting import evaluate_event_alerts, evaluate_metric_alerts
 
 
 class AlertingTests(unittest.TestCase):
@@ -57,6 +57,34 @@ class AlertingTests(unittest.TestCase):
         }
         self.assertEqual(evaluate_metric_alerts([metric], self.config, self.get, self.set), [])
 
+    def test_ten_gib_filesystem_can_be_healthy(self) -> None:
+        metric = {
+            "category": "filesystem",
+            "name": "filesystem.free_percent",
+            "value": 96.0,
+            "unit": "%",
+            "device_id": "small-volume",
+            "source": "statvfs",
+            "details": {"total_bytes": 10 * 1024**3, "free_bytes": 9.6 * 1024**3},
+        }
+        self.assertEqual(evaluate_metric_alerts([metric], self.config, self.get, self.set), [])
+
+    def test_sensor_alarm_recovers(self) -> None:
+        metric = {"category": "temperature", "name": "sensor.alarm", "value": 1, "unit": "boolean", "device_id": "spd", "source": "hwmon"}
+        self.assertTrue(evaluate_metric_alerts([metric], self.config, self.get, self.set)[0].active)
+        metric["value"] = 0
+        recovery = evaluate_metric_alerts([metric], self.config, self.get, self.set)
+        self.assertEqual(len(recovery), 1)
+        self.assertFalse(recovery[0].active)
+
+    def test_read_only_alert_recovers(self) -> None:
+        metric = {"category": "filesystem", "name": "filesystem.read_only", "value": 1, "unit": "boolean", "device_id": "root", "source": "mount", "details": {}}
+        self.assertTrue(evaluate_metric_alerts([metric], self.config, self.get, self.set)[0].active)
+        metric["value"] = 0
+        recovery = evaluate_metric_alerts([metric], self.config, self.get, self.set)
+        self.assertEqual(len(recovery), 1)
+        self.assertFalse(recovery[0].active)
+
     def test_inactive_essential_service_alerts(self) -> None:
         metric = {
             "category": "service",
@@ -69,6 +97,12 @@ class AlertingTests(unittest.TestCase):
         }
         signals = evaluate_metric_alerts([metric], self.config, self.get, self.set)
         self.assertEqual(signals[0].severity, "critical")
+
+    def test_event_signal_preserves_original_timestamp(self) -> None:
+        signals = evaluate_event_alerts(
+            [{"name": "disk_io_error", "category": "storage", "severity": "critical", "timestamp_utc": "2026-07-09T10:00:00Z"}]
+        )
+        self.assertEqual(signals[0].occurred_at, "2026-07-09T10:00:00Z")
 
 
 if __name__ == "__main__":

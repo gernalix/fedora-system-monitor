@@ -1,0 +1,33 @@
+[Unit]
+Description=Optional Fedora System Monitor Prometheus endpoint
+Documentation=file:/home/daniele/MegaVault/projects/fedora-system-monitor/docs/human/overview.md
+After=local-fs.target
+
+[Service]
+Type=simple
+User=daniele
+Group=daniele
+ExecStart=/usr/local/bin/fedora-system-monitor prometheus --listen 127.0.0.1 --port 9109
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectKernelLogs=yes
+ProtectHostname=yes
+ProtectClock=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

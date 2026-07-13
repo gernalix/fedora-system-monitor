@@ -20,6 +20,8 @@ THRESHOLD.services=Three restarts within 15 minutes indicates restart loop
 ALERT.cooldown=Unchanged active alerts are not re-notified and default reminders are bounded to six hours
 ALERT.recovery=Crossing hysteresis or receiving a native recovery closes the active alert and sends one recovery
 ALERT.aggregate=Each Kuma category receives one health status summarizing all active category alerts
+ALERT.io_recovery=Point I/O alerts recover only after a successful fifteen-minute collector sees no matching event for one complete journal lookback
+ALERT.software_recovery=DNF Started is nonterminal and retried;only terminal failure opens an alert and terminal success recovers it
 KUMA.system=Fedora Host monitor ID 39 at 180 second heartbeat
 KUMA.storage=Fedora Storage monitor ID 40 at 480 second heartbeat
 KUMA.network=Fedora Network monitor ID 41 at 180 second heartbeat
@@ -44,3 +46,5 @@ OPS.logs=Use journalctl units because no separate unbounded text log is maintain
 OPS.wakeups=Approximately 60 fast timer wake-ups per hour plus one hourly run and event-native wakes; five and fifteen minute work is folded into fast wakes
 OPS.udev_remove=RUN systemctl --no-block is retained only for remove because live udev and device-mapper tests prove it exits immediately and starts a bounded oneshot outside the worker
 OPS.database_compact=WAL checkpoint TRUNCATE plus PRAGMA optimize reuses free pages and intentionally avoids automatic full VACUUM
+OPS.dashboard=fedora-system-monitor dashboard;timeline;trends;service-history are bounded read-only SQLite views
+OPS.prometheus=Start fedora-system-monitor-prometheus.service explicitly or run prometheus CLI;default bind=127.0.0.1:9109;unit remains disabled unless intentionally enabled

@@ -60,6 +60,21 @@ La CLI eseguita senza root non può leggere il file `0600` e indica quindi lo
 stato come protetto; è una proprietà di sicurezza, non un errore di runtime. Non
 inserire mai URL push nei comandi di diagnostica o nei log.
 
+Un monitor rosso con `delivered: true` non è un timeout: controllare prima
+`fedora-system-monitor health`. Il push rappresenta gli alert attivi reali. Gli
+stati DNF `Started` sono transitori e non devono essere risolti manualmente.
+
+## Dashboard e Prometheus
+
+```bash
+fedora-system-monitor dashboard
+fedora-system-monitor trends
+sudo systemctl start fedora-system-monitor-prometheus.service
+curl -f http://127.0.0.1:9109/metrics
+```
+
+L’unità Prometheus è intenzionalmente disabilitata per default.
+
 ## Sensori o SMART assenti
 
 L’assenza di sensori o strumenti è tollerata. SMART dettagliato è giornaliero e

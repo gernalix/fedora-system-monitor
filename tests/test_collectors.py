@@ -216,6 +216,29 @@ NRestarts=1
         self.assertNotIn("password", serialized)
         self.assertFalse(any(event["name"] == "package_install" for event in second.events))
 
+    def test_dnf_started_transaction_is_retried_until_terminal(self) -> None:
+        listing = json.dumps([{"id": 7, "status": "Started"}])
+        statuses = iter(("Started", "Ok"))
+
+        def fake_external(config: object, args: list[str], **kwargs: object) -> CommandResult:
+            if args[:3] == ["dnf", "history", "list"]:
+                return command_result(listing)
+            if args[:3] == ["dnf", "history", "info"]:
+                status = next(statuses)
+                return command_result(json.dumps({"id": 7, "status": status, "packages": [{"nevra": "demo-0:1-1.x86_64", "action": "Install"}]}))
+            return command_result("[]")
+
+        with tempfile.TemporaryDirectory() as temp:
+            database = Database(Path(temp) / "monitor.sqlite3")
+            try:
+                with mock.patch.object(software, "external", side_effect=fake_external):
+                    started = software._dnf_history("software_event", {}, database)
+                    complete = software._dnf_history("software_event", {}, database)
+            finally:
+                database.close()
+        self.assertFalse(any(event["name"] == "dnf_transaction_failed" for event in started.events))
+        self.assertEqual([event["name"] for event in complete.events], ["package_install"])
+
     def test_manual_snapshot_baseline_then_modify(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             launcher = Path(temp) / "example.desktop"

@@ -22,6 +22,7 @@ class AlertSignal:
     source: str
     device_id: str = ""
     details: dict[str, Any] | None = None
+    occurred_at: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -72,9 +73,13 @@ def _disk_level(metric: dict[str, Any], active_level: str, config: dict[str, Any
         warning += hysteresis
     if free_percent < emergency:
         return "emergency", 0
-    if free_percent < critical or (total > small_limit and free < absolute):
+    if free_percent < critical:
         return "critical", 0
-    if free_percent < warning:
+    # The absolute floor is a warning backstop for large volumes.  Applying a
+    # 10 GiB floor to a roughly 10 GiB filesystem makes recovery impossible
+    # even when the filesystem is almost empty.
+    absolute_applicable = total >= absolute * 100.0 / max(warning, 0.001)
+    if free_percent < warning or (absolute_applicable and free < absolute):
         return "warning", 0
     return "", 0
 
@@ -152,8 +157,12 @@ def _metric_condition(metric: dict[str, Any], active_level: str, config: dict[st
             int(_nested(config, f"thresholds.temperature.{kind}_warning_duration_seconds", 300)),
         )
         return level, duration, f"{kind.upper()} temperature is {value:.1f} C"
-    if name == "sensor.alarm" and value > 0:
-        return "warning", 0, "hardware sensor alarm is asserted"
+    if name == "sensor.alarm":
+        return ("warning", 0, "hardware sensor alarm is asserted") if value > 0 else (
+            "",
+            0,
+            "hardware sensor alarm recovered",
+        )
     if name == "network.internet_reachable":
         return ("", 0, "Internet connectivity recovered") if value else (
             "warning",
@@ -184,8 +193,13 @@ def _metric_condition(metric: dict[str, Any], active_level: str, config: dict[st
         return "", 0, "optional systemd service is inactive"
     if name == "smart.health":
         return ("", 0, "SMART health recovered") if value else ("critical", 0, "SMART health check failed")
-    if name == "filesystem.read_only" and value and not (metric.get("details") or {}).get("expected_read_only"):
-        return "critical", 0, "filesystem is unexpectedly read-only"
+    if name == "filesystem.read_only":
+        unexpected = bool(value) and not (metric.get("details") or {}).get("expected_read_only")
+        return ("critical", 0, "filesystem is unexpectedly read-only") if unexpected else (
+            "",
+            0,
+            "filesystem is writable or intentionally read-only",
+        )
     return None
 
 
@@ -313,6 +327,7 @@ def evaluate_event_alerts(events: Iterable[dict[str, Any]]) -> list[AlertSignal]
                 source=str(event.get("source") or "event"),
                 device_id=device_id,
                 details=event.get("details") or {},
+                occurred_at=str(event.get("timestamp_utc") or "") or None,
             )
         )
     return signals

@@ -1414,6 +1414,31 @@ class Database:
                     (key, utc),
                 )
                 seeded += cursor_result.rowcount
+            # Lifecycle hooks and journal replay can describe the same event
+            # without a cursor. Merge only byte-for-byte semantic duplicates;
+            # distinct recurrences retain separate rows.
+            exact_groups = connection.execute(
+                """
+                SELECT MIN(id) AS keep_id, GROUP_CONCAT(id) AS ids,
+                       SUM(occurrence_count) AS occurrences,
+                       MIN(first_seen_utc) AS first_seen,
+                       MAX(last_seen_utc) AS last_seen,
+                       COUNT(*) AS row_count
+                FROM events
+                GROUP BY timestamp_utc,category,name,source,COALESCE(device_id,''),
+                         details_json,dedup_key
+                HAVING COUNT(*)>1
+                """
+            ).fetchall()
+            for group in exact_groups:
+                keep_id = int(group["keep_id"])
+                connection.execute(
+                    "UPDATE events SET occurrence_count=?,first_seen_utc=?,last_seen_utc=? WHERE id=?",
+                    (int(group["occurrences"]), group["first_seen"], group["last_seen"], keep_id),
+                )
+                duplicate_ids = [int(item) for item in str(group["ids"]).split(",") if int(item) != keep_id]
+                connection.executemany("DELETE FROM events WHERE id=?", ((item,) for item in duplicate_ids))
+                removed += len(duplicate_ids)
         return {"duplicates_removed": removed, "cursors_seeded": seeded}
 
     def backup(self, destination: str | Path) -> Path:

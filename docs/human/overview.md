@@ -4,8 +4,8 @@ Il servizio monitora Fedora anche dopo logout e riavvio. Non richiede terminali,
 Android Studio, sessioni grafiche o container. Usa timer systemd per i campioni e
 fonti native per gli eventi, mantenendo la cronologia in SQLite.
 
-Versione installata: `1.0.1`. L’ultimo [audit tecnico](audit-593184.md) copre
-udev, hardening, concorrenza, crescita, retention e aggregati.
+Versione installata: `1.1.0`. L’ultimo [audit tecnico](audit-471852.md) copre
+tutti i watcher, Kuma, recovery, dashboard e osservabilità locale.
 
 ## Stato e consultazione
 
@@ -21,6 +21,10 @@ fedora-system-monitor software
 fedora-system-monitor services
 fedora-system-monitor last-errors
 fedora-system-monitor daily-summary
+fedora-system-monitor dashboard
+fedora-system-monitor timeline --since-hours 24
+fedora-system-monitor trends
+fedora-system-monitor service-history --since-days 7
 ```
 
 Aggiungere `--json` produce output per automazione. `export` supporta `json`,
@@ -75,3 +79,12 @@ endpoint Kuma sono leggibili solo da root.
 
 Per dettagli tecnici vedere [Kuma](uptime-kuma.md),
 [troubleshooting](troubleshooting.md) e il [registro incidenti](INCIDENT_REGISTRY.md).
+
+## Prometheus opzionale
+
+L’endpoint non richiede pacchetti Prometheus e resta disabilitato per default:
+
+```bash
+sudo systemctl start fedora-system-monitor-prometheus.service
+curl http://127.0.0.1:9109/metrics
+```

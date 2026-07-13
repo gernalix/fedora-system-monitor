@@ -223,7 +223,15 @@ def _dnf_history(scope: str, config: Mapping[str, Any], db: object) -> Collectio
     seen = state_get(db, "software.dnf_seen_ids", None)
     first_baseline = not isinstance(seen, list)
     seen_ids = {int(value) for value in seen if str(value).isdigit()} if isinstance(seen, list) else set()
-    pending_ids = [transaction_id for transaction_id in all_ids if transaction_id not in seen_ids]
+    active_ids: set[int] = set()
+    try:
+        for row in db.query("SELECT device_id FROM alerts WHERE status='active' AND name='dnf_transaction_failed'"):
+            device_id = str(row.get("device_id") or "")
+            if device_id.startswith("dnf:") and device_id[4:].isdigit():
+                active_ids.add(int(device_id[4:]))
+    except (AttributeError, TypeError, ValueError):
+        pass
+    pending_ids = [transaction_id for transaction_id in all_ids if transaction_id not in seen_ids or transaction_id in active_ids]
     # Initial Fedora image construction can contain thousands of package rows.
     # Baseline it, but retain useful operator history from the ten latest txns.
     new_ids = pending_ids[-10:] if first_baseline else pending_ids[-50:]
@@ -244,10 +252,33 @@ def _dnf_history(scope: str, config: Mapping[str, Any], db: object) -> Collectio
             continue
         if not isinstance(payload, Mapping):
             continue
-        persisted_ids.add(transaction_id)
         status = str(payload.get("status") or "unknown")
+        normalized_status = status.strip().lower()
+        successful = normalized_status in {"ok", "success", "succeeded", "complete", "completed"}
+        failed = normalized_status in {"error", "failed", "failure", "aborted", "cancelled", "canceled"}
+        if not successful and not failed:
+            # DNF exposes a transaction as Started before its terminal state.
+            # Do not alert or mark it seen; a later path/hourly run will retry.
+            continue
+        persisted_ids.add(transaction_id)
         packages = payload.get("packages")
-        if status.lower() != "ok":
+        if successful and transaction_id in active_ids:
+            result.events.append(
+                record(
+                    cadence,
+                    "software",
+                    "dnf_transaction_recovered",
+                    1,
+                    "transaction",
+                    source="dnf5_history",
+                    device_id=f"dnf:{transaction_id}",
+                    details={"transaction_id": transaction_id, "status": status, "user_id": payload.get("user_id")},
+                    outcome="ok",
+                )
+            )
+            captured += 1
+            continue
+        if failed:
             result.events.append(record(cadence, "software", "dnf_transaction_failed", 1, "transaction", severity="warning", source="dnf5_history", device_id=f"dnf:{transaction_id}", details={"transaction_id": transaction_id, "status": status, "user_id": payload.get("user_id")}, outcome="error", error_message="package transaction did not complete successfully"))
         if not isinstance(packages, list):
             continue
@@ -278,7 +309,7 @@ def _dnf_history(scope: str, config: Mapping[str, Any], db: object) -> Collectio
                         "transaction_id": transaction_id,
                         "reboot_required": None,
                     },
-                    outcome="ok" if status.lower() == "ok" else "error",
+                    outcome="ok" if successful else "error",
                 )
             )
             captured += 1
@@ -305,7 +336,7 @@ def _dnf_history(scope: str, config: Mapping[str, Any], db: object) -> Collectio
                         "actions": actions,
                         "detailed_package_count": package_limit,
                     },
-                    outcome="ok" if status.lower() == "ok" else "error",
+                    outcome="ok" if successful else "error",
                 )
             )
             captured += 1

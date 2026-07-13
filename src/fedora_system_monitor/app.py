@@ -42,9 +42,11 @@ from fedora_system_monitor.capsules.notifications import (
     integration_status,
     send_category_heartbeat,
 )
+from fedora_system_monitor.capsules.prometheus import exposition as prometheus_exposition, serve as serve_prometheus
 from fedora_system_monitor.capsules.reporting import (
     alerts_report,
     build_daily_summary,
+    dashboard_report,
     disks_report,
     errors_report,
     events_report,
@@ -53,9 +55,12 @@ from fedora_system_monitor.capsules.reporting import (
     metrics_report,
     network_report,
     render,
+    service_history_report,
     services_report,
     software_report,
     status_report,
+    timeline_report,
+    trends_report,
 )
 
 
@@ -208,6 +213,7 @@ def _persist_signals(db: Database, signals: Iterable[AlertSignal], config: dict[
                 device_id=signal.device_id,
                 details=signal.details or {},
                 message=signal.message,
+                occurred_at=signal.occurred_at,
             )
             if is_transition:
                 transitions.append(signal)
@@ -226,6 +232,10 @@ def _derived_recoveries(
     db: Database,
     events: Iterable[dict[str, Any]],
     metrics: Iterable[dict[str, Any]] = (),
+    *,
+    scope: str = "",
+    collector_healthy: bool = True,
+    config: dict[str, Any] | None = None,
 ) -> list[AlertSignal]:
     event_list = list(events)
     successful_dnf = any(
@@ -250,6 +260,35 @@ def _derived_recoveries(
         )
         for row in rows
     ]
+    # Point-in-time kernel I/O alerts must remain visible for at least one full
+    # journal lookback, but they must not remain active forever.  A successful
+    # fifteen-minute collector with no fresh I/O event is explicit recovery
+    # evidence because collect_journal_io scanned that complete window.
+    io_names = {"disk_io_error", "kernel_io_error", "io_error", "nvme_error"}
+    if scope == "fifteen_minute" and collector_healthy and not any(
+        event.get("name") in io_names for event in event_list
+    ):
+        lookback = int(((config or {}).get("collection") or {}).get("journal_lookback_minutes", 20))
+        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=max(1, lookback))).isoformat()
+        io_rows = db.query(
+            "SELECT alert_key,category,name,severity,source,device_id FROM alerts "
+            "WHERE status='active' AND name IN ('disk_io_error','kernel_io_error','io_error','nvme_error') AND last_seen_utc<?",
+            (cutoff,),
+        )
+        recoveries.extend(
+            AlertSignal(
+                key=row["alert_key"],
+                category=row["category"],
+                name=row["name"],
+                severity=row["severity"],
+                active=False,
+                message="no kernel I/O error in a complete journal lookback",
+                source="kernel_journal",
+                device_id=row["device_id"] or "host",
+                details={"recovery_source": "clean_journal_lookback", "lookback_minutes": lookback},
+            )
+            for row in io_rows
+        )
     for metric in metrics:
         if metric.get("name") != "service.active":
             continue
@@ -369,7 +408,16 @@ def _run_scope(scope: str, config: dict[str, Any], db: Database) -> dict[str, An
             db.insert_software_snapshot(result.software_inventory)
         signals = evaluate_metric_alerts(result.metrics, config, db.get_state, db.set_state)
         signals.extend(evaluate_event_alerts(result.events))
-        signals.extend(_derived_recoveries(db, result.events, result.metrics))
+        signals.extend(
+            _derived_recoveries(
+                db,
+                result.events,
+                result.metrics,
+                scope=scope,
+                collector_healthy=not result.errors,
+                config=config,
+            )
+        )
         transitions = _persist_signals(db, signals, config)
         if scope == "daily":
             maintenance = _maintenance_daily(config, db)
@@ -532,6 +580,9 @@ def _collect_command(args: argparse.Namespace, config: dict[str, Any], db: Datab
             ping_ms=duration,
         )
         heartbeats.append(heartbeat.__dict__)
+        if heartbeat.delivered:
+            signature, _ = _endpoint_alert_snapshot(db, category)
+            db.set_state(f"endpoint:{category}", signature, namespace="notification")
     output: dict[str, Any] = {"results": results, "heartbeats": heartbeats}
     log_record(LOGGER, "collection_complete", scopes=scopes, outcomes=[item["outcome"] for item in results])
     return output
@@ -838,6 +889,16 @@ def _report_command(args: argparse.Namespace, config: dict[str, Any], db: Databa
         return software_report(path)
     if args.command == "services":
         return services_report(path)
+    if args.command == "service-history":
+        return service_history_report(path, since_days=args.since_days)
+    if args.command == "dashboard":
+        report = dashboard_report(path)
+        report["kuma"] = integration_status(config)
+        return report
+    if args.command == "timeline":
+        return timeline_report(path, since_hours=args.since_hours, limit=args.limit)
+    if args.command == "trends":
+        return trends_report(path)
     if args.command == "last-errors":
         return errors_report(path, limit=args.limit)
     if args.command == "daily-summary":
@@ -854,8 +915,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", type=Path, default=_default_config_path())
     parser.add_argument("--database", type=Path)
     subparsers = parser.add_subparsers(dest="command", required=True)
-    for name in ("status", "health", "disks", "network", "software", "services"):
+    for name in ("status", "health", "disks", "network", "software", "services", "dashboard", "trends"):
         subparsers.add_parser(name)
+    history = subparsers.add_parser("service-history")
+    history.add_argument("--since-days", type=int, default=7)
+    timeline = subparsers.add_parser("timeline")
+    timeline.add_argument("--limit", type=int, default=500)
+    timeline.add_argument("--since-hours", type=int, default=24)
+    prometheus = subparsers.add_parser("prometheus")
+    prometheus.add_argument("--listen", default="127.0.0.1")
+    prometheus.add_argument("--port", type=int, default=9109)
+    prometheus.add_argument("--once", action="store_true")
     events = subparsers.add_parser("events")
     events.add_argument("--limit", type=int, default=100)
     events.add_argument("--category", default="")
@@ -926,6 +996,11 @@ def main(argv: list[str] | None = None) -> int:
             "network",
             "software",
             "services",
+            "service-history",
+            "dashboard",
+            "timeline",
+            "trends",
+            "prometheus",
             "last-errors",
             "daily-summary",
             "export",
@@ -964,6 +1039,13 @@ def main(argv: list[str] | None = None) -> int:
                 _print({"rows": len(rows), "output": str(args.output), "format": args.format}, args)
             else:
                 print(text)
+            return 0
+        if args.command == "prometheus":
+            path = Path(config["monitor"]["database_path"])
+            if args.once:
+                print(prometheus_exposition(path), end="")
+            else:
+                serve_prometheus(path, listen=args.listen, port=args.port)
             return 0
         if args.command in read_only_commands:
             _print(_report_command(args, config, None), args)

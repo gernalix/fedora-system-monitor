@@ -178,6 +178,172 @@ def services_report(path: str | Path) -> list[dict[str, Any]]:
         return _latest_metrics(connection, "category IN ('service','services')")
 
 
+def timeline_report(path: str | Path, *, since_hours: int = 24, limit: int = 500) -> list[dict[str, Any]]:
+    """Return one deduplicated chronological event stream across host domains."""
+    since = (datetime.now(timezone.utc) - timedelta(hours=max(1, since_hours))).isoformat()
+    categories = ("hardware", "software", "network", "backup", "system", "alert", "service", "storage", "filesystem")
+    placeholders = ",".join("?" for _ in categories)
+    with _connection(path) as connection:
+        return _rows(
+            connection,
+            f"""
+            SELECT timestamp_utc,timestamp_local,category,name,severity,source,
+                   device_id,outcome,occurrence_count,first_seen_utc,last_seen_utc,
+                   details_json,error_message
+            FROM events
+            WHERE timestamp_utc>=? AND category IN ({placeholders})
+            ORDER BY timestamp_utc DESC,id DESC LIMIT ?
+            """,
+            (since, *categories, max(1, min(limit, 5000))),
+        )
+
+
+def _p95(values: list[float]) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    return ordered[max(0, (95 * len(ordered) + 99) // 100 - 1)]
+
+
+def trends_report(path: str | Path) -> dict[str, Any]:
+    """Compute bounded 24-hour and seven-day operational trends from raw samples."""
+    definitions = {
+        "cpu": ({"cpu_total_used_percent"}, "above", 90.0, True),
+        "ram": ({"memory.used_percent"}, "above", 90.0, True),
+        "temperature": ({"temperature.cpu_c", "temperature.nvme_c", "temperature"}, "above", 90.0, True),
+        "disk_space": ({"filesystem.free_percent"}, "below", 20.0, False),
+        "network": ({"interface_download_bytes_per_second", "interface_upload_bytes_per_second"}, "above", None, True),
+    }
+    now = datetime.now(timezone.utc)
+    output: dict[str, Any] = {}
+    with _connection(path) as connection:
+        for window_name, hours in (("24h", 24), ("7d", 24 * 7)):
+            since = (now - timedelta(hours=hours)).isoformat()
+            window: dict[str, Any] = {}
+            for label, (names, direction, threshold, include_p95) in definitions.items():
+                placeholders = ",".join("?" for _ in names)
+                rows = connection.execute(
+                    f"SELECT value,cadence_seconds,unit,name FROM periodic_metrics WHERE timestamp_utc>=? AND name IN ({placeholders}) AND value IS NOT NULL ORDER BY timestamp_utc",
+                    (since, *sorted(names)),
+                ).fetchall()
+                values = [float(row["value"]) for row in rows]
+                above_seconds = 0
+                if threshold is not None:
+                    for row in rows:
+                        breached = float(row["value"]) > threshold if direction == "above" else float(row["value"]) < threshold
+                        if breached:
+                            above_seconds += min(int(row["cadence_seconds"]), 3600)
+                window[label] = {
+                    "minimum": min(values) if values else None,
+                    "maximum": max(values) if values else None,
+                    "average": sum(values) / len(values) if values else None,
+                    "p95": _p95(values) if include_p95 else None,
+                    "sample_count": len(values),
+                    "threshold": threshold,
+                    "threshold_direction": direction if threshold is not None else None,
+                    "time_above_or_below_threshold_seconds": above_seconds if threshold is not None else None,
+                    "units": sorted({str(row["unit"]) for row in rows if row["unit"]}),
+                }
+            output[window_name] = window
+    return output
+
+
+def service_history_report(path: str | Path, *, since_days: int = 7) -> list[dict[str, Any]]:
+    """Derive service availability and restart history from existing samples."""
+    since = (datetime.now(timezone.utc) - timedelta(days=max(1, min(since_days, 365)))).isoformat()
+    with _connection(path) as connection:
+        rows = connection.execute(
+            "SELECT timestamp_utc,value,cadence_seconds,device_id,details_json FROM periodic_metrics WHERE name='service.active' AND timestamp_utc>=? ORDER BY device_id,timestamp_utc,id",
+            (since,),
+        ).fetchall()
+    by_service: dict[str, list[sqlite3.Row]] = {}
+    for row in rows:
+        by_service.setdefault(str(row["device_id"] or "unknown"), []).append(row)
+    output: list[dict[str, Any]] = []
+    for service, samples in sorted(by_service.items()):
+        downtime = sum(min(int(row["cadence_seconds"]), 3600) for row in samples if not float(row["value"] or 0))
+        observed = sum(min(int(row["cadence_seconds"]), 3600) for row in samples)
+        restart_count = 0
+        last_restart = None
+        previous_count: int | None = None
+        for row in samples:
+            try:
+                current_count = int(json.loads(row["details_json"] or "{}").get("restart_count") or 0)
+            except (ValueError, TypeError, json.JSONDecodeError):
+                current_count = 0
+            if previous_count is not None and current_count > previous_count:
+                restart_count += current_count - previous_count
+                last_restart = row["timestamp_utc"]
+            previous_count = current_count
+        current_up = bool(float(samples[-1]["value"] or 0))
+        current_uptime = 0
+        if current_up:
+            for row in reversed(samples):
+                if not float(row["value"] or 0):
+                    break
+                current_uptime += min(int(row["cadence_seconds"]), 3600)
+        down_samples = [row for row in samples if not float(row["value"] or 0)]
+        output.append(
+            {
+                "service": service,
+                "current_up": current_up,
+                "uptime_seconds": current_uptime,
+                "last_restart_utc": last_restart,
+                "restart_count": restart_count,
+                "downtime_total_seconds": downtime,
+                "last_downtime_utc": down_samples[-1]["timestamp_utc"] if down_samples else None,
+                "availability_percent": (100.0 * (observed - downtime) / observed) if observed else None,
+                "sample_count": len(samples),
+                "window_days": since_days,
+            }
+        )
+    return output
+
+
+def dashboard_report(path: str | Path) -> dict[str, Any]:
+    """Assemble a local, database-backed operational dashboard."""
+    with _connection(path) as connection:
+        latest = _latest_metrics(connection)
+        recent_events = _rows(
+            connection,
+            "SELECT timestamp_local,category,name,severity,device_id,outcome,occurrence_count FROM events ORDER BY id DESC LIMIT 20",
+        )
+        last_backup = connection.execute(
+            "SELECT timestamp_utc,details_json,outcome,error_message FROM events WHERE category='backup' OR name LIKE '%backup%' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    fresh_cutoff = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+    latest = [
+        row for row in latest
+        if str(row.get("timestamp_utc") or "") >= fresh_cutoff
+        and "/systemd-private-" not in str(row.get("details_json") or "")
+    ]
+    groups = {
+        "cpu": {"cpu_total_used_percent", "load_1m", "load_5m", "load_15m"},
+        "ram": {"memory.used_percent", "ram_available_bytes", "swap.used_percent"},
+        "temperatures": {"temperature.cpu_c", "temperature.nvme_c", "temperature", "sensor.alarm"},
+        "filesystems": {"filesystem.free_percent", "filesystem.read_only"},
+        "network": {"network.internet_reachable", "network.gateway_reachable", "wifi.connected", "interface_download_bytes_per_second", "interface_upload_bytes_per_second"},
+        "services": {"service.active", "failed_service_count", "service.restart_count_window"},
+    }
+    return {
+        "health": health_report(path),
+        **{key: [row for row in latest if row["name"] in names][:100] for key, names in groups.items()},
+        "alerts": alerts_report(path, active_only=True, limit=50),
+        "latest_events": recent_events,
+        "backup": dict(last_backup) if last_backup else {"state": "no backup event recorded"},
+        "kuma": {"state": "see runtime integration status and endpoint notification state"},
+    }
+
+
+def prometheus_snapshot(path: str | Path) -> dict[str, Any]:
+    """Public capsule API for optional exporters without exposing DB internals."""
+    with _connection(path) as connection:
+        active = connection.execute("SELECT COUNT(*) FROM alerts WHERE status='active'").fetchone()[0]
+        latest = _latest_metrics(connection, "timestamp_utc>=?", ((datetime.now(timezone.utc) - timedelta(hours=2)).isoformat(),))
+    latest = [row for row in latest if "/systemd-private-" not in str(row.get("details_json") or "")]
+    return {"active_alerts": active, "metrics": latest}
+
+
 def errors_report(path: str | Path, *, limit: int = 100) -> dict[str, Any]:
     bounded = max(1, min(limit, 1000))
     with _connection(path) as connection:
@@ -309,6 +475,7 @@ def _render_text(data: Any) -> str:
 __all__ = [
     "alerts_report",
     "build_daily_summary",
+    "dashboard_report",
     "disks_report",
     "errors_report",
     "events_report",
@@ -316,8 +483,12 @@ __all__ = [
     "health_report",
     "metrics_report",
     "network_report",
+    "prometheus_snapshot",
     "render",
+    "service_history_report",
     "services_report",
     "software_report",
     "status_report",
+    "timeline_report",
+    "trends_report",
 ]

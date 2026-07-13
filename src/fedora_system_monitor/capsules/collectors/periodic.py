@@ -256,6 +256,8 @@ def collect_filesystems(
                 continue
             if path.startswith(("/proc", "/sys", "/dev", "/run/credentials", "/run/user")):
                 continue
+            if "/systemd-private-" in path:
+                continue
         elif path not in critical:
             continue
         seen.add(path)
@@ -288,7 +290,9 @@ def collect_filesystems(
                 record(cadence, "filesystem", "filesystem_free_bytes", free, "bytes", severity=severity, source="statvfs", device_id=device_id, details=details),
             ]
         )
-        if stats.f_files > 0:
+        # FUSE implementations commonly report a synthetic zero inode count;
+        # treating it as exhaustion creates an alert that cannot be meaningful.
+        if stats.f_files > 0 and not fstype.startswith("fuse."):
             inode_percent = stats.f_favail * 100.0 / stats.f_files
             inode_warning = _threshold(config, (("thresholds", "inode", "warning_free_percent"), ("thresholds", "inode_free_percent", "warning")), 15)
             inode_critical = _threshold(config, (("thresholds", "inode", "critical_free_percent"), ("thresholds", "inode_free_percent", "critical")), 5)
@@ -619,7 +623,10 @@ def collect_network_essential(scope: str, config: Mapping[str, Any], db: object)
         now = time.time()
         wifi_threshold = _threshold(config, (("thresholds", "network", "wifi_down_duration_seconds"), ("thresholds", "wifi_disconnected_seconds")), 120)
         wifi_severity = _duration_severity(db, "condition.wifi_down", not bool(snapshot.get("connected")), wifi_threshold, cadence=cadence, now=now)
-        result.metrics.append(record(cadence, "network", "wifi.connected", 1 if snapshot.get("connected") else 0, "boolean", severity=wifi_severity, source="NetworkManager", device_id=str(snapshot.get("device") or "wifi"), details={"ssid": snapshot.get("ssid")}))
+        # This is host Wi-Fi health, not per-interface inventory.  A stable key
+        # is required so a reconnect on wlp* can recover an alert opened while
+        # NetworkManager had no active interface name.
+        result.metrics.append(record(cadence, "network", "wifi.connected", 1 if snapshot.get("connected") else 0, "boolean", severity=wifi_severity, source="NetworkManager", device_id="wifi", details={"ssid": snapshot.get("ssid"), "interface": snapshot.get("device")}))
         connectivity_values = {"unknown": 0, "none": 0, "portal": 1, "limited": 2, "full": 4}
         connectivity = str(snapshot.get("connectivity") or "unknown")
         result.metrics.append(record(cadence, "network", "networkmanager_connectivity", connectivity_values.get(connectivity, 0), "state", source="NetworkManager", details={"state": connectivity}))

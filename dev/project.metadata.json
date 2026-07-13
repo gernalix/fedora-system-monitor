@@ -9,8 +9,8 @@
   "human_doc": "docs/human/overview.md",
   "legacy_docs": "docs/legacy",
   "metadata_version": 1,
-  "project_version": "1.0.1",
-  "activity_id": "593184",
-  "branch": "codex/593184-fedora-system-monitor",
-  "last_indexed_at": "2026-07-10T12:35:00+02:00"
+  "project_version": "1.1.0",
+  "activity_id": "471852",
+  "branch": "codex/471852-fedora-system-monitor",
+  "last_indexed_at": "2026-07-13T09:40:00+02:00"
 }

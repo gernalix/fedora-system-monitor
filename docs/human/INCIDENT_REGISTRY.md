@@ -16,3 +16,15 @@
 
 Non è stato scollegato alcun dispositivo durante le prove e non è stata tentata
 una riproduzione distruttiva.
+
+## kuma-stale-category-alerts
+
+- **Stato:** risolto nella versione 1.1.0; restano due condizioni Storage reali.
+- **Impatto:** recovery mancanti o indirizzate a chiavi diverse mantenevano Host,
+  Network e Storage rossi; una race DNF generava anche falsi alert Software.
+- **Causa:** sensore monodirezionale, identità Wi-Fi instabile, soglie filesystem
+  incoerenti, inode FUSE sintetici, timestamp persi nel replay, recovery I/O
+  incompleta e stato DNF `Started` trattato come fallimento.
+- **Correzione:** recovery bidirezionale e verificabile, identità stabili,
+  scansione journal pulita, retry DNF terminale e deduplicazione esatta.
+- **Evidenza:** [audit 471852](audit-471852.md).

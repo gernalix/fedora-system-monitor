@@ -30,4 +30,4 @@ python3 -m compileall -q src
 git diff --check
 ```
 
-Versione: `1.0.1`. Attività: `593184`.
+Versione: `1.1.0`. Attività: `471852`.

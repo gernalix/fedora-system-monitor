@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.1.0 - 2026-07-13
+
+- Corretti recovery Host, Network, Storage e Software senza modificare timeout,
+  retry o heartbeat Kuma.
+- Stabilizzata l’identità Wi-Fi e preservati i timestamp originali del replay.
+- Corretti soglia assoluta filesystem, inode FUSE e recovery I/O su journal pulito.
+- Corretta la race DNF `Started` con retry fino allo stato terminale.
+- Aggiunte deduplicazione esatta e riconciliazione dello stato endpoint.
+- Aggiunti dashboard, timeline, trend 24h/7d, storico servizi e Prometheus opzionale.
+- Verificati 92 test, 17 self-check, tutti i collector reali, systemd, udev e SQLite.
+
+Timeline: `2026-07-13|fedora-system-monitor|bugfix|P1|Kuma recovery|PENDING|activity:471852`.
+
 ## 1.0.1 - 2026-07-10
 
 - Corretto escaping delle istanze udev e race della cache su remove immediato.

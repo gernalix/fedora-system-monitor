@@ -29,3 +29,10 @@ sequenza controllata Software `DOWN`/`UP`, entrambe accettate con HTTP 200. La
 sessione Chrome usata solo per creare i monitor è poi scaduta e non è stata
 salvata. Per modificare in futuro le definizioni serve una nuova sessione Kuma
 autenticata; nessuna credenziale è richiesta per il funzionamento ordinario.
+
+Il 13 luglio 2026 tutti e cinque gli endpoint hanno nuovamente accettato push
+reali. Host, Network, Services e Software risultano logicamente sani. Storage
+resta correttamente `DOWN` finché il Seagate rimane al 3,6754% libero e manca la
+recovery fisica di un’unsafe removal. Il JWT Chrome recuperabile localmente è
+stato rifiutato da Kuma, quindi il readback amministrativo corrente è pendente;
+questo non impedisce i push runtime.

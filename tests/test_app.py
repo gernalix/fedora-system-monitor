@@ -9,10 +9,11 @@ import unittest
 from argparse import Namespace
 from contextlib import redirect_stdout
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
-from fedora_system_monitor.app import _hook_command, _persist_signals, main
+from fedora_system_monitor.app import _derived_recoveries, _hook_command, _persist_signals, main
 from fedora_system_monitor.capsules.alerting import AlertSignal
 from fedora_system_monitor.capsules.database import Database
 from fedora_system_monitor.capsules.notifications import NotificationResult
@@ -187,6 +188,32 @@ class AppTests(unittest.TestCase):
                     "SELECT device_id FROM events WHERE name='device_disconnected'"
                 )[0]
                 self.assertTrue(row["device_id"].startswith("serial-sha256:"))
+            finally:
+                database.close()
+
+    def test_clean_journal_window_recovers_stale_io_alert(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            database = Database(Path(temp) / "monitor.sqlite3")
+            try:
+                database.open_alert_transition(
+                    "event:kernel_io_error:disk",
+                    category="storage",
+                    name="kernel_io_error",
+                    severity="critical",
+                    source="kernel_journal",
+                    device_id="disk",
+                    message="I/O error",
+                    occurred_at=datetime.now(timezone.utc) - timedelta(hours=1),
+                )
+                recoveries = _derived_recoveries(
+                    database,
+                    [],
+                    scope="fifteen_minute",
+                    collector_healthy=True,
+                    config={"collection": {"journal_lookback_minutes": 20}},
+                )
+                self.assertEqual(len(recoveries), 1)
+                self.assertFalse(recoveries[0].active)
             finally:
                 database.close()
 
