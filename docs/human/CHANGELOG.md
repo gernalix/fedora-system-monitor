@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.1.1 - 2026-07-14
+
+- Verificata la causa reale di Fedora Host: swap warning attivo, non alert stale.
+- Verificata la causa reale di Fedora Storage: Seagate al 5,2273% libero, ancora sotto soglia critical.
+- Corretta la stalezza delle righe alert metriche attive: ora valore, messaggio e last_seen vengono aggiornati senza notifiche duplicate.
+- Corretta la recovery di `unsafe_device_removal` quando il mount point registrato risulta di nuovo presente.
+- Eseguito readback SQLite remoto di Kuma sulla VM Oracle; monitor 39-43 attivi e heartbeat ricevuti.
+- Verificati 93 test automatici.
+
+Timeline: `2026-07-14|fedora-system-monitor|bugfix|P1|Host Storage Kuma|PASS|activity:471853`.
+
 ## 1.1.0 - 2026-07-13
 
 - Corretti recovery Host, Network, Storage e Software senza modificare timeout,

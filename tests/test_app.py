@@ -217,6 +217,38 @@ class AppTests(unittest.TestCase):
             finally:
                 database.close()
 
+    def test_present_mount_recovers_unsafe_removal_alert(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            database = Database(Path(temp) / "monitor.sqlite3")
+            try:
+                database.open_alert_transition(
+                    "event:unsafe_device_removal:host",
+                    category="hardware",
+                    name="unsafe_device_removal",
+                    severity="warning",
+                    source="udisks2",
+                    device_id="host",
+                    details={"mount_point": "/run/media/daniele/09FA16D309FA16D3"},
+                    message="unsafe device removal",
+                    occurred_at=datetime.now(timezone.utc) - timedelta(minutes=5),
+                )
+                with patch(
+                    "fedora_system_monitor.app.run_command",
+                    return_value=Namespace(ok=True),
+                ):
+                    recoveries = _derived_recoveries(
+                        database,
+                        [],
+                        scope="five_minute",
+                        collector_healthy=True,
+                    )
+                self.assertEqual(len(recoveries), 1)
+                self.assertEqual(recoveries[0].key, "event:unsafe_device_removal:host")
+                self.assertFalse(recoveries[0].active)
+                self.assertEqual(recoveries[0].details["recovery_source"], "mount_point_present")
+            finally:
+                database.close()
+
 
 if __name__ == "__main__":
     unittest.main()

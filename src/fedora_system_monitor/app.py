@@ -289,6 +289,41 @@ def _derived_recoveries(
             )
             for row in io_rows
         )
+    if collector_healthy:
+        unsafe_rows = db.query(
+            "SELECT alert_key,category,name,severity,source,device_id,details_json FROM alerts "
+            "WHERE status='active' AND name='unsafe_device_removal'"
+        )
+        for row in unsafe_rows:
+            try:
+                details = json.loads(str(row.get("details_json") or "{}"))
+            except json.JSONDecodeError:
+                details = {}
+            mount_point = str(details.get("mount_point") or "")
+            if not mount_point:
+                continue
+            mounted = run_command(
+                ["findmnt", "--json", "--target", mount_point],
+                timeout=4,
+                max_output=64_000,
+            )
+            if mounted.ok:
+                recoveries.append(
+                    AlertSignal(
+                        key=row["alert_key"],
+                        category=row["category"],
+                        name=row["name"],
+                        severity=row["severity"],
+                        active=False,
+                        message="mount point is present after unsafe removal",
+                        source="mount_reconciliation",
+                        device_id=row["device_id"] or "host",
+                        details={
+                            "recovery_source": "mount_point_present",
+                            "mount_point": mount_point,
+                        },
+                    )
+                )
     for metric in metrics:
         if metric.get("name") != "service.active":
             continue

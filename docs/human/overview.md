@@ -4,8 +4,8 @@ Il servizio monitora Fedora anche dopo logout e riavvio. Non richiede terminali,
 Android Studio, sessioni grafiche o container. Usa timer systemd per i campioni e
 fonti native per gli eventi, mantenendo la cronologia in SQLite.
 
-Versione installata: `1.1.0`. L’ultimo [audit tecnico](audit-471852.md) copre
-tutti i watcher, Kuma, recovery, dashboard e osservabilità locale.
+Versione installata: `1.1.1`. L’ultimo [audit tecnico](audit-471853.md) verifica
+lo stato reale Host/Storage e il readback Kuma remoto.
 
 ## Stato e consultazione
 

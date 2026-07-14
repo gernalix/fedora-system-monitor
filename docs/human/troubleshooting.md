@@ -64,6 +64,13 @@ Un monitor rosso con `delivered: true` non è un timeout: controllare prima
 `fedora-system-monitor health`. Il push rappresenta gli alert attivi reali. Gli
 stati DNF `Started` sono transitori e non devono essere risolti manualmente.
 
+Per Host rosso controllare prima `swap.used_percent`: un valore sopra soglia
+warning mantiene correttamente `Fedora Host` in `DOWN`. Per Storage rosso,
+verificare sia percentuale libera sia byte liberi: 200 GB possono essere ancora
+sotto soglia su un disco da più TiB. Gli alert `unsafe_device_removal` vengono
+riconciliati automaticamente quando un collector sano conferma che il mount point
+registrato è di nuovo presente.
+
 ## Dashboard e Prometheus
 
 ```bash

@@ -28,3 +28,16 @@ una riproduzione distruttiva.
 - **Correzione:** recovery bidirezionale e verificabile, identità stabili,
   scansione journal pulita, retry DNF terminale e deduplicazione esatta.
 - **Evidenza:** [audit 471852](audit-471852.md).
+
+## kuma-host-storage-real-state-471853
+
+- **Stato:** risolto nella versione 1.1.1; restano condizioni reali Host e Storage.
+- **Impatto:** Host e Storage continuavano a risultare rossi dopo il cleanup del
+  Seagate, con un alert Storage obsoleto nel testo.
+- **Causa reale:** Host ha swap warning attivo; Storage ha Seagate al 5,2273%
+  libero, ancora sotto soglia critical. Inoltre `unsafe_device_removal` era
+  stale perché il mount point registrato era di nuovo presente.
+- **Correzione:** refresh delle righe alert metriche attive senza notifiche
+  duplicate e recovery automatica unsafe-removal quando `findmnt` conferma il
+  mount point.
+- **Evidenza:** [audit 471853](audit-471853.md).

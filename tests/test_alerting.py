@@ -30,7 +30,10 @@ class AlertingTests(unittest.TestCase):
         self.assertEqual(signals[0].severity, "critical")
         metric["value"] = 11
         metric["details"]["free_bytes"] = 11 * 1024**3
-        self.assertEqual(evaluate_metric_alerts([metric], self.config, self.get, self.set), [])
+        refresh = evaluate_metric_alerts([metric], self.config, self.get, self.set)
+        self.assertTrue(refresh[0].active)
+        self.assertEqual(refresh[0].severity, "critical")
+        self.assertEqual(refresh[0].message, "filesystem free space is 11.0%")
         metric["value"] = 25
         metric["details"]["free_bytes"] = 25 * 1024**3
         self.assertFalse(evaluate_metric_alerts([metric], self.config, self.get, self.set)[0].active)

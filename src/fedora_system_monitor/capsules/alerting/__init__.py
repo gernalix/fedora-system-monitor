@@ -237,20 +237,19 @@ def evaluate_metric_alerts(
                 since = since.replace(tzinfo=timezone.utc)
             state.update({"breach_since": since.isoformat(), "breach_level": desired, "recovery_samples": 0})
             if (current - since).total_seconds() >= duration:
-                if active_level != desired or _severity_rank(desired) > _severity_rank(active_level):
-                    output.append(
-                        AlertSignal(
-                            key=key,
-                            category=str(metric.get("category") or "system"),
-                            name=name,
-                            severity=desired,
-                            active=True,
-                            message=message,
-                            source=str(metric.get("source") or "collector"),
-                            device_id=device_id,
-                            details={"value": metric.get("value"), "unit": metric.get("unit")},
-                        )
+                output.append(
+                    AlertSignal(
+                        key=key,
+                        category=str(metric.get("category") or "system"),
+                        name=name,
+                        severity=desired,
+                        active=True,
+                        message=message,
+                        source=str(metric.get("source") or "collector"),
+                        device_id=device_id,
+                        details={"value": metric.get("value"), "unit": metric.get("unit")},
                     )
+                )
                 state["active_level"] = desired
         else:
             state.pop("breach_since", None)
