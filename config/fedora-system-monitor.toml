@@ -69,8 +69,17 @@ recovery_hysteresis_c = 5.0
 ram_warning_percent = 90.0
 ram_warning_duration_seconds = 300
 ram_critical_percent = 95.0
-swap_warning_percent = 20.0
-swap_critical_percent = 50.0
+available_warning_percent = 10.0
+available_critical_percent = 5.0
+psi_some_warning_percent = 10.0
+psi_full_critical_percent = 5.0
+swap_out_warning_mib_per_second = 16.0
+reclaim_warning_pages_per_second = 4096.0
+recovery_hysteresis_percent = 5.0
+
+[thresholds.battery]
+health_warning_percent = 70.0
+health_critical_percent = 50.0
 recovery_hysteresis_percent = 5.0
 
 [thresholds.network]

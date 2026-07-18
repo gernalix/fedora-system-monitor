@@ -138,14 +138,13 @@ def _metric_condition(metric: dict[str, Any], active_level: str, config: dict[st
         )
         return level, duration, f"RAM use is {value:.1f}%"
     if name == "swap.used_percent":
-        level, duration = _high_level(
-            value,
-            active_level,
-            float(_nested(config, "thresholds.memory.swap_warning_percent", 20)),
-            float(_nested(config, "thresholds.memory.swap_critical_percent", 50)),
-            float(_nested(config, "thresholds.memory.recovery_hysteresis_percent", 5)),
-        )
-        return level, duration, f"swap use is {value:.1f}%"
+        return "", 0, f"swap use is informational at {value:.1f}%"
+    if name == "memory.pressure_level":
+        if value >= 2:
+            return "critical", 0, "memory pressure is critical"
+        if value >= 1:
+            return "warning", 0, "memory pressure is elevated"
+        return "", 0, "memory pressure recovered"
     if name in {"temperature.cpu_c", "temperature.nvme_c"}:
         kind = "nvme" if name.endswith("nvme_c") else "cpu"
         level, duration = _high_level(
@@ -193,6 +192,35 @@ def _metric_condition(metric: dict[str, Any], active_level: str, config: dict[st
         return "", 0, "optional systemd service is inactive"
     if name == "smart.health":
         return ("", 0, "SMART health recovered") if value else ("critical", 0, "SMART health check failed")
+    if name in {"smart.pending_sectors", "smart.offline_uncorrectable", "smart.reported_uncorrectable", "nvme_media_errors", "nvme_critical_warning", "smart.self_test_failures"}:
+        return ("critical", 0, f"{name} is {value:g}") if value > 0 else ("", 0, f"{name} recovered")
+    if name in {"smart.reallocated_sectors", "smart.interface_crc_errors"}:
+        return ("warning", 0, f"{name} is {value:g}") if value > 0 else ("", 0, f"{name} recovered")
+    if name == "nvme_available_spare_percent":
+        return ("critical", 0, f"NVMe available spare is {value:.1f}%") if value < 10 else ("", 0, "NVMe available spare recovered")
+    if name == "nvme_percent_used":
+        return ("warning", 0, f"NVMe endurance used is {value:.1f}%") if value >= 100 else ("", 0, "NVMe endurance is within specification")
+    if name == "battery_health_percent":
+        critical = float(_nested(config, "thresholds.battery.health_critical_percent", 50))
+        warning = float(_nested(config, "thresholds.battery.health_warning_percent", 70))
+        hysteresis = float(_nested(config, "thresholds.battery.recovery_hysteresis_percent", 5))
+        if active_level == "critical":
+            critical += hysteresis
+        if active_level == "warning":
+            warning += hysteresis
+        if value < critical:
+            return "critical", 0, f"battery health is {value:.1f}%"
+        if value < warning:
+            return "warning", 0, f"battery health is {value:.1f}%"
+        return "", 0, "battery health recovered"
+    if name == "battery_temperature_c":
+        if value >= 60:
+            return "critical", 0, f"battery temperature is {value:.1f} C"
+        if value >= 50:
+            return "warning", 0, f"battery temperature is {value:.1f} C"
+        return "", 0, "battery temperature recovered"
+    if name.startswith("btrfs.") and name.endswith(("_errors", "_errs")):
+        return ("critical", 0, f"{name} is {value:g}") if value > 0 else ("", 0, f"{name} recovered")
     if name == "filesystem.read_only":
         unexpected = bool(value) and not (metric.get("details") or {}).get("expected_read_only")
         return ("critical", 0, "filesystem is unexpectedly read-only") if unexpected else (

@@ -4,8 +4,9 @@ Il servizio monitora Fedora anche dopo logout e riavvio. Non richiede terminali,
 Android Studio, sessioni grafiche o container. Usa timer systemd per i campioni e
 fonti native per gli eventi, mantenendo la cronologia in SQLite.
 
-Versione installata: `1.1.1`. L’ultimo [audit tecnico](audit-471853.md) verifica
-lo stato reale Host/Storage e il readback Kuma remoto.
+Versione installata: `1.2.0`. L’ultimo [audit tecnico](audit-962417.md) documenta
+l’audit Fedora 44, la pressione memoria reale e le integrazioni SMART, batteria e
+Btrfs.
 
 ## Stato e consultazione
 
@@ -52,6 +53,10 @@ Per aggiungere un disco atteso, usare per esempio
 Per un servizio, usare `services.essential` o `services.secondary`. Per cambiare
 una soglia, modificare la tabella `thresholds` corrispondente. Il file di
 distribuzione è `/etc/fedora-system-monitor/config.toml.distribution`.
+
+La percentuale di zram è diagnostica: un alert memoria richiede evidenza da
+MemAvailable, PSI, attività swap/reclaim oppure OOM. Un disco rotazionale in
+standby non viene risvegliato per SMART.
 
 ## Installazione e aggiornamento
 

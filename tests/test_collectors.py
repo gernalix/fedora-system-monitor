@@ -32,8 +32,8 @@ class IntegrityDatabase(FakeDatabase):
         return ["ok"]
 
 
-def command_result(stdout: str = "", *, returncode: int = 0, timed_out: bool = False, missing: bool = False) -> CommandResult:
-    return CommandResult(("mock",), returncode, stdout, "", 1, timed_out=timed_out, missing=missing)
+def command_result(stdout: str = "", *, stderr: str = "", returncode: int = 0, timed_out: bool = False, missing: bool = False) -> CommandResult:
+    return CommandResult(("mock",), returncode, stdout, stderr, 1, timed_out=timed_out, missing=missing)
 
 
 class CollectorTests(unittest.TestCase):
@@ -42,14 +42,22 @@ class CollectorTests(unittest.TestCase):
 
     def test_proc_cpu_memory_swap_and_delta(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
-            proc = Path(temp)
+            root = Path(temp)
+            proc = root / "proc"
+            sys = root / "sys"
+            (proc / "pressure").mkdir(parents=True)
+            (sys / "block" / "zram0").mkdir(parents=True)
             (proc / "stat").write_text("cpu  100 0 100 800 0 0 0 0 0 0\n", encoding="utf-8")
             (proc / "loadavg").write_text("1.0 2.0 3.0 1/100 42\n", encoding="utf-8")
             (proc / "meminfo").write_text(
                 "MemTotal: 1000 kB\nMemAvailable: 100 kB\nSwapTotal: 1000 kB\nSwapFree: 400 kB\n",
                 encoding="utf-8",
             )
-            with mock.patch.object(periodic, "PROC_ROOT", proc):
+            (proc / "pressure" / "memory").write_text("some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n", encoding="utf-8")
+            (proc / "vmstat").write_text("pswpin 0\npswpout 0\npgscan_kswapd 0\npgsteal_kswapd 0\noom_kill 0\n", encoding="utf-8")
+            (sys / "block" / "zram0" / "mm_stat").write_text("600000 300000 320000 0 0 0 0 0 0\n", encoding="utf-8")
+            (sys / "block" / "zram0" / "disksize").write_text("1000000\n", encoding="utf-8")
+            with mock.patch.object(periodic, "PROC_ROOT", proc), mock.patch.object(periodic, "SYS_ROOT", sys):
                 first = periodic.collect_proc("minute", {}, self.db)
                 (proc / "stat").write_text("cpu  200 0 200 1000 0 0 0 0 0 0\n", encoding="utf-8")
                 second = periodic.collect_proc("minute", {}, self.db)
@@ -57,8 +65,30 @@ class CollectorTests(unittest.TestCase):
         self.assertAlmostEqual(by_name["cpu_total_used_percent"]["value"], 50.0)
         self.assertEqual(by_name["cpu_total_used_percent"]["details"]["basis"], "interval")
         self.assertEqual(by_name["memory.used_percent"]["value"], 90.0)
-        self.assertEqual(by_name["swap.used_percent"]["severity"], "critical")
+        self.assertEqual(by_name["swap.used_percent"]["severity"], "info")
+        self.assertEqual(by_name["memory.pressure_level"]["value"], 0)
+        self.assertEqual(by_name["zram.compression_ratio"]["value"], 2.0)
         self.assertTrue(any(metric["name"] == "load_15m" for metric in first.metrics))
+
+    def test_memory_pressure_combines_available_psi_swap_reclaim_and_oom(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            proc = Path(temp)
+            (proc / "pressure").mkdir()
+            (proc / "stat").write_text("cpu  100 0 100 800 0 0 0 0 0 0\n", encoding="utf-8")
+            (proc / "loadavg").write_text("0 0 0 1/1 1\n", encoding="utf-8")
+            (proc / "meminfo").write_text("MemTotal: 1000 kB\nMemAvailable: 40 kB\nSwapTotal: 1000 kB\nSwapFree: 100 kB\n", encoding="utf-8")
+            (proc / "pressure" / "memory").write_text("some avg10=12.00 avg60=1.00 avg300=0.00 total=1\nfull avg10=6.00 avg60=1.00 avg300=0.00 total=1\n", encoding="utf-8")
+            (proc / "vmstat").write_text("pswpin 0\npswpout 0\npgscan_kswapd 0\npgsteal_kswapd 0\noom_kill 0\n", encoding="utf-8")
+            with mock.patch.object(periodic, "PROC_ROOT", proc), mock.patch.object(periodic, "SYS_ROOT", proc / "missing"), mock.patch.object(periodic.time, "time", return_value=100.0):
+                periodic.collect_proc("minute", {}, self.db)
+            (proc / "vmstat").write_text("pswpin 10\npswpout 5000\npgscan_kswapd 5000\npgsteal_kswapd 4000\noom_kill 1\n", encoding="utf-8")
+            with mock.patch.object(periodic, "PROC_ROOT", proc), mock.patch.object(periodic, "SYS_ROOT", proc / "missing"), mock.patch.object(periodic.time, "time", return_value=160.0):
+                result = periodic.collect_proc("minute", {}, self.db)
+        by_name = {metric["name"]: metric for metric in result.metrics}
+        self.assertEqual(by_name["memory.pressure_level"]["value"], 2)
+        self.assertEqual(by_name["memory.oom_kills_delta"]["value"], 1)
+        self.assertGreater(by_name["memory.swap_out_bytes_per_second"]["value"], 0)
+        self.assertEqual(by_name["memory.pressure_level"]["details"]["reclaim_efficiency_percent"], 80.0)
 
     def test_filesystem_emergency_and_unsupported_inodes(self) -> None:
         fake_stat = SimpleNamespace(f_blocks=100, f_bavail=4, f_frsize=1024, f_files=0, f_favail=0)
@@ -319,6 +349,8 @@ NRestarts=1
         payload = json.dumps(
             {
                 "smart_status": {"passed": True},
+                "ata_smart_error_log": {"summary": {"count": 0}},
+                "ata_smart_self_test_log": {"standard": {"table": [{"status": {"string": "Completed without error"}}]}},
                 "ata_smart_attributes": {
                     "table": [
                         {"name": "Reallocated_Sector_Ct", "raw": {"value": 2}},
@@ -332,7 +364,44 @@ NRestarts=1
         names = {metric["name"] for metric in result.metrics}
         self.assertIn("smart.health", names)
         self.assertIn("smart.reallocated_sectors", names)
+        self.assertIn("smart.error_log_entries", names)
+        self.assertIn("smart.self_test_failures", names)
         self.assertNotIn("Vendor_Private_Secret", json.dumps(result.metrics))
+
+    def test_btrfs_health_collects_device_and_scrub_errors(self) -> None:
+        outputs = [
+            command_result("/\n/home\n"),
+            command_result("[/dev/mapper/root].write_io_errs 0\n[/dev/mapper/root].read_io_errs 2\n[/dev/mapper/root].flush_io_errs 0\n[/dev/mapper/root].corruption_errs 0\n[/dev/mapper/root].generation_errs 0\n"),
+            command_result("Error summary: no errors found\n"),
+        ]
+        with mock.patch.object(system_collectors, "external", side_effect=outputs) as mocked:
+            result = system_collectors.collect_btrfs_health("daily", {}, self.db)
+        by_name = {metric["name"]: metric for metric in result.metrics}
+        self.assertEqual(by_name["btrfs.read_io_errors"]["value"], 2)
+        self.assertEqual(by_name["btrfs.read_io_errors"]["severity"], "critical")
+        self.assertEqual(by_name["btrfs.scrub_errors"]["value"], 0)
+        self.assertEqual(mocked.call_args_list[1].args[1], ["btrfs", "device", "stats", "/"])
+
+    def test_battery_health_includes_capacity_wear_energy_and_power(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            sys = Path(temp)
+            battery = sys / "class" / "power_supply" / "BAT0"
+            battery.mkdir(parents=True)
+            values = {
+                "type": "Battery", "energy_full_design": "50000000", "energy_full": "45000000",
+                "energy_now": "25000000", "power_now": "7500000", "voltage_now": "16000000",
+                "cycle_count": "100", "capacity": "50", "status": "Discharging",
+            }
+            for name, value in values.items():
+                (battery / name).write_text(value, encoding="utf-8")
+            with mock.patch.object(system_collectors, "SYS_ROOT", sys):
+                health = system_collectors.collect_battery_health("daily", {}, self.db)
+            with mock.patch.object(periodic, "SYS_ROOT", sys):
+                current = periodic.collect_power("minute", {}, self.db)
+        health_names = {metric["name"] for metric in health.metrics}
+        current_names = {metric["name"] for metric in current.metrics}
+        self.assertTrue({"battery_design_capacity_wh", "battery_full_capacity_wh", "battery_wear_percent"} <= health_names)
+        self.assertTrue({"battery_energy_wh", "battery_power_w", "battery_voltage_v"} <= current_names)
 
     def test_record_convention_is_complete(self) -> None:
         expected = {"cadence", "category", "name", "value", "unit", "severity", "source", "device_id", "details", "outcome", "error_message"}
@@ -340,6 +409,19 @@ NRestarts=1
 
     def test_software_event_metrics_use_persistable_cadence(self) -> None:
         self.assertGreater(collectors.CADENCE_SECONDS["software_event"], 0)
+
+    def test_missing_flatpak_cached_summary_is_skipped_not_failed(self) -> None:
+        system_commands = [
+            command_result("", returncode=0),
+            command_result("[]", returncode=0),
+            command_result("", stderr="No cached summary for remote 'flathub'", returncode=1),
+        ]
+        with mock.patch.object(software, "external", side_effect=system_commands), mock.patch.object(software, "_operator_external", return_value=command_result("[]")):
+            result = software.collect_updates("daily", {}, self.db)
+        cache = next(metric for metric in result.metrics if metric["name"] == "flatpak_system_update_cache_available")
+        self.assertEqual(cache["value"], 0)
+        self.assertEqual(cache["outcome"], "skipped")
+        self.assertEqual(result.errors, [])
 
     def test_malformed_service_entries_do_not_break_discovery(self) -> None:
         config = {"services": {"auto_detect": False, "essential": [{"bad": "entry"}], "secondary": [42, {"name": "demo.service"}]}}

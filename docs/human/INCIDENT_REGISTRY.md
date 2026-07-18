@@ -1,5 +1,16 @@
 # Registro incidenti
 
+## zram-occupancy-misclassified-as-memory-pressure
+
+- **Stato:** risolto nella versione 1.2.0.
+- **Impatto:** Fedora Host risultava rosso per la sola occupazione della zram,
+  anche con memoria disponibile, PSI nullo e nessun OOM.
+- **Causa:** `swap.used_percent` non distingue memoria compressa utile da reale
+  pressione memoria.
+- **Correzione:** zram è informativa; gli alert combinano MemAvailable, PSI,
+  velocità swap, reclaim e OOM. Compressione e writeback restano osservabili.
+- **Evidenza:** [audit 962417](audit-962417.md).
+
 ## external-ntfs-disconnect-during-mounted-io
 
 - **Stato:** aperto, causa fisica non ancora determinata.

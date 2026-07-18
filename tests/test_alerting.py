@@ -13,7 +13,8 @@ class AlertingTests(unittest.TestCase):
             "storage": {"small_filesystem_max_gib": 5, "small_filesystem_min_free_mib": 128},
             "thresholds": {
                 "disk": {"warning_free_percent": 20, "critical_free_percent": 10, "emergency_free_percent": 5, "absolute_free_gib": 10, "recovery_hysteresis_percent": 2},
-                "memory": {"ram_warning_percent": 90, "ram_critical_percent": 95, "ram_warning_duration_seconds": 300, "swap_warning_percent": 20, "swap_critical_percent": 50, "recovery_hysteresis_percent": 5},
+                "memory": {"ram_warning_percent": 90, "ram_critical_percent": 95, "ram_warning_duration_seconds": 300, "available_warning_percent": 10, "available_critical_percent": 5, "psi_some_warning_percent": 10, "psi_full_critical_percent": 5, "swap_out_warning_mib_per_second": 16, "reclaim_warning_pages_per_second": 4096, "recovery_hysteresis_percent": 5},
+                "battery": {"health_warning_percent": 70, "health_critical_percent": 50, "recovery_hysteresis_percent": 5},
                 "network": {"internet_down_duration_seconds": 180, "wifi_down_duration_seconds": 120, "recovery_samples": 2},
             },
         }
@@ -79,6 +80,26 @@ class AlertingTests(unittest.TestCase):
         recovery = evaluate_metric_alerts([metric], self.config, self.get, self.set)
         self.assertEqual(len(recovery), 1)
         self.assertFalse(recovery[0].active)
+
+    def test_zram_usage_is_informational_and_composite_pressure_alerts(self) -> None:
+        self.state["alert-condition:swap.used_percent:host"] = {"active_level": "warning"}
+        zram = {"category": "memory", "name": "swap.used_percent", "value": 95, "unit": "%", "device_id": "host", "source": "procfs"}
+        recovery = evaluate_metric_alerts([zram], self.config, self.get, self.set)
+        self.assertEqual(len(recovery), 1)
+        self.assertFalse(recovery[0].active)
+        pressure = {"category": "memory", "name": "memory.pressure_level", "value": 2, "unit": "level", "device_id": "host", "source": "procfs"}
+        active = evaluate_metric_alerts([pressure], self.config, self.get, self.set)
+        self.assertEqual(active[0].severity, "critical")
+
+    def test_storage_and_battery_anomalies_alert(self) -> None:
+        metrics = [
+            {"category": "storage", "name": "btrfs.corruption_errors", "value": 1, "unit": "errors", "device_id": "/", "source": "btrfs"},
+            {"category": "storage", "name": "nvme_media_errors", "value": 2, "unit": "errors", "device_id": "nvme", "source": "nvme-cli"},
+            {"category": "power", "name": "battery_health_percent", "value": 65, "unit": "%", "device_id": "BAT0", "source": "sysfs"},
+        ]
+        signals = evaluate_metric_alerts(metrics, self.config, self.get, self.set)
+        self.assertEqual({signal.name for signal in signals}, {"btrfs.corruption_errors", "nvme_media_errors", "battery_health_percent"})
+        self.assertEqual(next(signal for signal in signals if signal.name == "battery_health_percent").severity, "warning")
 
     def test_read_only_alert_recovers(self) -> None:
         metric = {"category": "filesystem", "name": "filesystem.read_only", "value": 1, "unit": "boolean", "device_id": "root", "source": "mount", "details": {}}

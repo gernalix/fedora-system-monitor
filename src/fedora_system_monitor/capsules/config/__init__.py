@@ -112,8 +112,17 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "ram_warning_percent": 90.0,
             "ram_warning_duration_seconds": 300,
             "ram_critical_percent": 95.0,
-            "swap_warning_percent": 20.0,
-            "swap_critical_percent": 50.0,
+            "available_warning_percent": 10.0,
+            "available_critical_percent": 5.0,
+            "psi_some_warning_percent": 10.0,
+            "psi_full_critical_percent": 5.0,
+            "swap_out_warning_mib_per_second": 16.0,
+            "reclaim_warning_pages_per_second": 4096.0,
+            "recovery_hysteresis_percent": 5.0,
+        },
+        "battery": {
+            "health_warning_percent": 70.0,
+            "health_critical_percent": 50.0,
             "recovery_hysteresis_percent": 5.0,
         },
         "network": {
@@ -184,6 +193,21 @@ def _merge(base: dict[str, Any], override: Mapping[str, Any]) -> dict[str, Any]:
     return base
 
 
+def _migrate_legacy_config(parsed: Mapping[str, Any]) -> dict[str, Any]:
+    """Drop thresholds whose former meaning is unsafe for Fedora zram."""
+
+    migrated = deepcopy(dict(parsed))
+    thresholds = migrated.get("thresholds")
+    memory = thresholds.get("memory") if isinstance(thresholds, Mapping) else None
+    if isinstance(memory, Mapping):
+        current = dict(memory)
+        current.pop("swap_warning_percent", None)
+        current.pop("swap_critical_percent", None)
+        migrated["thresholds"] = dict(thresholds)
+        migrated["thresholds"]["memory"] = current
+    return migrated
+
+
 def load_config(path: str | Path | None) -> dict[str, Any]:
     """Load TOML at *path*, merge it over defaults, and validate the result.
 
@@ -203,7 +227,7 @@ def load_config(path: str | Path | None) -> dict[str, Any]:
             raise ConfigError(f"cannot read configuration {source}: {exc}") from exc
         if not isinstance(parsed, dict):
             raise ConfigError("configuration root must be a TOML table")
-        config = _merge(config, parsed)
+        config = _merge(config, _migrate_legacy_config(parsed))
 
     errors = validate_config(config)
     if errors:
@@ -425,7 +449,8 @@ def validate_config(config: Mapping[str, Any] | object) -> list[str]:
         (("thresholds", "temperature"), ("cpu_warning_c", "cpu_critical_c"), True),
         (("thresholds", "temperature"), ("nvme_warning_c", "nvme_critical_c"), True),
         (("thresholds", "memory"), ("ram_warning_percent", "ram_critical_percent"), True),
-        (("thresholds", "memory"), ("swap_warning_percent", "swap_critical_percent"), True),
+        (("thresholds", "memory"), ("available_critical_percent", "available_warning_percent"), True),
+        (("thresholds", "battery"), ("health_critical_percent", "health_warning_percent"), True),
     )
     for base, keys, ascending in threshold_orders:
         _ordered_thresholds(config, base, keys, errors, ascending=ascending)
@@ -440,9 +465,14 @@ def validate_config(config: Mapping[str, Any] | object) -> list[str]:
         ("thresholds", "inode", "recovery_hysteresis_percent"),
         ("thresholds", "memory", "ram_warning_percent"),
         ("thresholds", "memory", "ram_critical_percent"),
-        ("thresholds", "memory", "swap_warning_percent"),
-        ("thresholds", "memory", "swap_critical_percent"),
+        ("thresholds", "memory", "available_warning_percent"),
+        ("thresholds", "memory", "available_critical_percent"),
+        ("thresholds", "memory", "psi_some_warning_percent"),
+        ("thresholds", "memory", "psi_full_critical_percent"),
         ("thresholds", "memory", "recovery_hysteresis_percent"),
+        ("thresholds", "battery", "health_warning_percent"),
+        ("thresholds", "battery", "health_critical_percent"),
+        ("thresholds", "battery", "recovery_hysteresis_percent"),
     ):
         _require_percent(config, path, errors)
 
@@ -452,6 +482,8 @@ def validate_config(config: Mapping[str, Any] | object) -> list[str]:
         ("thresholds", "temperature", "nvme_warning_duration_seconds"),
         ("thresholds", "temperature", "recovery_hysteresis_c"),
         ("thresholds", "memory", "ram_warning_duration_seconds"),
+        ("thresholds", "memory", "swap_out_warning_mib_per_second"),
+        ("thresholds", "memory", "reclaim_warning_pages_per_second"),
         ("thresholds", "network", "wifi_down_duration_seconds"),
         ("thresholds", "network", "internet_down_duration_seconds"),
         ("thresholds", "network", "disconnect_count"),

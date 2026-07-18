@@ -102,9 +102,7 @@ def collect_smart(
         command = ["smartctl", "-j"]
         if not allow_wakeup:
             command.extend(["-n", "standby"])
-        command.append("-H")
-        if detailed:
-            command.append("-A")
+        command.append("-x" if detailed else "-H")
         command.append(device)
         health = external(config, command, timeout=20, max_output=500_000)
         if health.missing:
@@ -166,6 +164,38 @@ def collect_smart(
                     unit = "C" if metric_name == "temperature.drive_c" else "hours" if metric_name.endswith("power_on_hours") else "count"
                     result.metrics.append(record(cadence, "storage" if not metric_name.startswith("temperature") else "temperature", metric_name, raw_value, unit, severity=severity, source="smartctl", device_id=device_id))
 
+            error_log = payload.get("ata_smart_error_log")
+            summary = error_log.get("summary") if isinstance(error_log, Mapping) else None
+            error_count = _float(summary.get("count"), math.nan) if isinstance(summary, Mapping) else math.nan
+            if math.isfinite(error_count):
+                result.metrics.append(record(cadence, "storage", "smart.error_log_entries", error_count, "entries", source="smartctl", device_id=device_id))
+
+            self_test = payload.get("ata_smart_self_test_log")
+            standard = self_test.get("standard") if isinstance(self_test, Mapping) else None
+            self_tests = standard.get("table", []) if isinstance(standard, Mapping) else []
+            failures = 0
+            if isinstance(standard, Mapping) and isinstance(self_tests, list):
+                for test in self_tests:
+                    status = test.get("status") if isinstance(test, Mapping) else None
+                    text = str(status.get("string", "")) if isinstance(status, Mapping) else ""
+                    if re.search(r"(?:failure|error)", text, re.I) and not re.search(r"without error", text, re.I):
+                        failures += 1
+                result.metrics.append(record(cadence, "storage", "smart.self_test_failures", failures, "tests", severity="critical" if failures else "info", source="smartctl", device_id=device_id))
+
+            nvme_self_test = payload.get("nvme_self_test_log")
+            if isinstance(nvme_self_test, Mapping):
+                operation = nvme_self_test.get("current_self_test_operation")
+                operation_value = int(_float(operation.get("value"), 0)) if isinstance(operation, Mapping) else 0
+                result.metrics.append(record(cadence, "storage", "smart.self_test_in_progress", 1 if operation_value else 0, "boolean", source="smartctl", device_id=device_id))
+                tests = nvme_self_test.get("table", [])
+                nvme_failures = 0
+                if isinstance(tests, list):
+                    for test in tests:
+                        result_text = str((test.get("result") or {}).get("string", "")) if isinstance(test, Mapping) and isinstance(test.get("result"), Mapping) else ""
+                        if result_text and not re.search(r"completed without error|success", result_text, re.I):
+                            nvme_failures += 1
+                result.metrics.append(record(cadence, "storage", "smart.self_test_failures", nvme_failures, "tests", severity="critical" if nvme_failures else "info", source="smartctl", device_id=device_id))
+
         if detailed and str(node.get("tran") or "").lower() == "nvme":
             nvme = external(config, ["nvme", "smart-log", device, "-o", "json"], timeout=20, max_output=500_000)
             if nvme.ok:
@@ -182,6 +212,7 @@ def collect_smart(
                         ("nvme_available_spare_percent", _float(data.get("avail_spare")), "%", "info"),
                         ("nvme_percent_used", _float(data.get("percent_used")), "%", "warning" if _float(data.get("percent_used")) >= 90 else "info"),
                         ("nvme_media_errors", _float(data.get("media_errors")), "errors", "critical" if _float(data.get("media_errors")) else "info"),
+                        ("smart.error_log_entries", _float(data.get("num_err_log_entries")), "entries", "info"),
                         ("nvme_unsafe_shutdowns", _float(data.get("unsafe_shutdowns")), "events", "info"),
                         ("nvme_power_on_hours", _float(data.get("power_on_hours")), "hours", "info"),
                     )
@@ -193,6 +224,49 @@ def collect_smart(
                 result.errors.append(f"NVMe SMART {device_id}: {command_problem(nvme)}")
     if smart_missing:
         result.errors.append("SMART: command unavailable")
+    return result
+
+
+def collect_btrfs_health(scope: str, config: Mapping[str, Any], db: object) -> CollectionResult:
+    del db
+    cadence = CADENCE_SECONDS[scope]
+    result = CollectionResult(scope)
+    mounts = external(config, ["findmnt", "-rn", "-t", "btrfs", "-o", "TARGET"], timeout=20, max_output=100_000)
+    if not mounts.ok:
+        if not mounts.missing:
+            result.errors.append(f"Btrfs discovery: {command_problem(mounts)}")
+        return result
+    targets = [line.strip() for line in mounts.stdout.splitlines() if line.strip()]
+    if not targets:
+        return result
+    target = "/" if "/" in targets else targets[0]
+    device_stats = external(config, ["btrfs", "device", "stats", target], timeout=60, max_output=200_000)
+    if device_stats.ok:
+        names = {
+            "write_io_errs": "btrfs.write_io_errors",
+            "read_io_errs": "btrfs.read_io_errors",
+            "flush_io_errs": "btrfs.flush_io_errors",
+            "corruption_errs": "btrfs.corruption_errors",
+            "generation_errs": "btrfs.generation_errors",
+        }
+        for raw_name, metric_name in names.items():
+            match = re.search(rf"\.{raw_name}\s+(\d+)", device_stats.stdout)
+            if match:
+                value = int(match.group(1))
+                result.metrics.append(record(cadence, "storage", metric_name, value, "errors", severity="critical" if value else "info", source="btrfs", device_id=target))
+    else:
+        result.errors.append(f"Btrfs device stats: {command_problem(device_stats)}")
+    scrub = external(config, ["btrfs", "scrub", "status", "-R", target], timeout=60, max_output=200_000)
+    if scrub.ok:
+        errors = 0
+        if not re.search(r"error summary:\s+no errors found", scrub.stdout, re.I):
+            counts = [int(value) for value in re.findall(r"(?:read|csum|verify|super|malloc|uncorrectable|unverified|corrected)_errors:\s*(\d+)", scrub.stdout, re.I)]
+            if not counts:
+                counts = [int(value) for value in re.findall(r"(?:^|\s)[a-z_]+=(\d+)", scrub.stdout, re.I)]
+            errors = sum(counts)
+        result.metrics.append(record(cadence, "storage", "btrfs.scrub_errors", errors, "errors", severity="critical" if errors else "info", source="btrfs", device_id=target, details={"status_known": "no stats available" not in scrub.stdout.lower()}))
+    else:
+        result.errors.append(f"Btrfs scrub status: {command_problem(scrub)}")
     return result
 
 
@@ -385,7 +459,13 @@ def collect_battery_health(scope: str, config: Mapping[str, Any], db: object) ->
         health = full * 100.0 / design if math.isfinite(full) and math.isfinite(design) and design else math.nan
         cycles = _float(_read(battery / "cycle_count").strip(), math.nan)
         if math.isfinite(health):
-            result.metrics.append(record(cadence, "power", "battery_health_percent", round(health, 3), "%", severity="warning" if health < 70 else "info", source="sysfs", device_id=battery.name))
+            severity = "critical" if health < 50 else "warning" if health < 70 else "info"
+            result.metrics.append(record(cadence, "power", "battery_health_percent", round(health, 3), "%", severity=severity, source="sysfs", device_id=battery.name))
+            result.metrics.append(record(cadence, "power", "battery_wear_percent", round(max(0.0, 100.0 - health), 3), "%", source="sysfs", device_id=battery.name))
+        if math.isfinite(design):
+            result.metrics.append(record(cadence, "power", "battery_design_capacity_wh", round(design / 1_000_000, 3), "Wh", source="sysfs", device_id=battery.name))
+        if math.isfinite(full):
+            result.metrics.append(record(cadence, "power", "battery_full_capacity_wh", round(full / 1_000_000, 3), "Wh", source="sysfs", device_id=battery.name))
         if math.isfinite(cycles):
             result.metrics.append(record(cadence, "power", "battery_charge_cycles", cycles, "cycles", source="sysfs", device_id=battery.name))
         result.hardware_inventory.append(
@@ -399,7 +479,7 @@ def collect_battery_health(scope: str, config: Mapping[str, Any], db: object) ->
                 "model": _read(battery / "model_name").strip() or None,
                 "serial": _read(battery / "serial_number").strip() or None,
                 "source": "sysfs",
-                "details": {"health_percent": health if math.isfinite(health) else None, "charge_cycles": cycles if math.isfinite(cycles) else None},
+                "details": {"design_capacity_wh": design / 1_000_000 if math.isfinite(design) else None, "full_capacity_wh": full / 1_000_000 if math.isfinite(full) else None, "health_percent": health if math.isfinite(health) else None, "charge_cycles": cycles if math.isfinite(cycles) else None},
             }
         )
     return result
@@ -492,6 +572,7 @@ def collect_weekly_diagnostics(scope: str, config: Mapping[str, Any], db: object
 
 __all__ = [
     "collect_battery_health",
+    "collect_btrfs_health",
     "collect_coredumps",
     "collect_db_check",
     "collect_directory_sizes",

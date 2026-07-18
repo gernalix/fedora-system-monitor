@@ -183,10 +183,14 @@ def collect_updates(scope: str, config: Mapping[str, Any], db: object) -> Collec
                 payload = json.loads(flatpak.stdout or "[]")
                 count = len(payload) if isinstance(payload, list) else 0
                 result.metrics.append(record(cadence, "update", f"flatpak_{installation}_updates_available", count, "refs", source="flatpak_cache"))
+                result.metrics.append(record(cadence, "update", f"flatpak_{installation}_update_cache_available", 1, "boolean", source="flatpak_cache"))
             except json.JSONDecodeError:
                 result.errors.append(f"flatpak {installation} updates: invalid JSON")
         elif installation == "system" and not flatpak.missing:
-            result.errors.append(f"flatpak updates: {command_problem(flatpak)}")
+            if re.search(r"no cached summary for remote", flatpak.stderr, re.I):
+                result.metrics.append(record(cadence, "update", "flatpak_system_update_cache_available", 0, "boolean", source="flatpak_cache", outcome="skipped", error_message="cached remote summary unavailable"))
+            else:
+                result.errors.append(f"flatpak updates: {command_problem(flatpak)}")
     return result
 
 

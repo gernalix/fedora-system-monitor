@@ -70,6 +70,63 @@ def _threshold(config: Mapping[str, Any], paths: tuple[tuple[str, ...], ...], de
     return _number(config_value(config, *paths, default=default), default)
 
 
+def _key_values(path: Path) -> dict[str, int]:
+    values: dict[str, int] = {}
+    for line in _read(path).splitlines():
+        fields = line.split()
+        if len(fields) >= 2:
+            try:
+                values[fields[0]] = int(fields[1])
+            except ValueError:
+                continue
+    return values
+
+
+def _psi_memory() -> dict[str, float]:
+    values: dict[str, float] = {}
+    for line in _read(PROC_ROOT / "pressure" / "memory").splitlines():
+        fields = line.split()
+        if not fields:
+            continue
+        prefix = fields[0]
+        for field in fields[1:]:
+            key, separator, raw = field.partition("=")
+            if not separator or key not in {"avg10", "avg60", "avg300"}:
+                continue
+            values[f"{prefix}_{key}"] = _number(raw, 0.0)
+    return values
+
+
+def _zram_details() -> dict[str, float | int | bool]:
+    root = SYS_ROOT / "block"
+    original = compressed = memory_used = disk_size = writeback_bytes = 0
+    devices = 0
+    writeback_configured = False
+    for device in (sorted(root.glob("zram*")) if root.exists() else []):
+        stats = _read(device / "mm_stat").split()
+        if len(stats) >= 3:
+            original += int(_number(stats[0], 0))
+            compressed += int(_number(stats[1], 0))
+            memory_used += int(_number(stats[2], 0))
+        disk_size += int(_number(_read(device / "disksize").strip(), 0))
+        backing = _read(device / "backing_dev").strip().strip("[]")
+        writeback_configured = writeback_configured or bool(backing and backing != "none")
+        bd_stats = _read(device / "bd_stat").split()
+        if bd_stats:
+            writeback_bytes += int(_number(bd_stats[0], 0)) * 4096
+        devices += 1
+    return {
+        "devices": devices,
+        "original_bytes": original,
+        "compressed_bytes": compressed,
+        "memory_used_bytes": memory_used,
+        "disk_size_bytes": disk_size,
+        "compression_ratio": original / compressed if compressed else 0.0,
+        "writeback_configured": writeback_configured,
+        "writeback_bytes": writeback_bytes,
+    }
+
+
 def collect_proc(scope: str, config: Mapping[str, Any], db: object) -> CollectionResult:
     cadence = CADENCE_SECONDS[scope]
     result = CollectionResult(scope)
@@ -131,15 +188,91 @@ def collect_proc(scope: str, config: Mapping[str, Any], db: object) -> Collectio
     swap_free = memory.get("SwapFree", 0)
     swap_used = max(0, swap_total - swap_free)
     swap_percent = swap_used * 100.0 / swap_total if swap_total else 0.0
-    swap_warning = _threshold(config, (("thresholds", "memory", "swap_warning_percent"), ("thresholds", "swap_used_percent", "warning")), 20)
-    swap_critical = _threshold(config, (("thresholds", "memory", "swap_critical_percent"), ("thresholds", "swap_used_percent", "critical")), 50)
-    swap_severity = "critical" if swap_percent >= swap_critical else "warning" if swap_percent >= swap_warning else "info"
     result.metrics.extend(
         [
-            record(cadence, "memory", "swap.used_percent", round(swap_percent, 3), "%", severity=swap_severity, source="procfs"),
-            record(cadence, "memory", "swap_used_bytes", swap_used, "bytes", severity=swap_severity, source="procfs"),
+            record(cadence, "memory", "swap.used_percent", round(swap_percent, 3), "%", source="procfs", details={"informational": True}),
+            record(cadence, "memory", "swap_used_bytes", swap_used, "bytes", source="procfs"),
         ]
     )
+
+    available_percent = available * 100.0 / total_memory if total_memory else 0.0
+    psi = _psi_memory()
+    vmstat = _key_values(PROC_ROOT / "vmstat")
+    current_time = time.time()
+    previous = state_get(db, "proc.memory_pressure", {})
+    elapsed = 0.0
+    if isinstance(previous, Mapping):
+        elapsed = current_time - _number(previous.get("timestamp"), current_time)
+
+    def counter_rate(name: str) -> float:
+        current = vmstat.get(name, 0)
+        before = int(_number(previous.get(name), current)) if isinstance(previous, Mapping) else current
+        return (current - before) / elapsed if elapsed > 0 and current >= before else 0.0
+
+    swap_in_bps = counter_rate("pswpin") * 4096
+    swap_out_bps = counter_rate("pswpout") * 4096
+    scan_rate = sum(counter_rate(name) for name in vmstat if name.startswith("pgscan_"))
+    steal_rate = sum(counter_rate(name) for name in vmstat if name.startswith("pgsteal_"))
+    oom_delta = int(max(0.0, counter_rate("oom_kill") * elapsed)) if elapsed > 0 else 0
+    state_set(db, "proc.memory_pressure", {"timestamp": current_time, **vmstat})
+
+    zram = _zram_details()
+    psi_some = psi.get("some_avg10", 0.0)
+    psi_full = psi.get("full_avg10", 0.0)
+    available_warning = _threshold(config, (("thresholds", "memory", "available_warning_percent"),), 10)
+    available_critical = _threshold(config, (("thresholds", "memory", "available_critical_percent"),), 5)
+    psi_some_warning = _threshold(config, (("thresholds", "memory", "psi_some_warning_percent"),), 10)
+    psi_full_critical = _threshold(config, (("thresholds", "memory", "psi_full_critical_percent"),), 5)
+    swap_out_warning = _threshold(config, (("thresholds", "memory", "swap_out_warning_mib_per_second"),), 16) * 1024**2
+    reclaim_warning = _threshold(config, (("thresholds", "memory", "reclaim_warning_pages_per_second"),), 4096)
+    supporting_pressure = psi_some >= 1 or swap_out_bps >= swap_out_warning / 4 or scan_rate >= reclaim_warning / 4
+    pressure_level = 0
+    reasons: list[str] = []
+    if oom_delta:
+        pressure_level = 2
+        reasons.append("oom")
+    if psi_full >= psi_full_critical:
+        pressure_level = 2
+        reasons.append("psi_full")
+    if available_percent < available_critical and (psi_full >= 1 or swap_out_bps >= swap_out_warning or scan_rate >= reclaim_warning):
+        pressure_level = 2
+        reasons.append("low_available_with_activity")
+    elif pressure_level < 2 and ((available_percent < available_warning and supporting_pressure) or psi_some >= psi_some_warning):
+        pressure_level = 1
+        reasons.append("sustained_pressure")
+    pressure_details = {
+        "available_percent": round(available_percent, 3),
+        "psi_some_avg10_percent": round(psi_some, 3),
+        "psi_full_avg10_percent": round(psi_full, 3),
+        "swap_in_bytes_per_second": round(swap_in_bps, 3),
+        "swap_out_bytes_per_second": round(swap_out_bps, 3),
+        "reclaim_scan_pages_per_second": round(scan_rate, 3),
+        "reclaim_efficiency_percent": round(100.0 * steal_rate / scan_rate, 3) if scan_rate else None,
+        "oom_kills_delta": oom_delta,
+        "zram_compression_ratio": round(float(zram["compression_ratio"]), 3),
+        "reasons": reasons,
+    }
+    severity = "critical" if pressure_level == 2 else "warning" if pressure_level == 1 else "info"
+    result.metrics.extend(
+        [
+            record(cadence, "memory", "memory.available_percent", round(available_percent, 3), "%", source="procfs"),
+            record(cadence, "memory", "memory.psi_some_avg10_percent", round(psi_some, 3), "%", source="procfs"),
+            record(cadence, "memory", "memory.psi_full_avg10_percent", round(psi_full, 3), "%", source="procfs"),
+            record(cadence, "memory", "memory.swap_in_bytes_per_second", round(swap_in_bps, 3), "bytes/s", source="procfs"),
+            record(cadence, "memory", "memory.swap_out_bytes_per_second", round(swap_out_bps, 3), "bytes/s", source="procfs"),
+            record(cadence, "memory", "memory.reclaim_scan_pages_per_second", round(scan_rate, 3), "pages/s", source="procfs"),
+            record(cadence, "memory", "memory.oom_kills_delta", oom_delta, "events", severity="critical" if oom_delta else "info", source="procfs"),
+            record(cadence, "memory", "memory.pressure_level", pressure_level, "level", severity=severity, source="procfs", details=pressure_details),
+        ]
+    )
+    if int(zram["devices"]):
+        result.metrics.extend(
+            [
+                record(cadence, "memory", "zram.compression_ratio", round(float(zram["compression_ratio"]), 3), "ratio", source="sysfs"),
+                record(cadence, "memory", "zram.memory_used_bytes", int(zram["memory_used_bytes"]), "bytes", source="sysfs"),
+                record(cadence, "memory", "zram.writeback_bytes", int(zram["writeback_bytes"]), "bytes", source="sysfs", details={"configured": bool(zram["writeback_configured"])}),
+            ]
+        )
     return result
 
 
@@ -659,6 +792,20 @@ def collect_power(scope: str, config: Mapping[str, Any], db: object) -> Collecti
             if math.isfinite(capacity):
                 result.metrics.append(record(cadence, "power", "battery_charge_percent", capacity, "%", source="sysfs", device_id=supply.name, details={"status": status, "present": present}))
             result.metrics.append(record(cadence, "power", "battery_present", 1 if present else 0, "boolean", source="sysfs", device_id=supply.name))
+            scaled_metrics = (
+                ("energy_now", "battery_energy_wh", 1_000_000, "Wh"),
+                ("power_now", "battery_power_w", 1_000_000, "W"),
+                ("voltage_now", "battery_voltage_v", 1_000_000, "V"),
+            )
+            for filename, name, divisor, unit in scaled_metrics:
+                raw = _number(_read(supply / filename).strip(), math.nan)
+                if math.isfinite(raw):
+                    result.metrics.append(record(cadence, "power", name, round(raw / divisor, 3), unit, source="sysfs", device_id=supply.name))
+            temperature = _number(_read(supply / "temp").strip(), math.nan)
+            if math.isfinite(temperature):
+                temperature_c = temperature / 10 if temperature > 200 else temperature
+                severity = "critical" if temperature_c >= 60 else "warning" if temperature_c >= 50 else "info"
+                result.metrics.append(record(cadence, "power", "battery_temperature_c", round(temperature_c, 3), "C", severity=severity, source="sysfs", device_id=supply.name))
         elif supply_type in {"Mains", "USB", "USB_C"}:
             online = _read(supply / "online").strip()
             if online in {"0", "1"}:

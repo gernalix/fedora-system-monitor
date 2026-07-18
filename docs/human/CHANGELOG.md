@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.2.0 - 2026-07-18
+
+- Sostituito l’alert sulla percentuale zram con una valutazione composta di
+  MemAvailable, PSI, swap rate, reclaim e OOM; la compressione resta visibile.
+- Estesi SMART, batteria e Btrfs nel monitor esistente, senza risvegliare gli HDD.
+- Corretti compatibilità Btrfs Fedora e handling della cache Flatpak assente.
+- Aggiunta migrazione trasparente delle vecchie chiavi soglia swap.
+- Verificati 100 test automatici, 18 self-check, SQLite, systemd, udev e collector
+  reali `minute` e `daily`; entrambi con esito `ok`.
+
+Timeline: `2026-07-18|fedora-system-monitor|audit|P1|Fedora 44 host|PASS|activity:962417`.
+
 ## 1.1.1 - 2026-07-14
 
 - Verificata la causa reale di Fedora Host: swap warning attivo, non alert stale.

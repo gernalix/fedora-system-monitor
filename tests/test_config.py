@@ -45,6 +45,18 @@ secondary = ["sshd.service"]
             self.assertEqual(config["thresholds"]["disk"]["critical_free_percent"], 10.0)
             self.assertEqual(config["services"]["secondary"], ["sshd.service"])
 
+    def test_legacy_swap_thresholds_are_ignored_during_load(self) -> None:
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "legacy.toml"
+            path.write_text(
+                "[thresholds.memory]\nswap_warning_percent=20\nswap_critical_percent=50\n",
+                encoding="ascii",
+            )
+            config = load_config(path)
+        self.assertNotIn("swap_warning_percent", config["thresholds"]["memory"])
+        self.assertNotIn("swap_critical_percent", config["thresholds"]["memory"])
+        self.assertEqual(config["thresholds"]["memory"]["available_warning_percent"], 10.0)
+
     def test_rejects_bad_list_elements_unknown_keys_and_port(self) -> None:
         config = load_config(None)
         config["services"]["essential"] = [{"bad": "entry"}]

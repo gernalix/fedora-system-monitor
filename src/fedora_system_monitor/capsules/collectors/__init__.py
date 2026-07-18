@@ -32,6 +32,7 @@ from .software import (
 )
 from .system import (
     collect_battery_health,
+    collect_btrfs_health,
     collect_coredumps,
     collect_db_check,
     collect_directory_sizes,
@@ -101,6 +102,7 @@ _COLLECTORS: dict[str, tuple[tuple[str, Collector], ...]] = {
         ("software_inventory", collect_full_software_inventory),
         ("hardware_inventory", collect_hardware_inventory),
         ("smart_detailed", _smart_detailed),
+        ("btrfs_health", collect_btrfs_health),
         ("battery_health", collect_battery_health),
         ("directory_sizes", collect_directory_sizes),
         ("updates", collect_updates),
