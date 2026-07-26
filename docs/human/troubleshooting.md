@@ -71,6 +71,30 @@ sotto soglia su un disco da più TiB. Gli alert `unsafe_device_removal` vengono
 riconciliati automaticamente quando un collector sano conferma che il mount point
 registrato è di nuovo presente.
 
+## Telegram spazio libero
+
+Lo stato cumulativo è nel database esistente
+`/var/lib/fedora-system-monitor/monitor.sqlite3`, tabella `dedup_state`,
+namespace `notification`. Non cancellare le chiavi `filesystem-free:*`: farlo
+reinizializza silenziosamente le baseline.
+
+Per verificare il flusso senza inviare notifiche:
+
+```bash
+sudo fedora-system-monitor collect five_minute
+sudo fedora-system-monitor db-check
+journalctl -u fedora-system-monitor-collect@five_minute.service -n 100
+```
+
+Un filesystem smontato non produce errori né reset. Se il delta supera 1 GiB ma
+Telegram non è raggiungibile, la baseline notificata resta invariata e il
+collector riprova al controllo successivo. Verificare soltanto esistenza e
+permessi `0600` di
+`/home/daniele/.config/telegram-notify/telegram-notify.env`; non stamparne,
+copiarne o rigenerarne il contenuto. Verificare inoltre che
+`python3 -c 'import telegram_notify'` riesca: l’invio deve sempre passare dal
+helper condiviso `telegram_notify.py`, mai da un trasporto duplicato.
+
 ## Dashboard e Prometheus
 
 ```bash

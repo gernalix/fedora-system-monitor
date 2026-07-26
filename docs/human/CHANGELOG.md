@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.3.0 - 2026-07-26
+
+- Esteso il collector filesystem esistente con notifiche Telegram per variazioni
+  cumulative di spazio libero pari ad almeno 1 GiB, in aumento o diminuzione.
+- Persistite nel database esistente le baseline dell’ultima notifica consegnata,
+  identificate per UUID con fallback stabile e resistenti a restart, smontaggi e
+  variazioni del mount point.
+- Riutilizzata senza modifiche la configurazione Telegram privata già presente.
+- Riutilizzato il helper condiviso `telegram_notify.py` tramite il pacchetto
+  `telegram_notify`, senza implementare un secondo client Bot API.
+- Esclusi esplicitamente `tmpfs`, `devtmpfs`, `overlay`, `squashfs`, `erofs` e
+  gli altri filesystem virtuali già filtrati.
+- Preservati timer, servizio, allarmi critici e integrazione Uptime Kuma.
+- Verificati 107 test, 18 self-check live, SQLite, systemd, udev, primo avvio
+  silenzioso e assenza di duplicati; consegnato un messaggio reale marcato TEST
+  su richiesta dell’utente.
+
+Timeline: `2026-07-26|fedora-system-monitor|feature|P1|Delta spazio Telegram|PASS|activity:418732`.
+
 ## 1.2.0 - 2026-07-18
 
 - Sostituito l’alert sulla percentuale zram con una valutazione composta di

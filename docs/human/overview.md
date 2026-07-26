@@ -4,9 +4,10 @@ Il servizio monitora Fedora anche dopo logout e riavvio. Non richiede terminali,
 Android Studio, sessioni grafiche o container. Usa timer systemd per i campioni e
 fonti native per gli eventi, mantenendo la cronologia in SQLite.
 
-Versione installata: `1.2.0`. L’ultimo [audit tecnico](audit-962417.md) documenta
-l’audit Fedora 44, la pressione memoria reale e le integrazioni SMART, batteria e
-Btrfs.
+Versione installata: `1.3.0`. L’ultimo
+[report tecnico](../ai/REPORT_418732.md) documenta il monitoraggio Telegram
+cumulativo dello spazio libero; l’[audit Fedora 44](audit-962417.md) copre
+pressione memoria, SMART, batteria e Btrfs.
 
 ## Stato e consultazione
 
@@ -38,6 +39,17 @@ Esistono inoltre timer orario, giornaliero alle 03:15 e settimanale domenica all
 04:15, con tolleranza e ritardo casuale. Le modifiche alle directory software
 sono event-driven tramite una path unit.
 
+Ogni cinque minuti il collector filesystem già esistente controlla tutti i
+filesystem locali reali montati. Quando lo spazio libero differisce di almeno
+1 GiB dall’ultima notifica consegnata, invia:
+
+`💾 <mount point>: libero <valore>; variazione <+/-delta>`
+
+Le variazioni più piccole si accumulano. Il primo campione è silenzioso, gli
+smontaggi non cancellano lo stato e un rimontaggio con percorso diverso mantiene
+il riferimento tramite UUID. `tmpfs`, filesystem virtuali, overlay e immagini
+compresse non sono monitorati.
+
 ## Configurazione
 
 Modificare `/etc/fedora-system-monitor/config.toml`, poi eseguire:
@@ -57,6 +69,12 @@ distribuzione è `/etc/fedora-system-monitor/config.toml.distribution`.
 La percentuale di zram è diagnostica: un alert memoria richiede evidenza da
 MemAvailable, PSI, attività swap/reclaim oppure OOM. Un disco rotazionale in
 standby non viene risvegliato per SMART.
+
+Telegram riusa esclusivamente
+`/home/daniele/.config/telegram-notify/telegram-notify.env` con permessi `0600`;
+token e chat ID non devono essere copiati nella configurazione del progetto.
+L’invio usa il helper condiviso `telegram_notify.py` tramite il pacchetto
+`telegram_notify`; il monitor non implementa una seconda chiamata HTTP Telegram.
 
 ## Installazione e aggiornamento
 

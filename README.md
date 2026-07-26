@@ -3,7 +3,8 @@
 Monitoraggio host locale per Fedora basato su Python 3, SQLite, systemd, journal,
 udev e NetworkManager. Raccoglie metriche a bassa frequenza, conserva eventi e
 inventari, gestisce alert con isteresi e recovery e invia lo stato a cinque Push
-Monitor Uptime Kuma.
+Monitor Uptime Kuma. Il collector filesystem esistente invia inoltre su Telegram
+le variazioni cumulative di spazio libero di almeno 1 GiB.
 
 ## Uso rapido
 
@@ -18,7 +19,11 @@ sudo fedora-system-monitor collect five_minute
 
 La configurazione operativa è `/etc/fedora-system-monitor/config.toml`; gli
 endpoint Kuma sono in `/etc/fedora-system-monitor/uptime-kuma.toml` con permessi
-`0600`. Vedere [overview](docs/human/overview.md),
+`0600`; Telegram riusa
+`/home/daniele/.config/telegram-notify/telegram-notify.env`, anch’esso `0600`.
+L’invio passa esclusivamente dal helper condiviso `telegram_notify.py`, installato
+come pacchetto Python `telegram_notify`.
+Vedere [overview](docs/human/overview.md),
 [Kuma](docs/human/uptime-kuma.md) e
 [troubleshooting](docs/human/troubleshooting.md).
 
@@ -30,4 +35,4 @@ python3 -m compileall -q src
 git diff --check
 ```
 
-Versione: `1.1.1`. Attività: `471853`.
+Versione: `1.3.0`. Attività: `418732`.
