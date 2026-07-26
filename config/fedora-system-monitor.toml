@@ -12,7 +12,7 @@ log_level = "INFO"
 
 [collection]
 critical_filesystems = ["/", "/home", "/var", "/tmp", "/boot", "/boot/efi"]
-ignore_filesystem_types = ["autofs", "bpf", "cgroup", "cgroup2", "configfs", "debugfs", "devpts", "devtmpfs", "efivarfs", "fusectl", "hugetlbfs", "mqueue", "nsfs", "proc", "pstore", "ramfs", "securityfs", "sysfs", "tmpfs", "tracefs"]
+ignore_filesystem_types = ["autofs", "bpf", "cgroup", "cgroup2", "configfs", "debugfs", "devpts", "devtmpfs", "efivarfs", "erofs", "fusectl", "hugetlbfs", "mqueue", "nsfs", "overlay", "proc", "pstore", "ramfs", "securityfs", "squashfs", "sysfs", "tmpfs", "tracefs"]
 top_process_limit = 5
 internet_check_enabled = true
 internet_host = "1.1.1.1"
@@ -109,5 +109,7 @@ backup_monthly_count = 12
 
 [notifications]
 uptime_kuma_credentials = "/etc/fedora-system-monitor/uptime-kuma.toml"
+telegram_credentials = "/home/daniele/.config/telegram-notify/telegram-notify.env"
+filesystem_free_change_gib = 1.0
 reminder_seconds = 21600
 timeout_seconds = 5

@@ -50,6 +50,7 @@ while IFS= read -r -d '' source; do
     install -m 0644 -o root -g root "$source" "$STAGE/fedora_system_monitor/$relative"
 done < <(find "$ROOT/src/fedora_system_monitor" -type f -name '*.py' -print0)
 /usr/bin/python3 -m compileall -q "$STAGE/fedora_system_monitor"
+/usr/bin/python3 -c 'import telegram_notify'
 chown -R root:root "$STAGE"
 find "$STAGE" -type d -exec chmod 0755 '{}' +
 find "$STAGE" -type f -exec chmod 0644 '{}' +

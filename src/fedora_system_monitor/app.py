@@ -40,6 +40,7 @@ from fedora_system_monitor.capsules.kuma_admin import configure_push_monitors
 from fedora_system_monitor.capsules.notifications import (
     endpoint_key,
     integration_status,
+    notify_filesystem_free_changes,
     send_category_heartbeat,
 )
 from fedora_system_monitor.capsules.prometheus import exposition as prometheus_exposition, serve as serve_prometheus
@@ -454,6 +455,11 @@ def _run_scope(scope: str, config: dict[str, Any], db: Database) -> dict[str, An
             )
         )
         transitions = _persist_signals(db, signals, config)
+        telegram_changes = (
+            notify_filesystem_free_changes(result.metrics, config, db)
+            if scope == "five_minute"
+            else []
+        )
         if scope == "daily":
             maintenance = _maintenance_daily(config, db)
         elif scope == "weekly":
@@ -488,6 +494,7 @@ def _run_scope(scope: str, config: dict[str, Any], db: Database) -> dict[str, An
                 "hardware_inventory": len(result.hardware_inventory),
                 "software_inventory": len(result.software_inventory),
                 "alert_transitions": len(transitions),
+                "telegram_free_space": [item.__dict__ for item in telegram_changes],
                 "maintenance": maintenance,
             },
         )
@@ -501,6 +508,7 @@ def _run_scope(scope: str, config: dict[str, Any], db: Database) -> dict[str, An
             "software_inventory": len(result.software_inventory),
             "errors": result.errors,
             "alert_transitions": len(transitions),
+            "telegram_free_space": [item.__dict__ for item in telegram_changes],
             "maintenance": maintenance,
         }
     except Exception as exc:

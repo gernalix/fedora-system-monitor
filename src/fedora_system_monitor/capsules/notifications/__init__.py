@@ -1,4 +1,4 @@
-"""Optional, secret-safe Uptime Kuma push notifications."""
+"""Optional, secret-safe Uptime Kuma and Telegram notifications."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 from fedora_system_monitor.capsules.alerting import AlertSignal
 from fedora_system_monitor.capsules.config import redact_text
@@ -31,6 +31,17 @@ def _credentials_path(config: dict[str, Any]) -> Path:
         if candidate.is_file():
             return candidate
     return Path(config.get("notifications", {}).get("uptime_kuma_credentials", "/etc/fedora-system-monitor/uptime-kuma.toml"))
+
+
+def _telegram_credentials_path(config: Mapping[str, Any]) -> Path:
+    return Path(
+        str(
+            config.get("notifications", {}).get(
+                "telegram_credentials",
+                "/home/daniele/.config/telegram-notify/telegram-notify.env",
+            )
+        )
+    )
 
 
 def integration_status(config: dict[str, Any]) -> dict[str, Any]:
@@ -99,6 +110,134 @@ def _push(url: str, *, up: bool, message: str, ping_ms: int | None, timeout: flo
             return delivered, "delivered" if delivered else f"HTTP {response.status}"
     except Exception as exc:  # URL and token must never escape through exception text.
         return False, exc.__class__.__name__
+
+
+def send_telegram_message(config: Mapping[str, Any], message: str) -> NotificationResult:
+    credentials_path = _telegram_credentials_path(config)
+    try:
+        if credentials_path.stat().st_mode & 0o077:
+            return NotificationResult("telegram", "filesystem", False, False, "not configured")
+    except OSError:
+        return NotificationResult("telegram", "filesystem", False, False, "not configured")
+    previous_config = os.environ.get("TELEGRAM_NOTIFY_CONFIG")
+    os.environ["TELEGRAM_NOTIFY_CONFIG"] = str(credentials_path)
+    try:
+        import telegram_notify
+
+        telegram_notify.load_config_files()
+        telegram_notify.validate_config()
+        telegram_notify.send_message("Fedora System Monitor", redact_text(message))
+        delivered = True
+        status = "delivered"
+    except Exception as exc:
+        delivered = False
+        status = exc.__class__.__name__
+    finally:
+        if previous_config is None:
+            os.environ.pop("TELEGRAM_NOTIFY_CONFIG", None)
+        else:
+            os.environ["TELEGRAM_NOTIFY_CONFIG"] = previous_config
+    return NotificationResult(
+        "telegram",
+        "filesystem",
+        True,
+        delivered,
+        status,
+        "" if delivered else status,
+    )
+
+
+def _gib(value: int) -> str:
+    return f"{value / 1024**3:.2f} GiB"
+
+
+def notify_filesystem_free_changes(
+    metrics: Iterable[Mapping[str, Any]],
+    config: Mapping[str, Any],
+    db: Any,
+) -> list[NotificationResult]:
+    """Notify cumulative free-space changes for each underlying filesystem."""
+
+    threshold = int(
+        float(
+            config.get("notifications", {}).get(
+                "filesystem_free_change_gib",
+                1.0,
+            )
+        )
+        * 1024**3
+    )
+    selected: dict[str, Mapping[str, Any]] = {}
+    for metric in metrics:
+        if metric.get("name") != "filesystem_free_bytes":
+            continue
+        details = metric.get("details")
+        if not isinstance(details, Mapping):
+            continue
+        identity = str(details.get("filesystem_id") or metric.get("device_id") or "").strip()
+        mount_point = str(details.get("mount_point") or "").strip()
+        if not identity or not mount_point:
+            continue
+        try:
+            free_bytes = int(metric.get("value"))
+        except (TypeError, ValueError):
+            continue
+        if free_bytes < 0:
+            continue
+        current = dict(metric)
+        current["value"] = free_bytes
+        previous = selected.get(identity)
+        if previous is None:
+            selected[identity] = current
+            continue
+        previous_details = previous.get("details", {})
+        previous_mount = str(previous_details.get("mount_point") or "")
+        if (mount_point != "/", len(mount_point), mount_point) < (
+            previous_mount != "/",
+            len(previous_mount),
+            previous_mount,
+        ):
+            selected[identity] = current
+
+    results: list[NotificationResult] = []
+    for identity, metric in sorted(
+        selected.items(),
+        key=lambda item: str(item[1].get("details", {}).get("mount_point") or ""),
+    ):
+        free_bytes = int(metric["value"])
+        mount_point = str(metric.get("details", {}).get("mount_point") or "")
+        state_key = f"filesystem-free:{identity}"
+        state = db.get_state(state_key, None, namespace="notification")
+        baseline = state.get("notified_free_bytes") if isinstance(state, Mapping) else None
+        if not isinstance(baseline, int):
+            db.set_state(
+                state_key,
+                {
+                    "notified_free_bytes": free_bytes,
+                    "last_observed_free_bytes": free_bytes,
+                    "mount_point": mount_point,
+                },
+                namespace="notification",
+            )
+            continue
+        delta = free_bytes - baseline
+        delivered = False
+        if abs(delta) >= threshold:
+            sign = "+" if delta >= 0 else "-"
+            message = f"💾 {mount_point}: libero {_gib(free_bytes)}; variazione {sign}{_gib(abs(delta))}"
+            notification = send_telegram_message(config, message)
+            results.append(notification)
+            delivered = notification.delivered
+        db.set_state(
+            state_key,
+            {
+                "notified_free_bytes": free_bytes if delivered else baseline,
+                "last_observed_free_bytes": free_bytes,
+                "mount_point": mount_point,
+            },
+            namespace="notification",
+        )
+    return results
 
 
 def endpoint_key(category: str) -> str:
@@ -174,4 +313,13 @@ def send_category_heartbeat(
     return NotificationResult("uptime-kuma", category, True, delivered, status, "" if delivered else status)
 
 
-__all__ = ["NotificationResult", "endpoint_key", "integration_status", "notify_signals", "send_category_heartbeat", "send_heartbeat"]
+__all__ = [
+    "NotificationResult",
+    "endpoint_key",
+    "integration_status",
+    "notify_filesystem_free_changes",
+    "notify_signals",
+    "send_category_heartbeat",
+    "send_heartbeat",
+    "send_telegram_message",
+]

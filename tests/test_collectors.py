@@ -116,6 +116,32 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(len({metric["device_id"] for metric in metrics}), 3)
         self.assertEqual(len({metric["details"]["filesystem_id"] for metric in metrics}), 1)
 
+    def test_virtual_and_temporary_filesystems_are_excluded(self) -> None:
+        fake_stat = SimpleNamespace(
+            f_blocks=100,
+            f_bavail=80,
+            f_frsize=1024,
+            f_files=100,
+            f_favail=90,
+        )
+        mounts = [
+            {"mount_point": "/", "root": "/", "major_minor": "253:0", "options": "rw", "fstype": "btrfs", "source": "/dev/mapper/root"},
+            {"mount_point": "/tmp", "root": "/", "major_minor": "0:42", "options": "rw", "fstype": "tmpfs", "source": "tmpfs"},
+            {"mount_point": "/var/lib/containers/overlay", "root": "/", "major_minor": "0:43", "options": "rw", "fstype": "overlay", "source": "overlay"},
+            {"mount_point": "/var/lib/snap", "root": "/", "major_minor": "7:0", "options": "ro", "fstype": "squashfs", "source": "/dev/loop0"},
+        ]
+        with mock.patch.object(periodic, "mount_table", return_value=mounts), mock.patch.object(periodic.os, "statvfs", return_value=fake_stat):
+            result = periodic.collect_filesystems("five_minute", {}, self.db, all_relevant=True)
+        mount_points = {
+            metric["details"]["mount_point"]
+            for metric in result.metrics
+            if metric["name"] == "filesystem_free_bytes"
+        }
+        self.assertIn("/", mount_points)
+        self.assertNotIn("/tmp", mount_points)
+        self.assertNotIn("/var/lib/containers/overlay", mount_points)
+        self.assertNotIn("/var/lib/snap", mount_points)
+
     def test_discover_services_and_successful_inactive_oneshot(self) -> None:
         listing = "NetworkManager.service enabled enabled\namici-fb.service static -\nrandom.service disabled disabled\n"
         config = {"services": {"essential": ["NetworkManager.service"], "secondary": ["amici-fb.service"], "name_patterns": ["amici"]}}

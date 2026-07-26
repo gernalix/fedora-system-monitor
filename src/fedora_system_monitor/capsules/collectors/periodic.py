@@ -47,8 +47,8 @@ _DEFAULT_SERVICES = {
 }
 _PSEUDO_FILESYSTEMS = {
     "autofs", "bpf", "cgroup", "cgroup2", "configfs", "debugfs", "devpts", "devtmpfs",
-    "efivarfs", "fusectl", "hugetlbfs", "mqueue", "nsfs", "proc", "pstore", "ramfs",
-    "securityfs", "sysfs", "tracefs",
+    "efivarfs", "erofs", "fusectl", "hugetlbfs", "mqueue", "nsfs", "overlay", "proc",
+    "pstore", "ramfs", "securityfs", "squashfs", "sysfs", "tmpfs", "tracefs",
 }
 
 
@@ -384,9 +384,9 @@ def collect_filesystems(
         fstype = mount["fstype"]
         if path in seen:
             continue
+        if fstype in ignored:
+            continue
         if all_relevant:
-            if fstype in ignored and path != "/tmp":
-                continue
             if path.startswith(("/proc", "/sys", "/dev", "/run/credentials", "/run/user")):
                 continue
             if "/systemd-private-" in path:

@@ -35,8 +35,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "critical_filesystems": ["/", "/home", "/var", "/tmp", "/boot", "/boot/efi"],
         "ignore_filesystem_types": [
             "autofs", "bpf", "cgroup", "cgroup2", "configfs", "debugfs", "devpts", "devtmpfs",
-            "efivarfs", "fusectl", "hugetlbfs", "mqueue", "nsfs", "proc", "pstore", "ramfs",
-            "securityfs", "sysfs", "tmpfs", "tracefs",
+            "efivarfs", "erofs", "fusectl", "hugetlbfs", "mqueue", "nsfs", "overlay", "proc",
+            "pstore", "ramfs", "securityfs", "squashfs", "sysfs", "tmpfs", "tracefs",
         ],
         "top_process_limit": 5,
         "internet_check_enabled": True,
@@ -153,6 +153,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "notifications": {
         "uptime_kuma_credentials": "/etc/fedora-system-monitor/uptime-kuma.toml",
+        "telegram_credentials": "/home/daniele/.config/telegram-notify/telegram-notify.env",
+        "filesystem_free_change_gib": 1.0,
         "reminder_seconds": 21600,
         "timeout_seconds": 5,
     },
@@ -515,6 +517,8 @@ def validate_config(config: Mapping[str, Any] | object) -> list[str]:
     if not isinstance(config.get("notifications"), Mapping):
         errors.append("notifications must be a table")
     _require_string(config, ("notifications", "uptime_kuma_credentials"), errors)
+    _require_string(config, ("notifications", "telegram_credentials"), errors)
+    _require_positive(config, ("notifications", "filesystem_free_change_gib"), errors)
     _require_positive(config, ("notifications", "reminder_seconds"), errors)
     _require_positive(config, ("notifications", "timeout_seconds"), errors)
     return errors
