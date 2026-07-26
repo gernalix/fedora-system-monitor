@@ -1,5 +1,17 @@
 # Registro incidenti
 
+## smart-service-capability-false-positive
+
+- **Stato:** risolto nella versione 1.3.1.
+- **Impatto:** eventi warning SMART ripetuti per NVMe interno e Samsung T7,
+  senza alert SMART attivo né transizione Kuma falsa.
+- **Causa:** mancavano `CAP_SYS_ADMIN` per NVMe nativo e `CAP_SYS_RAWIO` per il
+  bridge USB-NVMe ASMedia nelle condizioni del collector orario.
+- **Correzione:** capability circoscritte a `hourly`/`daily`, diagnostica
+  strutturata, skip dei dispositivi assenti/non compatibili e modalità sicura
+  per i bridge `snt*`.
+- **Evidenza:** [attività 482731](audit-482731.md).
+
 ## zram-occupancy-misclassified-as-memory-pressure
 
 - **Stato:** risolto nella versione 1.2.0.

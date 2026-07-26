@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.3.1 - 2026-07-26
+
+- Corretto `smart_check_failed` falso su NVMe interno e Samsung T7 concedendo
+  `CAP_SYS_ADMIN` e `CAP_SYS_RAWIO` solo ai collector `hourly` e `daily`.
+- Aggiunta diagnostica SMART strutturata e limitata: comando controllato, exit
+  status, messaggi, protocollo, modalità bridge e classe del fallimento.
+- I dispositivi assenti o non compatibili vengono saltati senza nascondere
+  guasti SMART reali o regressioni di permessi.
+- I bridge USB-NVMe `snt*` non interrogano più l’error log che può bloccare
+  ASMedia; salute, attributi e self-test log restano monitorati.
+- Verificati 110 test, 18 self-check, SQLite, systemd, udev e collector reali
+  `hourly`/`daily`; zero nuovi eventi SMART falsi.
+
+Timeline: `2026-07-26|fedora-system-monitor|bugfix|P1|SMART USB NVMe|PASS CON WARNING|activity:482731`.
+
 ## 1.3.0 - 2026-07-26
 
 - Esteso il collector filesystem esistente con notifiche Telegram per variazioni

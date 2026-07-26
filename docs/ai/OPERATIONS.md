@@ -46,8 +46,8 @@ KUMA.mapping=failed service,restart,and restart loop alerts map to services
 KUMA.mapping=updates,DNF,Flatpak,inventory,and software transaction alerts map to software
 SECURITY.units=NoNewPrivileges,ProtectSystem strict,ProtectHome,ProtectKernelTunables,ProtectKernelModules,ProtectControlGroups,ProtectKernelLogs,ProtectHostname,ProtectClock,RestrictSUIDSGID,RestrictNamespaces,LockPersonality,and MemoryDenyWriteExecute
 SECURITY.capabilities=Base collectors receive CAP_DAC_READ_SEARCH,CAP_SETGID,and CAP_SETUID for read-only user inventory
-SECURITY.daily_capability=Only the daily instance receives CAP_SYS_ADMIN because a sandbox test proved the NVMe admin ioctl fails without it
-SECURITY.removed_capabilities=CAP_SYS_RAWIO and CAP_DAC_OVERRIDE are absent from all monitor units; event,device,and lifecycle units have an empty capability bounding set
+SECURITY.smart_capabilities=Only hourly and daily receive CAP_SYS_ADMIN for native NVMe and CAP_SYS_RAWIO for USB NVMe SCSI passthrough;live sandbox tests proved each requirement
+SECURITY.other_capabilities=CAP_DAC_OVERRIDE remains absent;fast,five-minute,fifteen-minute,weekly,event,device,and lifecycle units do not receive SMART-specific capabilities
 SECURITY.paths=Write access is limited to state and runtime directories and sensitive home credential paths are inaccessible
 SECURITY.network=Only UNIX,IPv4,IPv6,and netlink families are permitted where required
 OPS.add_expected_disk=Set storage.expected_devices to an inline array such as [{ label = "Ventoy", required = true }] in /etc/fedora-system-monitor/config.toml then run config-check

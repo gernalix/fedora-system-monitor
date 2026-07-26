@@ -394,6 +394,78 @@ NRestarts=1
         self.assertIn("smart.self_test_failures", names)
         self.assertNotIn("Vendor_Private_Secret", json.dumps(result.metrics))
 
+    def test_smart_permission_failure_keeps_bounded_diagnostics(self) -> None:
+        nodes = [{"type": "disk", "path": "/dev/test", "name": "test", "serial": "local-serial", "model": "Demo NVMe", "tran": "nvme"}]
+        payload = json.dumps(
+            {
+                "smartctl": {
+                    "argv": ["smartctl", "-j", "-n", "standby", "-H", "/dev/test"],
+                    "exit_status": 4,
+                    "messages": [{"string": "NVME_IOCTL_ADMIN_CMD: Permission denied", "severity": "error"}],
+                },
+                "device": {"type": "nvme", "protocol": "NVMe"},
+            }
+        )
+        with mock.patch.object(system_collectors, "_block_listing", return_value=(nodes, None)), mock.patch.object(system_collectors.Path, "exists", return_value=True), mock.patch.object(system_collectors, "external", return_value=command_result(payload, returncode=4)):
+            result = system_collectors.collect_smart("hourly", {}, self.db, detailed=False)
+        self.assertEqual(len(result.events), 1)
+        event = result.events[0]
+        self.assertEqual(event["name"], "smart_check_failed")
+        self.assertEqual(event["details"]["failure_class"], "permission")
+        self.assertEqual(event["details"]["exit_status"], 4)
+        self.assertEqual(event["details"]["device_type"], "nvme")
+        self.assertEqual(event["details"]["identity"], event["device_id"])
+        self.assertIn("Permission denied", event["error_message"])
+
+    def test_smart_absent_and_unsupported_devices_are_skipped(self) -> None:
+        nodes = [{"type": "disk", "path": "/dev/test", "name": "test", "serial": "local-serial", "model": "USB Disk", "tran": "usb"}]
+        absent_payload = json.dumps({"smartctl": {"exit_status": 2}})
+        with mock.patch.object(system_collectors, "_block_listing", return_value=(nodes, None)), mock.patch.object(system_collectors.Path, "exists", return_value=False), mock.patch.object(system_collectors, "external", return_value=command_result(absent_payload, returncode=2)):
+            absent = system_collectors.collect_smart("hourly", {}, self.db, detailed=False)
+        self.assertEqual(absent.events, [])
+        self.assertEqual(absent.metrics[0]["name"], "smart_check_skipped_absent")
+        self.assertEqual(absent.metrics[0]["details"]["failure_class"], "device_absent")
+
+        unsupported_payload = json.dumps(
+            {
+                "smartctl": {
+                    "exit_status": 1,
+                    "messages": [{"string": "Unknown USB bridge", "severity": "error"}],
+                }
+            }
+        )
+        with mock.patch.object(system_collectors, "_block_listing", return_value=(nodes, None)), mock.patch.object(system_collectors, "external", return_value=command_result(unsupported_payload, returncode=1)):
+            unsupported = system_collectors.collect_smart("hourly", {}, self.db, detailed=False)
+        self.assertEqual(unsupported.events, [])
+        self.assertEqual(unsupported.metrics[0]["name"], "smart.supported")
+        self.assertEqual(unsupported.metrics[0]["outcome"], "skipped")
+
+    def test_smart_usb_nvme_detailed_mode_avoids_error_log(self) -> None:
+        nodes = [{"type": "disk", "path": "/dev/test", "name": "test", "serial": "local-serial", "model": "USB NVMe", "tran": "usb"}]
+        health = json.dumps(
+            {
+                "smartctl": {"exit_status": 0},
+                "device": {"type": "sntasmedia", "protocol": "NVMe"},
+                "smart_status": {"passed": True},
+            }
+        )
+        detail = json.dumps(
+            {
+                "smartctl": {"exit_status": 0},
+                "device": {"type": "sntasmedia", "protocol": "NVMe"},
+                "nvme_self_test_log": {"current_self_test_operation": {"value": 0}},
+            }
+        )
+        with mock.patch.object(system_collectors, "_block_listing", return_value=(nodes, None)), mock.patch.object(system_collectors, "external", side_effect=[command_result(health), command_result(detail)]) as mocked:
+            result = system_collectors.collect_smart("daily", {}, self.db, detailed=True)
+        detail_command = mocked.call_args_list[1].args[1]
+        self.assertIn("-A", detail_command)
+        self.assertIn("selftest", detail_command)
+        self.assertNotIn("error", detail_command)
+        by_name = {metric["name"]: metric for metric in result.metrics}
+        self.assertEqual(by_name["smart.error_log_supported"]["outcome"], "skipped")
+        self.assertEqual(result.events, [])
+
     def test_btrfs_health_collects_device_and_scrub_errors(self) -> None:
         outputs = [
             command_result("/\n/home\n"),

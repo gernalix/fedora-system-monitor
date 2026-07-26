@@ -79,6 +79,53 @@ def _stable_block_id(node: Mapping[str, Any]) -> str:
     return stable_hash(basis, "block")
 
 
+def _smart_messages(messages: object) -> list[str]:
+    if not isinstance(messages, list):
+        return []
+    output: list[str] = []
+    for message in messages[:8]:
+        if not isinstance(message, Mapping):
+            continue
+        text = str(message.get("string") or "").strip()
+        if text:
+            output.append(text[:300])
+    return output
+
+
+def _smart_diagnostics(
+    node: Mapping[str, Any],
+    command: list[str],
+    health: object,
+    payload: object,
+    messages: object,
+) -> dict[str, Any]:
+    smartctl_data = payload.get("smartctl") if isinstance(payload, Mapping) else None
+    device_data = payload.get("device") if isinstance(payload, Mapping) else None
+    return {
+        "model": node.get("model"),
+        "transport": node.get("tran"),
+        "command": list(smartctl_data.get("argv", command))[:20] if isinstance(smartctl_data, Mapping) else command,
+        "exit_status": int(_float(smartctl_data.get("exit_status"), getattr(health, "returncode", 0))) if isinstance(smartctl_data, Mapping) else int(getattr(health, "returncode", 0)),
+        "messages": _smart_messages(messages),
+        "device_type": device_data.get("type") if isinstance(device_data, Mapping) else None,
+        "protocol": device_data.get("protocol") if isinstance(device_data, Mapping) else None,
+    }
+
+
+def _smart_failure_class(health: object, message_text: str, device: str) -> str:
+    if bool(getattr(health, "missing", False)):
+        return "command_unavailable"
+    if bool(getattr(health, "timed_out", False)):
+        return "timeout"
+    if not Path(device).exists():
+        return "device_absent"
+    if re.search(r"permission denied|operation not permitted", message_text, re.I):
+        return "permission"
+    if re.search(r"device open failed|no such device|cannot open", message_text, re.I):
+        return "device_open"
+    return "smart_command"
+
+
 def collect_smart(
     scope: str,
     config: Mapping[str, Any],
@@ -102,7 +149,7 @@ def collect_smart(
         command = ["smartctl", "-j"]
         if not allow_wakeup:
             command.extend(["-n", "standby"])
-        command.append("-x" if detailed else "-H")
+        command.append("-H")
         command.append(device)
         health = external(config, command, timeout=20, max_output=500_000)
         if health.missing:
@@ -116,26 +163,68 @@ def collect_smart(
         smartctl_data = payload.get("smartctl") if isinstance(payload, Mapping) else None
         messages = smartctl_data.get("messages", []) if isinstance(smartctl_data, Mapping) else []
         message_text = " ".join(str(message.get("string", "")) for message in messages if isinstance(message, Mapping)) if isinstance(messages, list) else ""
+        diagnostics = _smart_diagnostics(node, command, health, payload, messages)
+        diagnostics["identity"] = device_id
         sleeping = (isinstance(payload, Mapping) and str(payload.get("power_mode", "")).lower() in {"sleep", "standby"}) or bool(re.search(r"device is in (?:sleep|standby) mode", message_text, re.I))
         if sleeping:
-            result.metrics.append(record(cadence, "storage", "smart_check_skipped_asleep", 1, "boolean", source="smartctl", device_id=device_id, details={"model": node.get("model")}, outcome="skipped"))
+            diagnostics["reason"] = "device_asleep"
+            result.metrics.append(record(cadence, "storage", "smart_check_skipped_asleep", 1, "boolean", source="smartctl", device_id=device_id, details=diagnostics, outcome="skipped"))
             continue
         unsupported = any(
             isinstance(message, Mapping)
-            and re.search(r"unknown usb bridge|unsupported|unable to detect device type", str(message.get("string", "")), re.I)
+            and re.search(r"unknown usb bridge|unsupported|not supported|unable to detect device type", str(message.get("string", "")), re.I)
             for message in messages
         ) if isinstance(messages, list) else False
         if unsupported:
-            result.metrics.append(record(cadence, "storage", "smart.supported", 0, "boolean", source="smartctl", device_id=device_id, details={"model": node.get("model"), "transport": node.get("tran")}, outcome="skipped"))
+            diagnostics["reason"] = "device_or_bridge_unsupported"
+            result.metrics.append(record(cadence, "storage", "smart.supported", 0, "boolean", source="smartctl", device_id=device_id, details=diagnostics, outcome="skipped"))
             continue
         passed = payload.get("smart_status", {}).get("passed") if isinstance(payload, Mapping) and isinstance(payload.get("smart_status"), Mapping) else None
         if passed is not None:
             severity = "info" if passed else "critical"
-            result.metrics.append(record(cadence, "storage", "smart.health", 1 if passed else 0, "boolean", severity=severity, source="smartctl", device_id=device_id, details={"model": node.get("model"), "transport": node.get("tran")}, outcome="ok" if passed else "error"))
+            result.metrics.append(record(cadence, "storage", "smart.health", 1 if passed else 0, "boolean", severity=severity, source="smartctl", device_id=device_id, details={"model": node.get("model"), "transport": node.get("tran"), "device_type": diagnostics.get("device_type"), "protocol": diagnostics.get("protocol")}, outcome="ok" if passed else "error"))
         elif not health.ok:
-            result.events.append(record(cadence, "storage", "smart_check_failed", 1, "failure", severity="warning", source="smartctl", device_id=device_id, details={"model": node.get("model")}, outcome="error", error_message=command_problem(health)))
+            failure_class = _smart_failure_class(health, message_text, device)
+            diagnostics["failure_class"] = failure_class
+            if failure_class == "device_absent":
+                diagnostics["reason"] = "device_disappeared_after_discovery"
+                result.metrics.append(record(cadence, "storage", "smart_check_skipped_absent", 1, "boolean", source="smartctl", device_id=device_id, details=diagnostics, outcome="skipped"))
+            else:
+                diagnostic_message = "; ".join(diagnostics["messages"]) or command_problem(health)
+                result.events.append(record(cadence, "storage", "smart_check_failed", 1, "failure", severity="warning", source="smartctl", device_id=device_id, details=diagnostics, outcome="error", error_message=diagnostic_message[:500]))
+            continue
 
         if detailed and isinstance(payload, Mapping):
+            device_data = payload.get("device")
+            device_type = str(device_data.get("type") or "") if isinstance(device_data, Mapping) else ""
+            detail_command = ["smartctl", "-j"]
+            if not allow_wakeup:
+                detail_command.extend(["-n", "standby"])
+            if device_type.startswith("snt"):
+                # Some USB-to-NVMe bridges, including ASMedia variants, hang on
+                # the NVMe error-log request used by -x. Keep health, attributes,
+                # and the read-only self-test log without probing that log page.
+                detail_command.extend(["-A", "-l", "selftest"])
+                result.metrics.append(record(cadence, "storage", "smart.error_log_supported", 0, "boolean", source="smartctl", device_id=device_id, details={"model": node.get("model"), "device_type": device_type, "reason": "usb_nvme_bridge_safe_mode"}, outcome="skipped"))
+            else:
+                detail_command.append("-x")
+            detail_command.append(device)
+            detail = external(config, detail_command, timeout=20, max_output=500_000)
+            detail_payload: Any = None
+            try:
+                detail_payload = json.loads(detail.stdout) if detail.stdout.strip().startswith("{") else None
+            except json.JSONDecodeError:
+                detail_payload = None
+            if isinstance(detail_payload, Mapping):
+                payload = detail_payload
+            elif not detail.ok:
+                detail_smartctl = detail_payload.get("smartctl") if isinstance(detail_payload, Mapping) else None
+                detail_messages = detail_smartctl.get("messages", []) if isinstance(detail_smartctl, Mapping) else []
+                detail_diagnostics = _smart_diagnostics(node, detail_command, detail, detail_payload, detail_messages)
+                detail_diagnostics["identity"] = device_id
+                detail_diagnostics["failure_class"] = _smart_failure_class(detail, " ".join(_smart_messages(detail_messages)), device)
+                result.events.append(record(cadence, "storage", "smart_detail_check_failed", 1, "failure", severity="warning", source="smartctl", device_id=device_id, details=detail_diagnostics, outcome="error", error_message=("; ".join(detail_diagnostics["messages"]) or command_problem(detail))[:500]))
+
             attributes_root = payload.get("ata_smart_attributes")
             table = attributes_root.get("table", []) if isinstance(attributes_root, Mapping) else []
             selected = {
