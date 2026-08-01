@@ -71,7 +71,7 @@ MemAvailable, PSI, attività swap/reclaim oppure OOM. Un disco rotazionale in
 standby non viene risvegliato per SMART.
 
 Telegram riusa esclusivamente
-`/home/daniele/.config/telegram-notify/telegram-notify.env` con permessi `0600`;
+`/home/daniele/.config/codex/secrets/telegram.env` con permessi `0600`;
 token e chat ID non devono essere copiati nella configurazione del progetto.
 L’invio usa il helper condiviso `telegram_notify.py` tramite il pacchetto
 `telegram_notify`; il monitor non implementa una seconda chiamata HTTP Telegram.

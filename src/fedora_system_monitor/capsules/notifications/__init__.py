@@ -38,7 +38,7 @@ def _telegram_credentials_path(config: Mapping[str, Any]) -> Path:
         str(
             config.get("notifications", {}).get(
                 "telegram_credentials",
-                "/home/daniele/.config/telegram-notify/telegram-notify.env",
+                "/home/daniele/.config/codex/secrets/telegram.env",
             )
         )
     )

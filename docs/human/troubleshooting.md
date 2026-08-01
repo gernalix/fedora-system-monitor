@@ -90,7 +90,7 @@ Un filesystem smontato non produce errori né reset. Se il delta supera 1 GiB ma
 Telegram non è raggiungibile, la baseline notificata resta invariata e il
 collector riprova al controllo successivo. Verificare soltanto esistenza e
 permessi `0600` di
-`/home/daniele/.config/telegram-notify/telegram-notify.env`; non stamparne,
+`/home/daniele/.config/codex/secrets/telegram.env`; non stamparne,
 copiarne o rigenerarne il contenuto. Verificare inoltre che
 `python3 -c 'import telegram_notify'` riesca: l’invio deve sempre passare dal
 helper condiviso `telegram_notify.py`, mai da un trasporto duplicato.

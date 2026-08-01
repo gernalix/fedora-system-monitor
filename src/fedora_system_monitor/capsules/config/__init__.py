@@ -153,7 +153,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "notifications": {
         "uptime_kuma_credentials": "/etc/fedora-system-monitor/uptime-kuma.toml",
-        "telegram_credentials": "/home/daniele/.config/telegram-notify/telegram-notify.env",
+        "telegram_credentials": "/home/daniele/.config/codex/secrets/telegram.env",
         "filesystem_free_change_gib": 1.0,
         "reminder_seconds": 21600,
         "timeout_seconds": 5,

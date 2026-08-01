@@ -17,6 +17,10 @@ class ConfigTests(unittest.TestCase):
         first = load_config(None)
         second = load_config(None)
         self.assertEqual(validate_config(first), [])
+        self.assertEqual(
+            first["notifications"]["telegram_credentials"],
+            "/home/daniele/.config/codex/secrets/telegram.env",
+        )
         expected_services = list(DEFAULT_CONFIG["services"]["secondary"])
         first["services"]["secondary"].append("example.service")
         self.assertEqual(second["services"]["secondary"], expected_services)
