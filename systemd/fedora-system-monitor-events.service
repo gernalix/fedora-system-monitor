@@ -1,6 +1,6 @@
 [Unit]
 Description=Fedora System Monitor event listener
-Documentation=file:/home/daniele/MegaVault/projects/fedora-system-monitor/docs/human/overview.md
+Documentation=file:/home/daniele/projects/fedora-system-monitor/docs/human/overview.md
 After=local-fs.target systemd-journald.service
 Requires=systemd-journald.service
 StartLimitIntervalSec=5min

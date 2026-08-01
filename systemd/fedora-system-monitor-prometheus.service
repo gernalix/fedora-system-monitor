@@ -1,6 +1,6 @@
 [Unit]
 Description=Optional Fedora System Monitor Prometheus endpoint
-Documentation=file:/home/daniele/MegaVault/projects/fedora-system-monitor/docs/human/overview.md
+Documentation=file:/home/daniele/projects/fedora-system-monitor/docs/human/overview.md
 After=local-fs.target
 
 [Service]

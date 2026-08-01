@@ -1,6 +1,6 @@
 [Unit]
 Description=Fedora System Monitor collector (%i)
-Documentation=file:/home/daniele/MegaVault/projects/fedora-system-monitor/docs/human/overview.md
+Documentation=file:/home/daniele/projects/fedora-system-monitor/docs/human/overview.md
 After=local-fs.target NetworkManager.service
 
 [Service]
