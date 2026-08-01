@@ -14,11 +14,13 @@ import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
+import pwd
 import re
 import selectors
 import subprocess
 from typing import Any, Callable, Mapping
 
+from fedora_system_monitor.capsules.activitywatch import correlate_activitywatch
 from fedora_system_monitor.capsules.config import redact_text
 
 
@@ -28,8 +30,15 @@ _COREDUMP_MESSAGE_ID = "fc2e22bc6ee647b6b90729ab34a250b1"
 _SYSTEMD_FAILED_MESSAGE_ID = "be02cf6855d2428ba40df7e9d022f03d"
 _MAX_TEXT = 512
 _MAX_JOURNAL_LINE = 1_048_576
+_POWER_PROFILE_DBUS_MATCH = (
+    "type='method_call',interface='org.freedesktop.DBus.Properties',"
+    "member='Set',path='/org/freedesktop/UPower/PowerProfiles'"
+)
 
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]+")
+_DBUS_METHOD_RE = re.compile(r"^method call time=(?P<time>[0-9.]+).* sender=(?P<sender>:[0-9.]+)\s")
+_DBUS_STRING_RE = re.compile(r'^\s*string\s+"(?P<value>[^"]*)"\s*$')
+_DBUS_VARIANT_STRING_RE = re.compile(r'^\s*variant\s+string\s+"(?P<value>[^"]*)"\s*$')
 _SAFE_INTERFACE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,31}$")
 _MAC_RE = re.compile(r"^(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
 _UNIT_RE = re.compile(
@@ -1099,6 +1108,139 @@ def _persist_cursor(db: object, entry: Mapping[str, object]) -> None:
     db.set_state("journal_cursor", state)
 
 
+def _iso_from_unix(timestamp: float) -> str:
+    return datetime.fromtimestamp(timestamp, timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+
+def _dbus_call_uint(method: str, sender: str) -> int | None:
+    try:
+        completed = subprocess.run(
+            [
+                "busctl",
+                "--system",
+                "call",
+                "org.freedesktop.DBus",
+                "/org/freedesktop/DBus",
+                "org.freedesktop.DBus",
+                method,
+                "s",
+                sender,
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=1,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    match = re.search(r"\bu\s+([0-9]+)\b", completed.stdout)
+    return int(match.group(1)) if match else None
+
+
+def _dbus_sender_identity(sender: str) -> dict[str, object]:
+    identity: dict[str, object] = {"sender": sender}
+    pid = _dbus_call_uint("GetConnectionUnixProcessID", sender)
+    uid = _dbus_call_uint("GetConnectionUnixUser", sender)
+    if pid is not None:
+        identity["pid"] = pid
+        try:
+            identity["process"] = Path(f"/proc/{pid}/comm").read_text(encoding="utf-8", errors="replace").strip()[:64]
+        except OSError:
+            pass
+        try:
+            identity["executable"] = Path(os.readlink(f"/proc/{pid}/exe")).name[:128]
+        except OSError:
+            pass
+    if uid is not None:
+        identity["uid"] = uid
+        try:
+            identity["user"] = pwd.getpwuid(uid).pw_name[:64]
+        except KeyError:
+            pass
+    return identity
+
+
+def _power_profile_event_from_dbus(lines: list[str], *, caller: Mapping[str, object] | None = None) -> Event | None:
+    if not lines:
+        return None
+    header = _DBUS_METHOD_RE.match(lines[0])
+    if not header:
+        return None
+    values: list[str] = []
+    requested_profile = ""
+    for line in lines[1:]:
+        string_match = _DBUS_STRING_RE.match(line)
+        if string_match:
+            values.append(string_match.group("value"))
+            continue
+        variant_match = _DBUS_VARIANT_STRING_RE.match(line)
+        if variant_match:
+            requested_profile = variant_match.group("value")
+    if len(values) < 2 or values[1] != "ActiveProfile" or requested_profile not in {"power-saver", "balanced", "performance"}:
+        return None
+    timestamp = float(header.group("time"))
+    sender = header.group("sender")
+    event = _event(
+        category="system",
+        name="power_profile_set_requested",
+        severity="info",
+        source="dbus-monitor",
+        device_id="power-profile",
+        details={
+            "requested_profile": requested_profile,
+            "interface": values[0],
+            "property": values[1],
+            "caller": dict(caller or _dbus_sender_identity(sender)),
+        },
+        outcome="observed",
+        dedup_key=f"dbus:power-profile:set:{sender}:{requested_profile}:{timestamp:.6f}",
+        dedup_window_seconds=0,
+    )
+    event["timestamp_utc"] = _iso_from_unix(timestamp)
+    event["details"]["activitywatch"] = correlate_activitywatch(str(event["timestamp_utc"]))
+    event["value"] = 1
+    event["unit"] = "event"
+    return event
+
+
+def _consume_power_profile_dbus_stream(
+    process: subprocess.Popen[str],
+    db: object,
+    stop_event: object | None = None,
+    on_event: Callable[[Event], object] | None = None,
+) -> int:
+    matched = 0
+    current: list[str] = []
+    assert process.stdout is not None
+    while stop_event is None or not bool(getattr(stop_event, "is_set")()):
+        line = process.stdout.readline()
+        if line == "":
+            break
+        if _DBUS_METHOD_RE.match(line):
+            current = [line]
+            continue
+        if not current:
+            continue
+        current.append(line)
+        if not _DBUS_VARIANT_STRING_RE.match(line):
+            continue
+        event = _power_profile_event_from_dbus(current)
+        current = []
+        if event is None:
+            continue
+        db.insert_events([event], dedup_window_seconds=0)
+        if on_event is not None:
+            on_event(event)
+        matched += 1
+    return matched
+
+
 def _journal_identity(entry: Mapping[str, object]) -> dict[str, Any]:
     cursor_value = entry.get("__CURSOR")
     cursor = ""
@@ -1264,10 +1406,45 @@ def stream_journal(
                 process.wait(timeout=3)
 
 
+def stream_power_profile_dbus(
+    config: Mapping[str, object],
+    db: object,
+    stop_event: object | None = None,
+    on_event: Callable[[Event], object] | None = None,
+) -> int:
+    """Follow power-profile D-Bus requests and persist every ActiveProfile set."""
+
+    del config
+    if stop_event is not None and bool(getattr(stop_event, "is_set")()):
+        return 0
+    process = subprocess.Popen(
+        ["dbus-monitor", "--system", _POWER_PROFILE_DBUS_MATCH],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        bufsize=1,
+        close_fds=True,
+    )
+    try:
+        return _consume_power_profile_dbus_stream(process, db, stop_event, on_event)
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=3)
+
+
 __all__ = [
     "build_device_event",
     "build_lifecycle_event",
     "build_network_event",
     "classify_journal",
     "stream_journal",
+    "stream_power_profile_dbus",
 ]

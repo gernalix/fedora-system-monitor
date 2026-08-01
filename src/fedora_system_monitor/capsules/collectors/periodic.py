@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from datetime import datetime, timezone
 import json
 import math
 import os
@@ -23,6 +24,7 @@ from .common import (
     sustained_severity,
 )
 from .model import CADENCE_SECONDS, CollectionResult, record
+from fedora_system_monitor.capsules.activitywatch import correlate_activitywatch
 
 
 PROC_ROOT = Path("/proc")
@@ -776,19 +778,33 @@ def collect_network_essential(scope: str, config: Mapping[str, Any], db: object)
     return result
 
 
+def _power_profile_snapshot() -> dict[str, str]:
+    platform_profile = _read(SYS_ROOT / "firmware" / "acpi" / "platform_profile").strip()
+    tuned_profile = _read(Path("/etc/tuned/active_profile")).strip()
+    ppd_base_profile = _read(Path("/etc/tuned/ppd_base_profile")).strip()
+    profile_mode = _read(Path("/etc/tuned/profile_mode")).strip()
+    return {
+        "platform_profile": platform_profile or "unavailable",
+        "tuned_profile": tuned_profile or "unavailable",
+        "ppd_base_profile": ppd_base_profile or "unavailable",
+        "profile_mode": profile_mode or "unavailable",
+    }
+
+
 def collect_power(scope: str, config: Mapping[str, Any], db: object) -> CollectionResult:
-    del config, db
+    del config
     cadence = CADENCE_SECONDS[scope]
     result = CollectionResult(scope)
     root = SYS_ROOT / "class" / "power_supply"
-    if not root.exists():
-        return result
-    for supply in sorted(root.iterdir()):
+    power_context: dict[str, Any] = {"external_online": False, "batteries": []}
+    supplies = sorted(root.iterdir()) if root.exists() else []
+    for supply in supplies:
         supply_type = _read(supply / "type").strip()
         if supply_type == "Battery":
             present = _read(supply / "present", "1").strip() != "0"
             capacity = _number(_read(supply / "capacity").strip(), math.nan)
             status = _read(supply / "status").strip() or "unknown"
+            power_context["batteries"].append({"device": supply.name, "present": present, "capacity_percent": capacity if math.isfinite(capacity) else None, "status": status})
             if math.isfinite(capacity):
                 result.metrics.append(record(cadence, "power", "battery_charge_percent", capacity, "%", source="sysfs", device_id=supply.name, details={"status": status, "present": present}))
             result.metrics.append(record(cadence, "power", "battery_present", 1 if present else 0, "boolean", source="sysfs", device_id=supply.name))
@@ -809,7 +825,33 @@ def collect_power(scope: str, config: Mapping[str, Any], db: object) -> Collecti
         elif supply_type in {"Mains", "USB", "USB_C"}:
             online = _read(supply / "online").strip()
             if online in {"0", "1"}:
+                power_context["external_online"] = bool(power_context["external_online"] or online == "1")
                 result.metrics.append(record(cadence, "power", "external_power_online", int(online), "boolean", source="sysfs", device_id=supply.name, details={"type": supply_type}))
+    profile = _power_profile_snapshot()
+    result.metrics.append(record(cadence, "power", "power_profile.active", 1, "state", source="sysfs+tuned", device_id="platform", details=profile))
+    previous = state_get(db, "power.profile", None)
+    if isinstance(previous, Mapping) and any(previous.get(key) != profile[key] for key in profile):
+        observed_at = datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+        result.events.append(
+            record(
+                cadence,
+                "system",
+                "power_profile_changed",
+                1,
+                "event",
+                severity="info",
+                source="fedora-system-monitor",
+                device_id="power-profile",
+                details={
+                    "previous": dict(previous),
+                    "current": profile,
+                    "power_context": power_context,
+                    "observed_at_utc": observed_at,
+                    "activitywatch": correlate_activitywatch(observed_at),
+                },
+            )
+        )
+    state_set(db, "power.profile", profile)
     return result
 
 

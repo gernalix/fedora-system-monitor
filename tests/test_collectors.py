@@ -501,6 +501,56 @@ NRestarts=1
         self.assertTrue({"battery_design_capacity_wh", "battery_full_capacity_wh", "battery_wear_percent"} <= health_names)
         self.assertTrue({"battery_energy_wh", "battery_power_w", "battery_voltage_v"} <= current_names)
 
+    def test_power_profile_metric_and_change_event_are_stateful(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            sys = Path(temp)
+            mains = sys / "class" / "power_supply" / "AC"
+            battery = sys / "class" / "power_supply" / "BAT0"
+            profile_path = sys / "firmware" / "acpi" / "platform_profile"
+            mains.mkdir(parents=True)
+            battery.mkdir(parents=True)
+            profile_path.parent.mkdir(parents=True)
+            for path, value in (
+                (mains / "type", "Mains"),
+                (mains / "online", "1"),
+                (battery / "type", "Battery"),
+                (battery / "present", "1"),
+                (battery / "capacity", "78"),
+                (battery / "status", "Not charging"),
+                (battery / "energy_now", "40780000"),
+                (battery / "power_now", "0"),
+                (battery / "voltage_now", "16178000"),
+            ):
+                path.write_text(value, encoding="utf-8")
+            profile_path.write_text("low-power\n", encoding="utf-8")
+            first_profile = {
+                "platform_profile": "low-power",
+                "tuned_profile": "powersave",
+                "ppd_base_profile": "power-saver",
+                "profile_mode": "manual",
+            }
+            second_profile = {
+                "platform_profile": "performance",
+                "tuned_profile": "throughput-performance",
+                "ppd_base_profile": "performance",
+                "profile_mode": "manual",
+            }
+            with (
+                mock.patch.object(periodic, "SYS_ROOT", sys),
+                mock.patch.object(periodic, "_power_profile_snapshot", side_effect=[first_profile, second_profile]),
+                mock.patch.object(periodic, "correlate_activitywatch", return_value={"available": True, "activity_state": "active"}),
+            ):
+                first = periodic.collect_power("minute", {}, self.db)
+                second = periodic.collect_power("minute", {}, self.db)
+        metric = next(item for item in first.metrics if item["name"] == "power_profile.active")
+        self.assertEqual(metric["details"]["tuned_profile"], "powersave")
+        event = next(item for item in second.events if item["name"] == "power_profile_changed")
+        self.assertEqual(event["details"]["previous"]["tuned_profile"], "powersave")
+        self.assertEqual(event["details"]["current"]["tuned_profile"], "throughput-performance")
+        self.assertTrue(event["details"]["power_context"]["external_online"])
+        self.assertEqual(event["details"]["power_context"]["batteries"][0]["status"], "Not charging")
+        self.assertEqual(event["details"]["activitywatch"]["activity_state"], "active")
+
     def test_record_convention_is_complete(self) -> None:
         expected = {"cadence", "category", "name", "value", "unit", "severity", "source", "device_id", "details", "outcome", "error_message"}
         self.assertEqual(set(record(60, "x", "y", source="test")), expected)

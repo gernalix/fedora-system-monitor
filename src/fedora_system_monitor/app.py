@@ -11,6 +11,7 @@ import signal
 import socket
 import sys
 import tempfile
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -35,6 +36,7 @@ from fedora_system_monitor.capsules.eventing import (
     build_network_event,
     classify_journal,
     stream_journal,
+    stream_power_profile_dbus,
 )
 from fedora_system_monitor.capsules.kuma_admin import configure_push_monitors
 from fedora_system_monitor.capsules.notifications import (
@@ -788,7 +790,25 @@ def _daemon(config: dict[str, Any], db: Database) -> int:
         _enrich_event_device(event)
         _persist_signals(db, evaluate_event_alerts([event]), config)
 
-    matched = stream_journal(config, db, on_event=on_event)
+    stop_event = threading.Event()
+
+    def power_profile_worker() -> None:
+        while not stop_event.is_set():
+            try:
+                matched = stream_power_profile_dbus(config, db, stop_event=stop_event, on_event=on_event)
+                if not stop_event.is_set():
+                    LOGGER.warning("power profile dbus follower exited after %s matched events", matched)
+            except Exception as exc:  # noqa: BLE001 - daemon supervision must keep the journal follower alive.
+                LOGGER.warning("power profile dbus follower failed: %s", redact_text(exc)[:300])
+            stop_event.wait(3)
+
+    thread = threading.Thread(target=power_profile_worker, name="power-profile-dbus", daemon=True)
+    thread.start()
+    try:
+        matched = stream_journal(config, db, on_event=on_event)
+    finally:
+        stop_event.set()
+        thread.join(timeout=3)
     raise RuntimeError(f"journal follower exited unexpectedly after {matched} matched events")
 
 

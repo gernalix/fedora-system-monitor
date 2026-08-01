@@ -5,6 +5,7 @@ import json
 import unittest
 from unittest.mock import patch
 
+from fedora_system_monitor.capsules import eventing
 from fedora_system_monitor.capsules.eventing import (
     build_device_event,
     build_lifecycle_event,
@@ -283,6 +284,62 @@ class _FakeProcess:
 
 
 class StreamTests(unittest.TestCase):
+    def test_power_profile_dbus_parser_records_requested_profile_and_caller(self) -> None:
+        with patch("fedora_system_monitor.capsules.eventing.correlate_activitywatch", return_value={"available": True, "activity_state": "active"}):
+            event = eventing._power_profile_event_from_dbus(
+                [
+                    "method call time=1785605268.123456 sender=:1.15 -> destination=org.freedesktop.UPower.PowerProfiles serial=42 path=/org/freedesktop/UPower/PowerProfiles; interface=org.freedesktop.DBus.Properties; member=Set\n",
+                    '   string "org.freedesktop.UPower.PowerProfiles"\n',
+                    '   string "ActiveProfile"\n',
+                    '   variant       string "power-saver"\n',
+                ],
+                caller={"sender": ":1.15", "pid": 1234, "uid": 1000, "user": "daniele", "process": "gnome-control-c"},
+            )
+
+        self.assertIsNotNone(event)
+        assert event is not None
+        self.assertEqual(event["name"], "power_profile_set_requested")
+        self.assertEqual(event["source"], "dbus-monitor")
+        self.assertEqual(event["timestamp_utc"], "2026-08-01T17:27:48.123456Z")
+        self.assertEqual(event["details"]["requested_profile"], "power-saver")
+        self.assertEqual(event["details"]["property"], "ActiveProfile")
+        self.assertEqual(event["details"]["caller"]["process"], "gnome-control-c")
+        self.assertEqual(event["details"]["activitywatch"]["activity_state"], "active")
+        self.assertEqual(event["dedup_window_seconds"], 0)
+
+    def test_power_profile_dbus_stream_persists_matching_request(self) -> None:
+        process = _FakeProcess(
+            "\n".join(
+                (
+                    "method call time=1785605268.500000 sender=:1.16 -> destination=org.freedesktop.UPower.PowerProfiles serial=43 path=/org/freedesktop/UPower/PowerProfiles; interface=org.freedesktop.DBus.Properties; member=Set",
+                    '   string "org.freedesktop.UPower.PowerProfiles"',
+                    '   string "ActiveProfile"',
+                    '   variant       string "performance"',
+                )
+            )
+            + "\n"
+        )
+        database = _FakeDatabase()
+        callbacks: list[dict[str, object]] = []
+
+        with (
+            patch("fedora_system_monitor.capsules.eventing.subprocess.Popen", return_value=process) as popen,
+            patch(
+                "fedora_system_monitor.capsules.eventing._dbus_sender_identity",
+                return_value={"sender": ":1.16", "pid": 4321, "user": "root", "process": "tuned-ppd"},
+            ),
+            patch("fedora_system_monitor.capsules.eventing.correlate_activitywatch", return_value={"available": True, "activity_state": "active"}),
+        ):
+            count = eventing.stream_power_profile_dbus({}, database, on_event=callbacks.append)
+
+        self.assertEqual(count, 1)
+        self.assertEqual(len(database.events), 1)
+        self.assertEqual(callbacks, database.events)
+        self.assertEqual(database.events[0]["details"]["requested_profile"], "performance")
+        self.assertEqual(database.events[0]["details"]["caller"]["process"], "tuned-ppd")
+        command = popen.call_args.args[0]
+        self.assertEqual(command[:2], ["dbus-monitor", "--system"])
+
     def test_stream_persists_cursor_only_for_matched_events_and_calls_callback(self) -> None:
         ignored = {"MESSAGE": "ordinary application log", "__CURSOR": "ignored"}
         matched = {
