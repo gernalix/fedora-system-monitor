@@ -30,7 +30,12 @@ def _credentials_path(config: dict[str, Any]) -> Path:
         candidate = Path(credentials_directory) / "uptime-kuma.toml"
         if candidate.is_file():
             return candidate
-    return Path(config.get("notifications", {}).get("uptime_kuma_credentials", "/etc/fedora-system-monitor/uptime-kuma.toml"))
+    return Path(
+        config.get("notifications", {}).get(
+            "uptime_kuma_credentials",
+            "/home/daniele/.config/codex/secrets/fedora_system_monitor_uptime_kuma.toml",
+        )
+    )
 
 
 def _telegram_credentials_path(config: Mapping[str, Any]) -> Path:

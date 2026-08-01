@@ -10,6 +10,7 @@ LIB_PARENT=/usr/local/libexec
 LIB=$LIB_PARENT/fedora-system-monitor
 ETC=/etc/fedora-system-monitor
 STATE=/var/lib/fedora-system-monitor
+KUMA_CREDENTIALS=/home/daniele/.config/codex/secrets/fedora_system_monitor_uptime_kuma.toml
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 
 install -d -m 0755 "$LIB_PARENT"
@@ -71,8 +72,13 @@ if [[ ! -f "$ETC/config.toml" ]]; then
     install -m 0640 -o root -g daniele "$ROOT/config/fedora-system-monitor.toml" "$ETC/config.toml"
 fi
 install -m 0644 "$ROOT/config/fedora-system-monitor.toml" "$ETC/config.toml.distribution"
-if [[ ! -f "$ETC/uptime-kuma.toml" ]]; then
-    install -m 0600 -o root -g root "$ROOT/config/uptime-kuma.toml.example" "$ETC/uptime-kuma.toml"
+if [[ -e "$KUMA_CREDENTIALS" ]]; then
+    [[ -f "$KUMA_CREDENTIALS" && $(stat -c '%U:%G:%a' "$KUMA_CREDENTIALS") == daniele:daniele:600 ]] || {
+        printf 'Canonical Kuma credentials must be a daniele:daniele mode 0600 file: %s\n' "$KUMA_CREDENTIALS" >&2
+        exit 1
+    }
+else
+    printf 'Kuma push credentials are not configured; no placeholder secret file was created.\n' >&2
 fi
 
 install -m 0644 "$ROOT/systemd/"*.service "$ROOT/systemd/"*.timer "$ROOT/systemd/"*.path /etc/systemd/system/

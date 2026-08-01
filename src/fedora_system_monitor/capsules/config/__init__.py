@@ -152,7 +152,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "backup_monthly_count": 12,
     },
     "notifications": {
-        "uptime_kuma_credentials": "/etc/fedora-system-monitor/uptime-kuma.toml",
+        "uptime_kuma_credentials": "/home/daniele/.config/codex/secrets/fedora_system_monitor_uptime_kuma.toml",
         "telegram_credentials": "/home/daniele/.config/codex/secrets/telegram.env",
         "filesystem_free_change_gib": 1.0,
         "reminder_seconds": 21600,

@@ -21,6 +21,10 @@ class ConfigTests(unittest.TestCase):
             first["notifications"]["telegram_credentials"],
             "/home/daniele/.config/codex/secrets/telegram.env",
         )
+        self.assertEqual(
+            first["notifications"]["uptime_kuma_credentials"],
+            "/home/daniele/.config/codex/secrets/fedora_system_monitor_uptime_kuma.toml",
+        )
         expected_services = list(DEFAULT_CONFIG["services"]["secondary"])
         first["services"]["secondary"].append("example.service")
         self.assertEqual(second["services"]["secondary"], expected_services)

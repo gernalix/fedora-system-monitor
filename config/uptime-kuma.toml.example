@@ -1,4 +1,4 @@
-# Copy only to /etc/fedora-system-monitor/uptime-kuma.toml with mode 0600.
+# Copy only to /home/daniele/.config/codex/secrets/fedora_system_monitor_uptime_kuma.toml with mode 0600.
 # Values stay blank until push monitors are created in Uptime Kuma.
 [push]
 system = ""

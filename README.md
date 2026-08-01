@@ -18,7 +18,7 @@ sudo fedora-system-monitor collect five_minute
 ```
 
 La configurazione operativa è `/etc/fedora-system-monitor/config.toml`; gli
-endpoint Kuma sono in `/etc/fedora-system-monitor/uptime-kuma.toml` con permessi
+endpoint Kuma sono in `/home/daniele/.config/codex/secrets/fedora_system_monitor_uptime_kuma.toml` con permessi
 `0600`; Telegram riusa
 `/home/daniele/.config/codex/secrets/telegram.env`, anch’esso `0600`.
 L’invio passa esclusivamente dal helper condiviso `telegram_notify.py`, installato

@@ -16,7 +16,7 @@ retry e nessun reinvio periodico dello stesso stato. Gli alert sono aggregati pe
 categoria: una transizione apre `DOWN`, la recovery invia una sola transizione
 `UP`, mentre gli heartbeat rappresentano lo stato complessivo corrente.
 
-Gli URL sono in `/etc/fedora-system-monitor/uptime-kuma.toml`, proprietà
+Gli URL sono in `/home/daniele/.config/codex/secrets/fedora_system_monitor_uptime_kuma.toml`, proprietà
 `root:root`, modo `0600`. Non vanno mai stampati, copiati nei documenti o
 committati. Il runtime non usa cookie o credenziali Kuma.
 
