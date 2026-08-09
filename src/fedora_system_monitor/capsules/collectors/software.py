@@ -24,6 +24,7 @@ from .common import (
     state_get,
     state_set,
 )
+from .dnf import collect_history
 from .model import CADENCE_SECONDS, CollectionResult, record
 
 
@@ -194,161 +195,6 @@ def collect_updates(scope: str, config: Mapping[str, Any], db: object) -> Collec
     return result
 
 
-_NEVRA_RE = re.compile(r"^(?P<name>.+)-(?P<epoch>\d+):(?P<version>.+)-(?P<release>[^-]+)\.(?P<arch>[^.]+)$")
-
-
-def _parse_nevra(nevra: str) -> dict[str, str]:
-    match = _NEVRA_RE.match(nevra)
-    if not match:
-        return {"package": nevra, "version": "", "architecture": ""}
-    fields = match.groupdict()
-    return {
-        "package": fields["name"],
-        "version": f"{fields['epoch']}:{fields['version']}-{fields['release']}",
-        "architecture": fields["arch"],
-    }
-
-
-def _dnf_history(scope: str, config: Mapping[str, Any], db: object) -> CollectionResult:
-    cadence = CADENCE_SECONDS[scope]
-    result = CollectionResult(scope)
-    listing = external(config, ["dnf", "history", "list", "--json"], timeout=max(20, float(config_value(config, ("monitor", "command_timeout_seconds"), ("general", "command_timeout_seconds"), default=12)) * 2))
-    if not listing.ok:
-        result.errors.append(f"dnf history: {command_problem(listing)}")
-        return result
-    try:
-        transactions = json.loads(listing.stdout or "[]")
-    except json.JSONDecodeError:
-        result.errors.append("dnf history: invalid JSON")
-        return result
-    if not isinstance(transactions, list):
-        return result
-    all_ids = sorted({int(item["id"]) for item in transactions if isinstance(item, Mapping) and str(item.get("id", "")).isdigit()})
-    seen = state_get(db, "software.dnf_seen_ids", None)
-    first_baseline = not isinstance(seen, list)
-    seen_ids = {int(value) for value in seen if str(value).isdigit()} if isinstance(seen, list) else set()
-    active_ids: set[int] = set()
-    try:
-        for row in db.query("SELECT device_id FROM alerts WHERE status='active' AND name='dnf_transaction_failed'"):
-            device_id = str(row.get("device_id") or "")
-            if device_id.startswith("dnf:") and device_id[4:].isdigit():
-                active_ids.add(int(device_id[4:]))
-    except (AttributeError, TypeError, ValueError):
-        pass
-    pending_ids = [transaction_id for transaction_id in all_ids if transaction_id not in seen_ids or transaction_id in active_ids]
-    # Initial Fedora image construction can contain thousands of package rows.
-    # Baseline it, but retain useful operator history from the ten latest txns.
-    new_ids = pending_ids[-10:] if first_baseline else pending_ids[-50:]
-    persisted_ids = set(seen_ids)
-    if first_baseline:
-        persisted_ids.update(set(all_ids) - set(new_ids))
-    captured = 0
-    for transaction_id in new_ids:
-        info = external(config, ["dnf", "history", "info", str(transaction_id), "--json"], timeout=max(20, float(config_value(config, ("monitor", "command_timeout_seconds"), ("general", "command_timeout_seconds"), default=12)) * 2))
-        if not info.ok:
-            result.errors.append(f"dnf transaction {transaction_id}: {command_problem(info)}")
-            continue
-        try:
-            payload = json.loads(info.stdout)
-            if isinstance(payload, list):
-                payload = payload[0] if payload else {}
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(payload, Mapping):
-            continue
-        status = str(payload.get("status") or "unknown")
-        normalized_status = status.strip().lower()
-        successful = normalized_status in {"ok", "success", "succeeded", "complete", "completed"}
-        failed = normalized_status in {"error", "failed", "failure", "aborted", "cancelled", "canceled"}
-        if not successful and not failed:
-            # DNF exposes a transaction as Started before its terminal state.
-            # Do not alert or mark it seen; a later path/hourly run will retry.
-            continue
-        persisted_ids.add(transaction_id)
-        packages = payload.get("packages")
-        if successful and transaction_id in active_ids:
-            result.events.append(
-                record(
-                    cadence,
-                    "software",
-                    "dnf_transaction_recovered",
-                    1,
-                    "transaction",
-                    source="dnf5_history",
-                    device_id=f"dnf:{transaction_id}",
-                    details={"transaction_id": transaction_id, "status": status, "user_id": payload.get("user_id")},
-                    outcome="ok",
-                )
-            )
-            captured += 1
-            continue
-        if failed:
-            result.events.append(record(cadence, "software", "dnf_transaction_failed", 1, "transaction", severity="warning", source="dnf5_history", device_id=f"dnf:{transaction_id}", details={"transaction_id": transaction_id, "status": status, "user_id": payload.get("user_id")}, outcome="error", error_message="package transaction did not complete successfully"))
-        if not isinstance(packages, list):
-            continue
-        bulk_summary_threshold = 25
-        for package in packages:
-            if not isinstance(package, Mapping):
-                continue
-            operation = str(package.get("action") or "change").lower()
-            parsed = _parse_nevra(str(package.get("nevra") or ""))
-            result.events.append(
-                record(
-                    cadence,
-                    "software",
-                    f"package_{operation.replace(' ', '_')}",
-                    1,
-                    "package",
-                    source="dnf5_history",
-                    device_id=f"rpm:{parsed['package']}:{parsed['architecture']}",
-                    details={
-                        "name": parsed["package"],
-                        "new_version": parsed["version"],
-                        "previous_version": None,
-                        "operation": operation,
-                        "repository": package.get("repository"),
-                        "architecture": parsed["architecture"],
-                        "user_id": payload.get("user_id"),
-                        "status": status,
-                        "transaction_id": transaction_id,
-                        "reboot_required": None,
-                    },
-                    outcome="ok" if successful else "error",
-                )
-            )
-            captured += 1
-        if len(packages) > bulk_summary_threshold:
-            actions: dict[str, int] = {}
-            for package in packages:
-                if isinstance(package, Mapping):
-                    action = str(package.get("action") or "change").lower()
-                    actions[action] = actions.get(action, 0) + 1
-            result.events.append(
-                record(
-                    cadence,
-                    "software",
-                    "dnf_bulk_transaction",
-                    len(packages),
-                    "packages",
-                    source="dnf5_history",
-                    device_id=f"dnf:{transaction_id}",
-                    details={
-                        "transaction_id": transaction_id,
-                        "status": status,
-                        "user_id": payload.get("user_id"),
-                        "package_count": len(packages),
-                        "actions": actions,
-                        "detailed_package_count": len(packages),
-                    },
-                    outcome="ok" if successful else "error",
-                )
-            )
-            captured += 1
-    state_set(db, "software.dnf_seen_ids", sorted(persisted_ids)[-2000:])
-    result.metrics.append(record(cadence, "software", "dnf_history_events_captured", captured, "events", source="dnf5_history"))
-    return result
-
-
 def _flatpak_history(scope: str, config: Mapping[str, Any], db: object) -> CollectionResult:
     cadence = CADENCE_SECONDS[scope]
     result = CollectionResult(scope)
@@ -416,7 +262,7 @@ def _flatpak_history(scope: str, config: Mapping[str, Any], db: object) -> Colle
 
 def collect_software_history(scope: str, config: Mapping[str, Any], db: object) -> CollectionResult:
     result = CollectionResult(scope)
-    result.merge(_dnf_history(scope, config, db))
+    result.merge(collect_history(scope, config, db))
     result.merge(_flatpak_history(scope, config, db))
     return result
 

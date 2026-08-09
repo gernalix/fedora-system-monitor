@@ -10,7 +10,7 @@ from unittest import mock
 from fedora_system_monitor.capsules.command import CommandResult
 from fedora_system_monitor.capsules.database import Database
 from fedora_system_monitor.capsules import collectors
-from fedora_system_monitor.capsules.collectors import periodic, software
+from fedora_system_monitor.capsules.collectors import dnf, periodic, software
 from fedora_system_monitor.capsules.collectors import common as collector_common
 from fedora_system_monitor.capsules.collectors import system as system_collectors
 from fedora_system_monitor.capsules.collectors.model import CollectionResult, record
@@ -262,7 +262,7 @@ NRestarts=1
                 return command_result("[]")
             return command_result(missing=True, returncode=127)
 
-        with mock.patch.object(software, "external", side_effect=fake_external):
+        with mock.patch.object(dnf, "external", side_effect=fake_external), mock.patch.object(software, "external", side_effect=fake_external):
             first = software.collect_software_history("software_event", {}, self.db)
             second = software.collect_software_history("software_event", {}, self.db)
         package_events = [event for event in first.events if event["name"] == "package_install"]
@@ -287,9 +287,9 @@ NRestarts=1
         with tempfile.TemporaryDirectory() as temp:
             database = Database(Path(temp) / "monitor.sqlite3")
             try:
-                with mock.patch.object(software, "external", side_effect=fake_external):
-                    started = software._dnf_history("software_event", {}, database)
-                    complete = software._dnf_history("software_event", {}, database)
+                with mock.patch.object(dnf, "external", side_effect=fake_external):
+                    started = dnf.collect_history("software_event", {}, database)
+                    complete = dnf.collect_history("software_event", {}, database)
             finally:
                 database.close()
         self.assertFalse(any(event["name"] == "dnf_transaction_failed" for event in started.events))

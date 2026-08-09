@@ -5,7 +5,7 @@ import unittest
 from unittest import mock
 
 from fedora_system_monitor.capsules.command import CommandResult
-from fedora_system_monitor.capsules.collectors import software
+from fedora_system_monitor.capsules.collectors import dnf
 
 
 class FakeDatabase:
@@ -48,8 +48,8 @@ class DnfFullHistoryTests(unittest.TestCase):
             raise AssertionError(f"unexpected command: {args}")
 
         database = FakeDatabase()
-        with mock.patch.object(software, "external", side_effect=fake_external):
-            result = software._dnf_history("software_event", {}, database)
+        with mock.patch.object(dnf, "external", side_effect=fake_external):
+            result = dnf.collect_history("software_event", {}, database)
 
         package_events = [event for event in result.events if event["name"] == "package_install"]
         self.assertEqual(len(package_events), len(packages))

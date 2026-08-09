@@ -74,7 +74,7 @@ class ActivityWatchCorrelationTests(unittest.TestCase):
                 )
             return _Response([])
 
-        with patch("fedora_system_monitor.capsules.activitywatch.urlopen", side_effect=fake_urlopen):
+        with patch("fedora_system_monitor.capsules.activitywatch.client.urlopen", side_effect=fake_urlopen):
             summary = correlate_activitywatch("2026-08-01T17:27:48.123456Z")
 
         rendered = json.dumps(summary)
@@ -87,7 +87,7 @@ class ActivityWatchCorrelationTests(unittest.TestCase):
         self.assertNotIn("example.invalid/private", rendered)
 
     def test_unavailable_server_is_reported_in_band(self) -> None:
-        with patch("fedora_system_monitor.capsules.activitywatch.urlopen", side_effect=TimeoutError):
+        with patch("fedora_system_monitor.capsules.activitywatch.client.urlopen", side_effect=TimeoutError):
             summary = correlate_activitywatch("2026-08-01T17:27:48Z", timeout=0.01)
         self.assertEqual(summary["available"], False)
         self.assertEqual(summary["reason"], "TimeoutError")

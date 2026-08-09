@@ -13,7 +13,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
-from fedora_system_monitor.app import _derived_recoveries, _hook_command, _persist_signals, main
+from fedora_system_monitor.app import main
+from fedora_system_monitor.capsules.runtime.coordinator import (
+    _derived_recoveries,
+    _hook_command,
+    _persist_signals,
+)
 from fedora_system_monitor.capsules.alerting import AlertSignal
 from fedora_system_monitor.capsules.database import Database
 from fedora_system_monitor.capsules.notifications import NotificationResult
@@ -124,7 +129,7 @@ class AppTests(unittest.TestCase):
                 finally:
                     database.close()
 
-            with patch("fedora_system_monitor.app.send_category_heartbeat", side_effect=fake_notify):
+            with patch("fedora_system_monitor.capsules.runtime.coordinator.send_category_heartbeat", side_effect=fake_notify):
                 with ThreadPoolExecutor(max_workers=2) as executor:
                     first = executor.submit(persist, active)
                     self.assertTrue(down_started.wait(2))
@@ -172,8 +177,8 @@ class AppTests(unittest.TestCase):
                     database.close()
 
             with (
-                patch("fedora_system_monitor.app._udev_properties", side_effect=properties),
-                patch("fedora_system_monitor.app.send_category_heartbeat"),
+                patch("fedora_system_monitor.capsules.runtime.coordinator._udev_properties", side_effect=properties),
+                patch("fedora_system_monitor.capsules.runtime.coordinator.send_category_heartbeat"),
                 ThreadPoolExecutor(max_workers=2) as executor,
             ):
                 add_future = executor.submit(invoke, add)
@@ -233,7 +238,7 @@ class AppTests(unittest.TestCase):
                     occurred_at=datetime.now(timezone.utc) - timedelta(minutes=5),
                 )
                 with patch(
-                    "fedora_system_monitor.app.run_command",
+                    "fedora_system_monitor.capsules.runtime.coordinator.run_command",
                     return_value=Namespace(ok=True),
                 ):
                     recoveries = _derived_recoveries(
