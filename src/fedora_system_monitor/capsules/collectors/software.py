@@ -286,8 +286,8 @@ def _dnf_history(scope: str, config: Mapping[str, Any], db: object) -> Collectio
             result.events.append(record(cadence, "software", "dnf_transaction_failed", 1, "transaction", severity="warning", source="dnf5_history", device_id=f"dnf:{transaction_id}", details={"transaction_id": transaction_id, "status": status, "user_id": payload.get("user_id")}, outcome="error", error_message="package transaction did not complete successfully"))
         if not isinstance(packages, list):
             continue
-        package_limit = 25
-        for package in packages[:package_limit]:
+        bulk_summary_threshold = 25
+        for package in packages:
             if not isinstance(package, Mapping):
                 continue
             operation = str(package.get("action") or "change").lower()
@@ -317,7 +317,7 @@ def _dnf_history(scope: str, config: Mapping[str, Any], db: object) -> Collectio
                 )
             )
             captured += 1
-        if len(packages) > package_limit:
+        if len(packages) > bulk_summary_threshold:
             actions: dict[str, int] = {}
             for package in packages:
                 if isinstance(package, Mapping):
@@ -338,7 +338,7 @@ def _dnf_history(scope: str, config: Mapping[str, Any], db: object) -> Collectio
                         "user_id": payload.get("user_id"),
                         "package_count": len(packages),
                         "actions": actions,
-                        "detailed_package_count": package_limit,
+                        "detailed_package_count": len(packages),
                     },
                     outcome="ok" if successful else "error",
                 )
