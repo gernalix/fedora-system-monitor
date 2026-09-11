@@ -131,7 +131,7 @@ def send_telegram_message(config: Mapping[str, Any], message: str) -> Notificati
 
         telegram_notify.load_config_files()
         telegram_notify.validate_config()
-        telegram_notify.send_message("Fedora System Monitor", redact_text(message))
+        telegram_notify.send_message("Fedora System Monitor", redact_text(message), project_id=15)
         delivered = True
         status = "delivered"
     except Exception as exc:

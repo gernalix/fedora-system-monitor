@@ -114,7 +114,7 @@ class NotificationTests(unittest.TestCase):
             with patch.dict(sys.modules, {"telegram_notify": helper}):
                 result = send_telegram_message(config, "test")
             self.assertTrue(result.delivered)
-            helper.send_message.assert_called_once_with("Fedora System Monitor", "test")
+            helper.send_message.assert_called_once_with("Fedora System Monitor", "test", project_id=15)
             self.assertNotIn(token, repr(result))
             self.assertNotIn(chat_id, repr(result))
 
@@ -133,6 +133,7 @@ class NotificationTests(unittest.TestCase):
         notify_filesystem_free_changes([_filesystem_metric("fsuuid:one", "/data", 10 * gib - 1100 * 1024**2)], config, db)
         self.assertEqual(sender.call_count, 1)
         self.assertIn("variazione -1.07 GiB", sender.call_args.args[1])
+        self.assertEqual(config["notifications"]["filesystem_free_change_gib"], 1.0)
 
     @patch(
         "fedora_system_monitor.capsules.notifications.send_telegram_message",
