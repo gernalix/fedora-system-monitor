@@ -22,13 +22,14 @@ utente `codex-session-archive.service`. Questi servizi oneshot sono sani quando
 l'ultima esecuzione ha `Result=success`; un fallimento rende rosso lo stesso
 failure domain senza creare monitor duplicati per ogni unità.
 
-Gli URL sono in `/home/daniele/.config/codex/secrets/fedora_system_monitor_uptime_kuma.toml`, proprietà
-`root:root`, modo `0600`. Non vanno mai stampati, copiati nei documenti o
+Gli URL sono in `/home/daniele/.config/codex/secrets/fedora_system_monitor_uptime_kuma.toml`,
+con modo `0600`. Non vanno mai stampati, copiati nei documenti o
 committati. Il runtime non usa cookie o credenziali Kuma.
 
-L’istanza attuale usa HTTP. La configurazione consente esplicitamente questo
-trasporto perché è l’infrastruttura già presente, ma HTTPS resta necessario per
-proteggere i push da osservatori sul percorso di rete.
+L'endpoint corrente è `https://kuma.danielegalati.com`. Cloudflare Tunnel porta
+il traffico al reverse proxy Caddy sulla VM Oracle; Kuma e il precedente proxy
+Nginx restano esposti solo su loopback. HTTP pubblico viene reindirizzato a
+HTTPS e la porta pubblica `3001` è chiusa.
 
 Il 10 luglio 2026 sono stati verificati heartbeat reali su tutti i monitor e una
 sequenza controllata Software `DOWN`/`UP`, entrambe accettate con HTTP 200. La
@@ -36,9 +37,8 @@ sessione Chrome usata solo per creare i monitor è poi scaduta e non è stata
 salvata. Per modificare in futuro le definizioni serve una nuova sessione Kuma
 autenticata; nessuna credenziale è richiesta per il funzionamento ordinario.
 
-Il 14 luglio 2026 il readback remoto SQLite di Kuma sulla VM Oracle ha verificato
-direttamente i monitor 39-43. Host è `DOWN` perché riceve heartbeat con
-`active alerts=1` per swap warning. Storage è `DOWN` perché il Seagate ha circa
-200 GB liberi ma solo il 5,2273% disponibile, ancora sotto la soglia critical del
-10%. Network, Services e Software risultano `UP`. Il browser/JWT non serve per
-la verifica runtime.
+L'11 settembre 2026 il readback remoto SQLite di Kuma sulla VM Oracle ha
+verificato direttamente i monitor 39-43 tutti `UP`. Due alert rimasti attivi da
+un boot precedente sono stati recuperati senza alterare le soglie: l'OOM era
+riferito a un altro `boot_id`, mentre il filesystem quasi pieno non era più
+montato né osservato. Il browser/JWT non serve per la verifica runtime.
