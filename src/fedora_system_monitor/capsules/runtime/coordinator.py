@@ -261,6 +261,62 @@ def _derived_recoveries(
         )
         for row in rows
     ]
+    if collector_healthy:
+        try:
+            current_boot_id = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+        except OSError:
+            current_boot_id = ""
+        if current_boot_id:
+            oom_rows = db.query(
+                "SELECT alert_key,category,name,severity,source,device_id,details_json FROM alerts "
+                "WHERE status='active' AND name IN ('oom_kill','oom_killer')"
+            )
+            for row in oom_rows:
+                try:
+                    details = json.loads(str(row.get("details_json") or "{}"))
+                except json.JSONDecodeError:
+                    details = {}
+                journal_identity = details.get("journal_identity") or {}
+                alert_boot_id = str(journal_identity.get("boot_id") or details.get("boot_id") or "")
+                if alert_boot_id and alert_boot_id != current_boot_id:
+                    recoveries.append(
+                        AlertSignal(
+                            key=row["alert_key"],
+                            category=row["category"],
+                            name=row["name"],
+                            severity=row["severity"],
+                            active=False,
+                            message="OOM alert belongs to a previous boot",
+                            source="boot_reconciliation",
+                            device_id=row["device_id"] or "host",
+                            details={"recovery_source": "new_boot"},
+                        )
+                    )
+    if scope == "five_minute" and collector_healthy:
+        observed_filesystems = {
+            str(metric.get("device_id") or "")
+            for metric in metrics
+            if metric.get("name") == "filesystem.free_percent"
+        }
+        capacity_rows = db.query(
+            "SELECT alert_key,category,name,severity,source,device_id FROM alerts "
+            "WHERE status='active' AND name IN ('filesystem.free_percent','filesystem.inode_free_percent')"
+        )
+        recoveries.extend(
+            AlertSignal(
+                key=row["alert_key"],
+                category=row["category"],
+                name=row["name"],
+                severity=row["severity"],
+                active=False,
+                message="filesystem is absent from a complete mounted-filesystem scan",
+                source="mount_reconciliation",
+                device_id=row["device_id"] or "host",
+                details={"recovery_source": "filesystem_not_mounted"},
+            )
+            for row in capacity_rows
+            if str(row["device_id"] or "") not in observed_filesystems
+        )
     # Point-in-time kernel I/O alerts must remain visible for at least one full
     # journal lookback, but they must not remain active forever.  A successful
     # fifteen-minute collector with no fresh I/O event is explicit recovery

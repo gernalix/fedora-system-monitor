@@ -24,7 +24,7 @@ journal_lookback_minutes = 20
 [services]
 auto_detect = true
 essential = ["NetworkManager.service", "firewalld.service"]
-secondary = ["bluetooth.service", "libvirtd.service", "podman.service", "docker.service", "rustdesk.service", "smartd.service", "sshd.service", "uptime-kuma.service"]
+secondary = ["bluetooth.service", "libvirtd.service", "podman.service", "docker.service", "rustdesk.service", "smartd.service", "sshd.service", "uptime-kuma.service", "fedora-diagnostics-telemetry.service", "x-repost-downloader.service", "user:codex-session-archive.service"]
 name_patterns = ["backup", "adb", "kuma", "megavault", "monitor"]
 
 [storage]

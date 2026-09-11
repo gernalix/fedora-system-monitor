@@ -8,13 +8,19 @@ moltiplicare le notifiche:
 | 39 | Fedora Host | 180 s | CPU, memoria, swap, temperature, kernel, OOM |
 | 40 | Fedora Storage | 480 s | filesystem, SMART, I/O, mount, dispositivi |
 | 41 | Fedora Network | 180 s | Internet, gateway, Wi-Fi, VPN, NetworkManager |
-| 42 | Fedora Services | 180 s | unità failed, restart e restart loop |
+| 42 | Fedora Services | 180 s | unità failed, restart e restart loop, incluse le unità persistenti dei progetti Fedora |
 | 43 | Fedora Software | 5400 s | aggiornamenti, transazioni e inventari |
 
 Ogni monitor ha timeout 48 secondi, retry coerente con la frequenza, massimo due
 retry e nessun reinvio periodico dello stesso stato. Gli alert sono aggregati per
 categoria: una transizione apre `DOWN`, la recovery invia una sola transizione
 `UP`, mentre gli heartbeat rappresentano lo stato complessivo corrente.
+
+`Fedora Services` include esplicitamente anche
+`fedora-diagnostics-telemetry.service`, `x-repost-downloader.service` e la unità
+utente `codex-session-archive.service`. Questi servizi oneshot sono sani quando
+l'ultima esecuzione ha `Result=success`; un fallimento rende rosso lo stesso
+failure domain senza creare monitor duplicati per ogni unità.
 
 Gli URL sono in `/home/daniele/.config/codex/secrets/fedora_system_monitor_uptime_kuma.toml`, proprietà
 `root:root`, modo `0600`. Non vanno mai stampati, copiati nei documenti o

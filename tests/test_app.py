@@ -254,6 +254,53 @@ class AppTests(unittest.TestCase):
             finally:
                 database.close()
 
+    def test_new_boot_recovers_oom_alert(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            database = Database(Path(temp) / "monitor.sqlite3")
+            try:
+                database.open_alert_transition(
+                    "event:oom_kill:host",
+                    category="system",
+                    name="oom_kill",
+                    severity="critical",
+                    source="kernel",
+                    device_id="host",
+                    details={"journal_identity": {"boot_id": "old-boot"}},
+                    message="oom kill",
+                )
+                with patch.object(Path, "read_text", return_value="current-boot\n"):
+                    recoveries = _derived_recoveries(database, [], collector_healthy=True)
+                self.assertEqual(len(recoveries), 1)
+                self.assertEqual(recoveries[0].details["recovery_source"], "new_boot")
+            finally:
+                database.close()
+
+    def test_complete_filesystem_scan_recovers_absent_capacity_alert(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            database = Database(Path(temp) / "monitor.sqlite3")
+            try:
+                database.open_alert_transition(
+                    "filesystem.free_percent:old-filesystem",
+                    category="filesystem",
+                    name="filesystem.free_percent",
+                    severity="critical",
+                    source="statvfs",
+                    device_id="old-filesystem",
+                    message="filesystem free space is 3.0%",
+                )
+                metrics = [{"name": "filesystem.free_percent", "device_id": "current-filesystem"}]
+                recoveries = _derived_recoveries(
+                    database,
+                    [],
+                    metrics,
+                    scope="five_minute",
+                    collector_healthy=True,
+                )
+                self.assertEqual(len(recoveries), 1)
+                self.assertEqual(recoveries[0].details["recovery_source"], "filesystem_not_mounted")
+            finally:
+                database.close()
+
 
 if __name__ == "__main__":
     unittest.main()
