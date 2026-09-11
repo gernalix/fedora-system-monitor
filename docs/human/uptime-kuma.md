@@ -31,6 +31,28 @@ il traffico al reverse proxy Caddy sulla VM Oracle; Kuma e il precedente proxy
 Nginx restano esposti solo su loopback. HTTP pubblico viene reindirizzato a
 HTTPS e la porta pubblica `3001` è chiusa.
 
+## Gate di verifica end-to-end
+
+Per future migrazioni di endpoint, proxy, tunnel, DNS o TLS, una risposta HTTP
+`2xx` al push non è da sola una prova di consegna: proxy o edge possono
+rispondere senza che il nuovo heartbeat raggiunga Uptime Kuma.
+
+Prima di dichiarare PASS:
+
+1. inviare dal percorso producer reale un probe con un nonce/correlation marker
+   univoco nel messaggio, senza esporre il token dell'endpoint;
+2. verificare nel DB live/backup recente o nel log autorevole di Kuma che sia
+   arrivato proprio quel marker e che monitor/timestamp siano quelli attesi;
+3. verificare almeno due cicli reali quando il task modifica scheduling,
+   heartbeat o timeout;
+4. mantenere il percorso legacy finché questo readback non passa;
+5. non ripetere lo stesso probe fallito senza nuova evidenza o una modifica del
+   livello sospetto.
+
+Il codice runtime continua a trattare `2xx` come conferma di trasporto per il
+singolo invio ordinario; il gate sopra è una regola di acceptance per cutover e
+diagnostica, non un readback remoto ad ogni heartbeat.
+
 Il 10 luglio 2026 sono stati verificati heartbeat reali su tutti i monitor e una
 sequenza controllata Software `DOWN`/`UP`, entrambe accettate con HTTP 200. La
 sessione Chrome usata solo per creare i monitor è poi scaduta e non è stata
