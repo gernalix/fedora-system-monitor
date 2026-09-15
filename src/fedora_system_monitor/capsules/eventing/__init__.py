@@ -100,6 +100,11 @@ _HARDWARE_ERROR_RE = re.compile(
     r"^(?:mce: )?\[Hardware Error\]:|^EDAC\s+[^:]+:\s+(?:UE|Uncorrected Error)\b",
     re.IGNORECASE,
 )
+_SMARTD_ALERT_RE = re.compile(
+    r"^Device: (?P<device>/dev/\S+) \[(?P<bridge>[^\]]+)\], "
+    r"(?P<problem>(?:failed to read NVMe SMART/Health Information|open\(\) of NVMe device failed: No such device|.*SMART.*(?:failed|error).*))$",
+    re.IGNORECASE,
+)
 
 _SYSTEMD_FAILED_RE = re.compile(
     r"^(?P<unit>[A-Za-z0-9_.:@\\-]+\.(?:service|mount|automount|socket|timer|path)): "
@@ -541,6 +546,35 @@ def _is_network_manager(entry: Mapping[str, object]) -> bool:
     return entry.get("_SYSTEMD_UNIT") == "NetworkManager.service"
 
 
+def _is_smartd(entry: Mapping[str, object]) -> bool:
+    return entry.get("_SYSTEMD_UNIT") == "smartd.service" or entry.get("SYSLOG_IDENTIFIER") == "smartd"
+
+
+def _classify_smartd(message: str) -> Event | None:
+    match = _SMARTD_ALERT_RE.match(message)
+    if not match:
+        return None
+    device = _clean_device_node(match.group("device"))
+    bridge = _clean_text(match.group("bridge"), 120)
+    problem = _clean_text(match.group("problem"), 300)
+    digest = _digest(f"{device}:{bridge}:{problem}")
+    severity = "warning" if "No such device" in problem or "failed to read NVMe SMART/Health Information" in problem else "critical"
+    event = _event(
+        category="hardware",
+        name="smartd_smart_alert",
+        severity=severity,
+        source="smartd",
+        device_id=f"smartd:{_digest(device + ':' + bridge)}",
+        details={"device_node": device, "bridge": bridge, "smartd_message": f"Device: {device} [{bridge}], {problem}"},
+        outcome="failed",
+        error_message=problem,
+        dedup_key=f"smartd:smart-alert:{digest}",
+        dedup_window_seconds=3600,
+    )
+    event["message"] = f"SMART disk alert: {problem}"
+    return event
+
+
 def _classify_kernel(entry: Mapping[str, object], message: str) -> Event | None:
     match = _OOM_RE.match(message)
     if match:
@@ -959,6 +993,10 @@ def classify_journal(entry: Mapping[str, object] | object) -> Event | None:
         event = _classify_network_manager(message)
         if event:
             return event
+    if _is_smartd(entry):
+        event = _classify_smartd(message)
+        if event:
+            return event
 
     comm = entry.get("_COMM")
     identifier = entry.get("SYSLOG_IDENTIFIER")
@@ -1085,6 +1123,8 @@ def _journal_command(cursor: str, lookback_seconds: int) -> list[str]:
             "_SYSTEMD_UNIT=udisks2.service",
             "+",
             "_SYSTEMD_UNIT=NetworkManager.service",
+            "+",
+            "_SYSTEMD_UNIT=smartd.service",
             "+",
             f"MESSAGE_ID={_COREDUMP_MESSAGE_ID}",
         )

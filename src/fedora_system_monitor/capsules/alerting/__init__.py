@@ -315,6 +315,7 @@ def evaluate_event_alerts(events: Iterable[dict[str, Any]]) -> list[AlertSignal]
         "io_error",
         "filesystem_read_only",
         "smart_failed",
+        "smartd_smart_alert",
         "service_failed",
         "unsafe_removal",
         "temperature_critical",

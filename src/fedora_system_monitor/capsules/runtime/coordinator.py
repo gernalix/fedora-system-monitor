@@ -63,6 +63,7 @@ from fedora_system_monitor.capsules.reporting import (
     timeline_report,
     trends_report,
 )
+from fedora_system_monitor.capsules.smart_action import maybe_notify_smart_alert, run_cli as run_smart_alert_cli, smart_alert_from_event
 
 
 LOGGER = logging.getLogger("fedora-system-monitor")
@@ -842,6 +843,10 @@ def _hook_command(args: argparse.Namespace, config: dict[str, Any], db: Database
 def _daemon(config: dict[str, Any], db: Database) -> int:
     def on_event(event: dict[str, Any]) -> None:
         _enrich_event_device(event)
+        if event.get("name") == "smartd_smart_alert":
+            alert = smart_alert_from_event(config, event)
+            if alert is not None:
+                maybe_notify_smart_alert(config, db, alert)
         _persist_signals(db, evaluate_event_alerts([event]), config)
 
     stop_event = threading.Event()
@@ -886,6 +891,8 @@ def _backfill(args: argparse.Namespace, config: dict[str, Any], db: Database) ->
         "_SYSTEMD_UNIT=udisks2.service",
         "+",
         "_SYSTEMD_UNIT=NetworkManager.service",
+        "+",
+        "_SYSTEMD_UNIT=smartd.service",
         "+",
         "MESSAGE_ID=fc2e22bc6ee647b6b90729ab34a250b1",
     ]
@@ -1044,10 +1051,10 @@ def execute(args: argparse.Namespace) -> int:
     }
     if args.command == "alerts" and not args.resolve:
         read_only_commands.add("alerts")
-    config, db = _load_runtime(
-        args,
-        database=args.command not in {"config-check", "kuma-configure", *read_only_commands},
-    )
+    database_required = args.command not in {"config-check", "kuma-configure", *read_only_commands}
+    if args.command == "smart-alert" and (args.action in {"details", "disks"} or args.no_open):
+        database_required = False
+    config, db = _load_runtime(args, database=database_required)
     if args.command == "config-check":
         errors = validate_config(config)
         _print({"ok": not errors, "errors": errors, "uptime_kuma": integration_status(config)}, args)
@@ -1064,6 +1071,10 @@ def execute(args: argparse.Namespace) -> int:
         output = _self_test(config, system=args.system)
         _print(output, args)
         return 0 if output["passed"] else 1
+    if args.command == "smart-alert":
+        output = run_smart_alert_cli(args, config, db)
+        _print(output, args)
+        return 0
     if args.command == "export":
         path = Path(config["monitor"]["database_path"])
         rows = export_rows(path, table=args.table, since_hours=args.since_hours, limit=args.limit)
