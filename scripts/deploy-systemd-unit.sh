@@ -35,7 +35,11 @@ for unit in "${units[@]}"; do
     install -m 0644 "$ROOT/systemd/$unit" "/etc/systemd/system/$unit"
 done
 
-command -v restorecon >/dev/null && restorecon -F "${units[@]/#//etc/systemd/system/}" || true
+if command -v restorecon >/dev/null; then
+    for unit in "${units[@]}"; do
+        restorecon -F "/etc/systemd/system/$unit" || true
+    done
+fi
 systemctl daemon-reload
 
 for unit in "${units[@]}"; do
