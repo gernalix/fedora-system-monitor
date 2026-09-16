@@ -14,9 +14,10 @@ class _FakeDatabase:
     def __init__(self, root: Path) -> None:
         self.path = root / "monitor.sqlite3"
         self._state: dict[str, object] = {}
+        self.alerts: list[dict[str, object]] = []
 
     def active_alerts(self) -> list[dict[str, object]]:
-        return []
+        return self.alerts
 
     def get_state(self, key: str, default: object = None, *, namespace: str = "runtime") -> object:
         del namespace
@@ -64,6 +65,47 @@ class StorageHeartbeatPolicyTests(unittest.TestCase):
         self.assertEqual(len(storage), 1)
         self.assertTrue(storage[0][1])
         self.assertEqual(storage[0][2], "storage: collectors complete; active alerts=0")
+
+    def test_system_alert_does_not_create_push_heartbeat_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            database = _FakeDatabase(root)
+            database.alerts = [
+                {
+                    "alert_key": "sensor.alarm:spd5118:sensor_1",
+                    "category": "temperature",
+                    "name": "sensor.alarm",
+                    "severity": "warning",
+                }
+            ]
+            config = {"monitor": {"lock_path": str(root / "collector.lock")}}
+            calls: list[tuple[str, bool, str]] = []
+
+            def fake_collect(*_: object, **__: object) -> dict[str, object]:
+                return {"outcome": "ok", "duration_ms": 25}
+
+            def fake_heartbeat(
+                _: object,
+                category: str,
+                *,
+                healthy: bool,
+                message: str,
+                ping_ms: int | None = None,
+            ) -> NotificationResult:
+                del ping_ms
+                calls.append((category, healthy, message))
+                return NotificationResult("uptime-kuma", category, True, True, "delivered")
+
+            with (
+                patch("fedora_system_monitor.capsules.runtime.coordinator._run_isolated_scope", fake_collect),
+                patch("fedora_system_monitor.capsules.runtime.coordinator.send_category_heartbeat", fake_heartbeat),
+            ):
+                _collect_command(Namespace(scope="minute"), config, database)  # type: ignore[arg-type]
+
+        system = [call for call in calls if call[0] == "system"]
+        self.assertEqual(len(system), 1)
+        self.assertTrue(system[0][1])
+        self.assertEqual(system[0][2], "system: collectors complete; active alerts=1")
 
 
 if __name__ == "__main__":

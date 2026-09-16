@@ -771,7 +771,7 @@ def _collect_command(args: argparse.Namespace, config: dict[str, Any], db: Datab
         heartbeat = send_category_heartbeat(
             config,
             category,
-            healthy=not failed and active == 0,
+            healthy=not failed and (active == 0 or category == "system"),
             message=f"{category}: collectors complete; active alerts={active}",
             ping_ms=duration,
         )

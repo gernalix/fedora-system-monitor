@@ -157,6 +157,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "filesystem_free_change_gib": 1.0,
         "reminder_seconds": 21600,
         "timeout_seconds": 5,
+        "inverted_categories": [],
     },
 }
 
@@ -521,6 +522,8 @@ def validate_config(config: Mapping[str, Any] | object) -> list[str]:
     _require_positive(config, ("notifications", "filesystem_free_change_gib"), errors)
     _require_positive(config, ("notifications", "reminder_seconds"), errors)
     _require_positive(config, ("notifications", "timeout_seconds"), errors)
+    _require_list(config, ("notifications", "inverted_categories"), errors)
+    require_string_items(("notifications", "inverted_categories"))
     return errors
 
 

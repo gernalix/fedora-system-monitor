@@ -113,6 +113,32 @@ class NotificationTests(unittest.TestCase):
         self.assertFalse(mocked.call_args_list[1].kwargs["up"])
         self.assertEqual(mocked.call_args_list[1].kwargs["message"], "storage: collectors complete; active alerts=1")
 
+    @patch("fedora_system_monitor.capsules.notifications._push", return_value=(True, "delivered"))
+    def test_inverted_category_reports_opposite_status_once(self, mocked) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "kuma.toml"
+            path.write_text('[push]\nstorage="https://example.test/api/push/value"\n', encoding="utf-8")
+            path.chmod(0o600)
+            config = {
+                "notifications": {
+                    "uptime_kuma_credentials": str(path),
+                    "timeout_seconds": 1,
+                    "inverted_categories": ["storage"],
+                }
+            }
+            result = send_category_heartbeat(
+                config,
+                "storage",
+                healthy=False,
+                message="storage: collectors complete; active alerts=1",
+                ping_ms=25,
+            )
+
+        self.assertTrue(result.delivered)
+        self.assertEqual(mocked.call_count, 1)
+        self.assertTrue(mocked.call_args.kwargs["up"])
+        self.assertEqual(mocked.call_args.kwargs["message"], "storage: collectors complete; active alerts=1")
+
     def test_telegram_result_never_contains_credentials(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "telegram.env"
