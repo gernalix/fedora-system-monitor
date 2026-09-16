@@ -7,6 +7,17 @@ fi
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
+if [[ ! -d "$ROOT/.git" ]]; then
+    printf 'Systemd unit deploy requires a Git checkout: %s\n' "$ROOT" >&2
+    exit 1
+fi
+if [[ -n $(git -C "$ROOT" status --porcelain) ]]; then
+    printf 'Refusing to deploy systemd units from a dirty checkout.\n' >&2
+    git -C "$ROOT" status --short >&2
+    exit 1
+fi
+REVISION=$(git -C "$ROOT" rev-parse HEAD)
+
 if [[ $# -lt 1 ]]; then
     printf 'Usage: %s <fedora-system-monitor-*.service|timer|path> [...]\n' "$0" >&2
     exit 2
@@ -46,6 +57,6 @@ for unit in "${units[@]}"; do
     systemd-analyze verify "/etc/systemd/system/$unit"
 done
 
-printf 'Fedora System Monitor systemd units deployed:'
+printf 'Fedora System Monitor systemd units deployed from %s:' "$REVISION"
 printf ' %s' "${units[@]}"
 printf '\n'
