@@ -146,7 +146,13 @@ def recover_chrome_session_token(profile: str | Path, origin: str) -> str:
     return token
 
 
-def _monitor_payload(spec: KumaMonitorSpec, token: str, notification_ids: Mapping[str, bool]) -> dict[str, Any]:
+def _monitor_payload(
+    spec: KumaMonitorSpec,
+    token: str,
+    notification_ids: Mapping[str, bool],
+    *,
+    upside_down: bool = False,
+) -> dict[str, Any]:
     return {
         "active": True,
         "type": "push",
@@ -165,7 +171,7 @@ def _monitor_payload(spec: KumaMonitorSpec, token: str, notification_ids: Mappin
         "retryOnlyOnStatusCodeFailure": False,
         "notificationIDList": dict(notification_ids),
         "ignoreTls": False,
-        "upsideDown": False,
+        "upsideDown": upside_down,
         "expiryNotification": False,
         "domainExpiryNotification": False,
         "maxredirects": 10,
@@ -222,6 +228,13 @@ def _write_credentials(path: Path, base_url: str, tokens: Mapping[str, str]) -> 
             pass
         Path(temporary).unlink(missing_ok=True)
         raise
+
+
+def _monitor_upside_down(current: Mapping[str, Any] | None) -> bool:
+    """Preserve an existing Kuma inversion flag when reconciling monitors."""
+    if not isinstance(current, Mapping):
+        return False
+    return bool(current.get("upsideDown", current.get("upside_down", False)))
 
 
 def configure_push_monitors(
@@ -293,7 +306,12 @@ def configure_push_monitors(
                 details = client.call("getMonitor", int(monitor_id), timeout=15)
                 current = details.get("monitor") if isinstance(details, Mapping) else None
                 current_notifications = current.get("notificationIDList", {}) if isinstance(current, Mapping) else {}
-                payload = _monitor_payload(spec, existing_token, current_notifications or notifications)
+                payload = _monitor_payload(
+                    spec,
+                    existing_token,
+                    current_notifications or notifications,
+                    upside_down=_monitor_upside_down(current),
+                )
                 payload["id"] = int(monitor_id)
                 edited = client.call("editMonitor", payload, timeout=20)
                 if not isinstance(edited, Mapping) or not edited.get("ok"):
