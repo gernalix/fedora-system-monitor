@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 import unittest
 from unittest import mock
 
 from fedora_system_monitor.capsules.command import CommandResult
 from fedora_system_monitor.capsules.collectors import common
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 class OperatorExternalEnvironmentTests(unittest.TestCase):
@@ -27,6 +31,14 @@ class OperatorExternalEnvironmentTests(unittest.TestCase):
         self.assertEqual(captured[:5], ["runuser", "-u", "daniele", "--", "env"])
         self.assertIn("XDG_RUNTIME_DIR=/run/user/1000", captured)
         self.assertIn("DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus", captured)
+
+    def test_collector_unit_allows_operator_uid_transition(self) -> None:
+        unit = (REPO_ROOT / "systemd/fedora-system-monitor-collect@.service").read_text(encoding="utf-8")
+
+        self.assertIn("User=root", unit)
+        self.assertIn("CAP_SETGID", unit)
+        self.assertIn("CAP_SETUID", unit)
+        self.assertNotIn("NoNewPrivileges=yes", unit)
 
 
 if __name__ == "__main__":
