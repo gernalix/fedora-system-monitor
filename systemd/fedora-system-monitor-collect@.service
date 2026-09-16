@@ -20,6 +20,7 @@ StateDirectoryMode=0750
 RuntimeDirectory=fedora-system-monitor
 RuntimeDirectoryMode=0750
 RuntimeDirectoryPreserve=yes
+# Keep NoNewPrivileges disabled: operator_external uses runuser for read-only user-session collectors.
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=read-only
