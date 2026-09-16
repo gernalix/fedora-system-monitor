@@ -75,4 +75,19 @@ if ! /usr/local/bin/fedora-system-monitor config-check >/dev/null \
 fi
 rm -rf "$OLD"
 
+systemd_drift=()
+for source in "$ROOT"/systemd/*.service "$ROOT"/systemd/*.timer "$ROOT"/systemd/*.path; do
+    [[ -f "$source" ]] || continue
+    unit=$(basename "$source")
+    installed="/etc/systemd/system/$unit"
+    if [[ ! -f "$installed" ]] || ! cmp -s "$source" "$installed"; then
+        systemd_drift+=("$unit")
+    fi
+done
+
 printf 'Fedora System Monitor runtime deployed: %s\n' "$REVISION"
+if (( ${#systemd_drift[@]} )); then
+    printf 'NOTICE: runtime-only deploy did not synchronize systemd definitions:' >&2
+    printf ' %s' "${systemd_drift[@]}" >&2
+    printf '\nUse scripts/deploy-systemd-unit.sh for the affected unit(s).\n' >&2
+fi
