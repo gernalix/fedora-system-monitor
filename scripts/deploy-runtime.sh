@@ -41,6 +41,8 @@ printf '%s\n' "$REVISION" > "$STAGE/.source-revision"
 
 /usr/bin/python3 -m compileall -q "$STAGE/fedora_system_monitor"
 PYTHONPATH="$STAGE" /usr/bin/python3 -c 'import fedora_system_monitor; import fedora_system_monitor.capsules.runtime.coordinator'
+PYTHONPATH="$STAGE" /usr/bin/python3 -m fedora_system_monitor config-check >/dev/null
+PYTHONPATH="$STAGE" /usr/bin/python3 -m fedora_system_monitor db-check >/dev/null
 chown -R root:root "$STAGE"
 find "$STAGE" -type d -exec chmod 0755 '{}' +
 find "$STAGE" -type f -exec chmod 0644 '{}' +
@@ -58,12 +60,19 @@ if ! mv "$STAGE" "$LIB"; then
     exit 1
 fi
 STAGE=
-rm -rf "$OLD"
 
 install -m 0755 "$ROOT/packaging/fedora-system-monitor" /usr/local/bin/fedora-system-monitor
 command -v restorecon >/dev/null && restorecon -RF "$LIB" /usr/local/bin/fedora-system-monitor || true
 
-/usr/local/bin/fedora-system-monitor config-check >/dev/null
-/usr/local/bin/fedora-system-monitor db-check >/dev/null
+if ! /usr/local/bin/fedora-system-monitor config-check >/dev/null \
+    || ! /usr/local/bin/fedora-system-monitor db-check >/dev/null; then
+    FAILED="$LIB_PARENT/.fedora-system-monitor.failed-$STAMP"
+    mv "$LIB" "$FAILED"
+    [[ ! -e "$OLD" ]] || mv "$OLD" "$LIB"
+    rm -rf "$FAILED"
+    printf 'Runtime validation failed; previous runtime restored.\n' >&2
+    exit 1
+fi
+rm -rf "$OLD"
 
 printf 'Fedora System Monitor runtime deployed: %s\n' "$REVISION"
