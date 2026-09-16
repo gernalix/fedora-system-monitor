@@ -71,7 +71,7 @@ class AppTests(unittest.TestCase):
                 db.close()
             self.assertIn("memory.used_percent", names)
 
-    def test_isolated_scope_uses_persisted_partial_result(self) -> None:
+    def test_isolated_scope_uses_new_persisted_partial_result(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             database = Path(temp) / "monitor.sqlite3"
             db = Database(database)
@@ -106,6 +106,57 @@ class AppTests(unittest.TestCase):
             self.assertEqual(payload["metrics"], 33)
             self.assertEqual(payload["hardware_inventory"], 17)
             self.assertEqual([row["outcome"] for row in rows], ["partial"])
+
+    def test_isolated_scope_does_not_reuse_old_persisted_result(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            database = Path(temp) / "monitor.sqlite3"
+            db = Database(database)
+            try:
+                db.record_collector_run(
+                    "daily",
+                    cadence_seconds=86400,
+                    outcome="partial",
+                    metrics_inserted=33,
+                    error_message="old partial",
+                    details={"errors": ["old partial"]},
+                )
+
+                def fake_run_command(*_: object, **__: object) -> CommandResult:
+                    return CommandResult((), 1, "", "new failure", 250)
+
+                with patch("fedora_system_monitor.capsules.runtime.coordinator.run_command", fake_run_command):
+                    payload = _run_isolated_scope(Namespace(config=self.config), "daily", {}, db)
+                rows = db.query("SELECT outcome,metrics_inserted FROM collector_runs ORDER BY id")
+            finally:
+                db.close()
+
+            self.assertEqual(payload["outcome"], "error")
+            self.assertEqual(payload["metrics"], 0)
+            self.assertEqual(
+                [(row["outcome"], row["metrics_inserted"]) for row in rows],
+                [("partial", 33), ("error", 0)],
+            )
+
+    def test_isolated_scope_records_subprocess_diagnostics_without_new_run(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            database = Path(temp) / "monitor.sqlite3"
+            db = Database(database)
+            try:
+                def fake_run_command(*_: object, **__: object) -> CommandResult:
+                    return CommandResult((), 2, "", "token=secret failed", 125, timed_out=True)
+
+                with patch("fedora_system_monitor.capsules.runtime.coordinator.run_command", fake_run_command):
+                    payload = _run_isolated_scope(Namespace(config=self.config), "weekly", {}, db)
+                row = db.query("SELECT outcome,error_message,details_json FROM collector_runs ORDER BY id DESC LIMIT 1")[0]
+            finally:
+                db.close()
+
+            details = json.loads(row["details_json"])
+            self.assertEqual(payload["outcome"], "error")
+            self.assertEqual(row["error_message"], "collector deadline exceeded")
+            self.assertEqual(details["subprocess"]["returncode"], 2)
+            self.assertTrue(details["subprocess"]["timed_out"])
+            self.assertIn("[REDACTED]", details["subprocess"]["stderr"])
 
     def test_device_units_pass_literal_systemd_instance(self) -> None:
         unit_directory = Path(__file__).resolve().parents[1] / "systemd"

@@ -628,7 +628,7 @@ def _run_isolated_scope(args: argparse.Namespace, scope: str, config: dict[str, 
         "weekly": 900,
         "software_event": 120,
     }
-    started_at = datetime.now(timezone.utc)
+    boundary_id = _latest_collector_run_id(db, scope)
     command = [
         sys.executable,
         "-m",
@@ -649,16 +649,17 @@ def _run_isolated_scope(args: argparse.Namespace, scope: str, config: dict[str, 
             payload = None
         if isinstance(payload, dict) and payload.get("scope") == scope:
             return payload
-    persisted = _latest_persisted_scope_result(db, scope, started_at)
+    persisted = _latest_persisted_scope_result(db, scope, boundary_id)
     if persisted is not None:
         return persisted
     reason = "collector deadline exceeded" if result.timed_out else "collector subprocess failed"
+    diagnostics = _subprocess_diagnostics(result)
     db.record_collector_run(
         scope,
         cadence_seconds=max(1, CADENCE_SECONDS.get(scope, 3600)),
         outcome="error",
         error_message=reason,
-        details={"isolated": True},
+        details={"isolated": True, "subprocess": diagnostics},
     )
     event = {
         "category": "collector",
@@ -671,19 +672,35 @@ def _run_isolated_scope(args: argparse.Namespace, scope: str, config: dict[str, 
         "dedup_key": f"collector:{scope}:{'timeout' if result.timed_out else 'failure'}",
     }
     db.insert_events(event, dedup_window_seconds=300)
-    return {"scope": scope, "outcome": "error", "duration_ms": result.duration_ms, "metrics": 0, "events": 1, "hardware_inventory": 0, "software_inventory": 0, "errors": [reason], "alert_transitions": 0, "maintenance": {}}
+    return {"scope": scope, "outcome": "error", "duration_ms": result.duration_ms, "metrics": 0, "events": 1, "hardware_inventory": 0, "software_inventory": 0, "errors": [reason], "alert_transitions": 0, "maintenance": {}, "subprocess": diagnostics}
 
 
-def _latest_persisted_scope_result(db: Database, scope: str, started_at: datetime) -> dict[str, Any] | None:
+def _latest_collector_run_id(db: Database, scope: str) -> int:
+    rows = db.query(
+        "SELECT COALESCE(MAX(id), 0) AS boundary_id FROM collector_runs WHERE name = ?",
+        (scope,),
+    )
+    return int(rows[0]["boundary_id"] or 0)
+
+
+def _subprocess_diagnostics(result: Any) -> dict[str, Any]:
+    return {
+        "returncode": int(getattr(result, "returncode", 0)),
+        "timed_out": bool(getattr(result, "timed_out", False)),
+        "stderr": redact_text(str(getattr(result, "stderr", "")))[:1000],
+    }
+
+
+def _latest_persisted_scope_result(db: Database, scope: str, boundary_id: int) -> dict[str, Any] | None:
     rows = db.query(
         """
         SELECT outcome,duration_ms,metrics_inserted,events_inserted,error_message,details_json
         FROM collector_runs
-        WHERE name = ? AND outcome IN ('ok', 'partial') AND started_at_utc >= ?
+        WHERE name = ? AND id > ? AND outcome IN ('ok', 'partial')
         ORDER BY id DESC
         LIMIT 1
         """,
-        (scope, (started_at - timedelta(seconds=5)).isoformat()),
+        (scope, boundary_id),
     )
     if not rows:
         return None
@@ -738,7 +755,7 @@ def _collect_command(args: argparse.Namespace, config: dict[str, Any], db: Datab
         active_by_endpoint[key] = active_by_endpoint.get(key, 0) + 1
     heartbeat_categories: set[str] = set()
     if "minute" in scopes:
-        heartbeat_categories.update(("system", "network", "services"))
+        heartbeat_categories.update(("system", "network", "services", "storage"))
     if any(scope in scopes for scope in ("five_minute", "fifteen_minute")):
         heartbeat_categories.update(("storage", "network"))
     if any(scope in scopes for scope in ("hourly", "daily", "weekly", "software_event")):
