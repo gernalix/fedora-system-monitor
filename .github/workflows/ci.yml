@@ -28,7 +28,14 @@ jobs:
           PYTHONWARNINGS: error
         run: python3 -m unittest discover -s tests -q
       - name: Validate deployment shell scripts
-        run: bash -n scripts/*.sh
+        run: |
+          bash -n scripts/*.sh
+          for script in scripts/*.sh; do
+            test -x "$script" || {
+              echo "Deployment helper must be executable: $script" >&2
+              exit 1
+            }
+          done
       - name: Compile package
         run: python3 -m compileall -q src
       - name: Verify clean diff
