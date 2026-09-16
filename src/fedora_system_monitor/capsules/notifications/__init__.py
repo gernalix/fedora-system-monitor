@@ -308,12 +308,23 @@ def send_category_heartbeat(
     url = endpoints.get(category)
     if not url:
         return NotificationResult("uptime-kuma", category, False, False, "not configured")
+    timeout = float(config.get("notifications", {}).get("timeout_seconds", 5))
+    if not healthy:
+        live_delivered, live_status = _push(
+            url,
+            up=True,
+            message=f"{category}: heartbeat live; alert state follows",
+            ping_ms=ping_ms,
+            timeout=timeout,
+        )
+        if not live_delivered:
+            return NotificationResult("uptime-kuma", category, True, False, live_status, live_status)
     delivered, status = _push(
         url,
         up=healthy,
         message=message,
         ping_ms=ping_ms,
-        timeout=float(config.get("notifications", {}).get("timeout_seconds", 5)),
+        timeout=timeout,
     )
     return NotificationResult("uptime-kuma", category, True, delivered, status, "" if delivered else status)
 
