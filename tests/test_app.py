@@ -18,8 +18,10 @@ from fedora_system_monitor.capsules.runtime.coordinator import (
     _derived_recoveries,
     _hook_command,
     _persist_signals,
+    _run_isolated_scope,
 )
 from fedora_system_monitor.capsules.alerting import AlertSignal
+from fedora_system_monitor.capsules.command import CommandResult
 from fedora_system_monitor.capsules.database import Database
 from fedora_system_monitor.capsules.notifications import NotificationResult
 
@@ -68,6 +70,42 @@ class AppTests(unittest.TestCase):
             finally:
                 db.close()
             self.assertIn("memory.used_percent", names)
+
+    def test_isolated_scope_uses_persisted_partial_result(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            database = Path(temp) / "monitor.sqlite3"
+            db = Database(database)
+
+            def fake_run_command(*_: object, **__: object) -> CommandResult:
+                db.record_collector_run(
+                    "daily",
+                    cadence_seconds=86400,
+                    outcome="partial",
+                    metrics_inserted=33,
+                    events_inserted=0,
+                    error_message="dnf updates: command exited with status 1",
+                    details={
+                        "collector_duration_ms": 20094,
+                        "errors": ["dnf updates: command exited with status 1"],
+                        "hardware_inventory": 17,
+                        "software_inventory": 0,
+                        "alert_transitions": 0,
+                        "maintenance": {"db_check": {"ok": True}},
+                    },
+                )
+                return CommandResult((), 1, "", "", 41000)
+
+            try:
+                with patch("fedora_system_monitor.capsules.runtime.coordinator.run_command", fake_run_command):
+                    payload = _run_isolated_scope(Namespace(config=self.config), "daily", {}, db)
+                rows = db.query("SELECT outcome FROM collector_runs ORDER BY id")
+            finally:
+                db.close()
+
+            self.assertEqual(payload["outcome"], "partial")
+            self.assertEqual(payload["metrics"], 33)
+            self.assertEqual(payload["hardware_inventory"], 17)
+            self.assertEqual([row["outcome"] for row in rows], ["partial"])
 
     def test_device_units_pass_literal_systemd_instance(self) -> None:
         unit_directory = Path(__file__).resolve().parents[1] / "systemd"

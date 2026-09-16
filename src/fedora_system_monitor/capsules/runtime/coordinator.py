@@ -628,6 +628,7 @@ def _run_isolated_scope(args: argparse.Namespace, scope: str, config: dict[str, 
         "weekly": 900,
         "software_event": 120,
     }
+    started_at = datetime.now(timezone.utc)
     command = [
         sys.executable,
         "-m",
@@ -648,6 +649,9 @@ def _run_isolated_scope(args: argparse.Namespace, scope: str, config: dict[str, 
             payload = None
         if isinstance(payload, dict) and payload.get("scope") == scope:
             return payload
+    persisted = _latest_persisted_scope_result(db, scope, started_at)
+    if persisted is not None:
+        return persisted
     reason = "collector deadline exceeded" if result.timed_out else "collector subprocess failed"
     db.record_collector_run(
         scope,
@@ -668,6 +672,42 @@ def _run_isolated_scope(args: argparse.Namespace, scope: str, config: dict[str, 
     }
     db.insert_events(event, dedup_window_seconds=300)
     return {"scope": scope, "outcome": "error", "duration_ms": result.duration_ms, "metrics": 0, "events": 1, "hardware_inventory": 0, "software_inventory": 0, "errors": [reason], "alert_transitions": 0, "maintenance": {}}
+
+
+def _latest_persisted_scope_result(db: Database, scope: str, started_at: datetime) -> dict[str, Any] | None:
+    rows = db.query(
+        """
+        SELECT outcome,duration_ms,metrics_inserted,events_inserted,error_message,details_json
+        FROM collector_runs
+        WHERE name = ? AND outcome IN ('ok', 'partial') AND started_at_utc >= ?
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (scope, (started_at - timedelta(seconds=5)).isoformat()),
+    )
+    if not rows:
+        return None
+    row = rows[0]
+    try:
+        details = json.loads(str(row.get("details_json") or "{}"))
+    except json.JSONDecodeError:
+        details = {}
+    errors = details.get("errors")
+    if not isinstance(errors, list):
+        errors = [str(row["error_message"])] if row.get("error_message") else []
+    return {
+        "scope": scope,
+        "outcome": str(row["outcome"]),
+        "duration_ms": int(row["duration_ms"] or details.get("collector_duration_ms") or 0),
+        "metrics": int(row["metrics_inserted"] or 0),
+        "events": int(row["events_inserted"] or 0),
+        "hardware_inventory": int(details.get("hardware_inventory") or 0),
+        "software_inventory": int(details.get("software_inventory") or 0),
+        "errors": [str(item) for item in errors],
+        "alert_transitions": int(details.get("alert_transitions") or 0),
+        "telegram_free_space": details.get("telegram_free_space") or [],
+        "maintenance": details.get("maintenance") or {},
+    }
 
 
 def _collect_command(args: argparse.Namespace, config: dict[str, Any], db: Database) -> dict[str, Any]:
