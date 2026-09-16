@@ -20,7 +20,6 @@ StateDirectoryMode=0750
 RuntimeDirectory=fedora-system-monitor
 RuntimeDirectoryMode=0750
 RuntimeDirectoryPreserve=yes
-NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=read-only
