@@ -93,6 +93,7 @@ def operator_external(
         f"XDG_DATA_HOME={home / '.local' / 'share'}",
         f"XDG_CACHE_HOME={home / '.cache'}",
         f"XDG_RUNTIME_DIR=/run/user/{uid}" if uid >= 0 else "XDG_RUNTIME_DIR=",
+        f"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{uid}/bus" if uid >= 0 else "DBUS_SESSION_BUS_ADDRESS=",
         "PATH=/usr/local/bin:/usr/bin:/bin",
         "LC_ALL=C.UTF-8",
     ]
