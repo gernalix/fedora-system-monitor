@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import io
 import json
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from fedora_system_monitor.capsules import eventing
@@ -253,11 +255,18 @@ class _FakeDatabase:
         self.events: list[dict[str, object]] = []
         self.state: dict[str, object] = {}
 
-    def get_state(self, key: str, default: object = None) -> object:
-        return self.state.get(key, default)
+    def get_state(self, key: str, default: object = None, **kwargs: object) -> object:
+        namespace = str(kwargs.get("namespace") or "application")
+        if namespace == "application":
+            return self.state.get(key, default)
+        return self.state.get(f"{namespace}:{key}", default)
 
-    def set_state(self, key: str, value: object) -> None:
-        self.state[key] = value
+    def set_state(self, key: str, value: object, **kwargs: object) -> None:
+        namespace = str(kwargs.get("namespace") or "application")
+        if namespace == "application":
+            self.state[key] = value
+            return
+        self.state[f"{namespace}:{key}"] = value
 
     def insert_events(self, events: list[dict[str, object]], **_: object) -> int:
         self.events.extend(events)
@@ -303,9 +312,56 @@ class StreamTests(unittest.TestCase):
         self.assertEqual(event["timestamp_utc"], "2026-08-01T17:27:48.123456Z")
         self.assertEqual(event["details"]["requested_profile"], "power-saver")
         self.assertEqual(event["details"]["property"], "ActiveProfile")
+        self.assertEqual(event["details"]["path"], "/org/freedesktop/UPower/PowerProfiles")
+        self.assertEqual(event["details"]["method"], "Set")
         self.assertEqual(event["details"]["caller"]["process"], "gnome-control-c")
         self.assertEqual(event["details"]["activitywatch"]["activity_state"], "active")
         self.assertEqual(event["dedup_window_seconds"], 0)
+
+    def test_power_profile_dbus_parser_accepts_legacy_path(self) -> None:
+        event = eventing._power_profile_event_from_dbus(
+            [
+                "method call time=1785605268.123456 sender=:1.15 -> destination=net.hadess.PowerProfiles serial=42 path=/net/hadess/PowerProfiles; interface=org.freedesktop.DBus.Properties; member=Set\n",
+                '   string "net.hadess.PowerProfiles"\n',
+                '   string "ActiveProfile"\n',
+                '   variant       string "balanced"\n',
+            ],
+            caller={"sender": ":1.15"},
+        )
+
+        self.assertIsNotNone(event)
+        assert event is not None
+        self.assertEqual(event["details"]["path"], "/net/hadess/PowerProfiles")
+        self.assertEqual(event["details"]["requested_profile"], "balanced")
+
+    def test_power_profile_dbus_parser_records_hold_and_release(self) -> None:
+        hold = eventing._power_profile_event_from_dbus(
+            [
+                "method call time=1785605269.000000 sender=:1.20 -> destination=org.freedesktop.UPower.PowerProfiles serial=44 path=/org/freedesktop/UPower/PowerProfiles; interface=org.freedesktop.UPower.PowerProfiles; member=HoldProfile\n",
+                '   string "performance"\n',
+                '   string "test reason"\n',
+                '   string "test.app"\n',
+            ],
+            caller={"sender": ":1.20", "pid": 55},
+        )
+        release = eventing._power_profile_event_from_dbus(
+            [
+                "method call time=1785605270.000000 sender=:1.20 -> destination=org.freedesktop.UPower.PowerProfiles serial=45 path=/org/freedesktop/UPower/PowerProfiles; interface=org.freedesktop.UPower.PowerProfiles; member=ReleaseProfile\n",
+                "   uint32 7\n",
+            ],
+            caller={"sender": ":1.20", "pid": 55},
+        )
+
+        self.assertIsNotNone(hold)
+        self.assertIsNotNone(release)
+        assert hold is not None
+        assert release is not None
+        self.assertEqual(hold["name"], "power_profile_hold_requested")
+        self.assertEqual(hold["details"]["requested_profile"], "performance")
+        self.assertEqual(hold["details"]["reason"], "test reason")
+        self.assertEqual(hold["details"]["application_id"], "test.app")
+        self.assertEqual(release["name"], "power_profile_release_requested")
+        self.assertEqual(release["details"]["cookie"], 7)
 
     def test_power_profile_dbus_stream_persists_matching_request(self) -> None:
         process = _FakeProcess(
@@ -339,6 +395,50 @@ class StreamTests(unittest.TestCase):
         self.assertEqual(database.events[0]["details"]["caller"]["process"], "tuned-ppd")
         command = popen.call_args.args[0]
         self.assertEqual(command[:2], ["dbus-monitor", "--system"])
+        self.assertTrue(any("/net/hadess/PowerProfiles" in item for item in command))
+        self.assertTrue(any("HoldProfile" not in item for item in command))
+
+    def test_platform_profile_snapshot_persists_only_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            sys_root = Path(temp)
+            profile = sys_root / "firmware" / "acpi" / "platform_profile"
+            ac = sys_root / "class" / "power_supply" / "AC"
+            battery = sys_root / "class" / "power_supply" / "BAT0"
+            profile.parent.mkdir(parents=True)
+            ac.mkdir(parents=True)
+            battery.mkdir(parents=True)
+            profile.write_text("balanced\n", encoding="utf-8")
+            (ac / "type").write_text("Mains\n", encoding="utf-8")
+            (ac / "online").write_text("1\n", encoding="utf-8")
+            (battery / "type").write_text("Battery\n", encoding="utf-8")
+            (battery / "status").write_text("Charging\n", encoding="utf-8")
+            (battery / "capacity").write_text("81\n", encoding="utf-8")
+            database = _FakeDatabase()
+
+            first = eventing._record_platform_profile_snapshot(
+                database,
+                eventing._platform_profile_snapshot(sys_root),
+            )
+            duplicate = eventing._record_platform_profile_snapshot(
+                database,
+                eventing._platform_profile_snapshot(sys_root),
+            )
+            profile.write_text("performance\n", encoding="utf-8")
+            changed = eventing._record_platform_profile_snapshot(
+                database,
+                eventing._platform_profile_snapshot(sys_root),
+            )
+
+        self.assertIsNone(first)
+        self.assertIsNone(duplicate)
+        self.assertIsNotNone(changed)
+        assert changed is not None
+        self.assertEqual(len(database.events), 1)
+        self.assertEqual(changed["name"], "platform_profile_changed")
+        self.assertEqual(changed["details"]["previous"], "balanced")
+        self.assertEqual(changed["details"]["current"], "performance")
+        self.assertTrue(changed["details"]["external_online"])
+        self.assertEqual(changed["details"]["batteries"][0]["capacity_percent"], 81)
 
     def test_stream_persists_cursor_only_for_matched_events_and_calls_callback(self) -> None:
         ignored = {"MESSAGE": "ordinary application log", "__CURSOR": "ignored"}

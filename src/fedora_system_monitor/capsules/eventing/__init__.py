@@ -30,15 +30,28 @@ _COREDUMP_MESSAGE_ID = "fc2e22bc6ee647b6b90729ab34a250b1"
 _SYSTEMD_FAILED_MESSAGE_ID = "be02cf6855d2428ba40df7e9d022f03d"
 _MAX_TEXT = 512
 _MAX_JOURNAL_LINE = 1_048_576
-_POWER_PROFILE_DBUS_MATCH = (
-    "type='method_call',interface='org.freedesktop.DBus.Properties',"
-    "member='Set',path='/org/freedesktop/UPower/PowerProfiles'"
+_POWER_PROFILE_DBUS_PATHS = (
+    "/org/freedesktop/UPower/PowerProfiles",
+    "/net/hadess/PowerProfiles",
+)
+_POWER_PROFILE_DBUS_INTERFACES = (
+    "org.freedesktop.UPower.PowerProfiles",
+    "net.hadess.PowerProfiles",
+)
+_POWER_PROFILE_DBUS_MATCHES = tuple(
+    f"type='method_call',path='{path}',interface='{interface}'"
+    for path in _POWER_PROFILE_DBUS_PATHS
+    for interface in ("org.freedesktop.DBus.Properties", *_POWER_PROFILE_DBUS_INTERFACES)
 )
 
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]+")
-_DBUS_METHOD_RE = re.compile(r"^method call time=(?P<time>[0-9.]+).* sender=(?P<sender>:[0-9.]+)\s")
+_DBUS_METHOD_RE = re.compile(
+    r"^method call time=(?P<time>[0-9.]+).* sender=(?P<sender>:[0-9.]+)\s"
+    r".* path=(?P<path>[^;\s]+);\s+interface=(?P<interface>[^;\s]+);\s+member=(?P<member>[A-Za-z0-9_]+)"
+)
 _DBUS_STRING_RE = re.compile(r'^\s*string\s+"(?P<value>[^"]*)"\s*$')
 _DBUS_VARIANT_STRING_RE = re.compile(r'^\s*variant\s+string\s+"(?P<value>[^"]*)"\s*$')
+_DBUS_UINT_RE = re.compile(r"^\s*u(?:int32|int64)?\s+(?P<value>[0-9]+)\s*$")
 _SAFE_INTERFACE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,31}$")
 _MAC_RE = re.compile(r"^(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
 _UNIT_RE = re.compile(
@@ -1212,8 +1225,20 @@ def _power_profile_event_from_dbus(lines: list[str], *, caller: Mapping[str, obj
     header = _DBUS_METHOD_RE.match(lines[0])
     if not header:
         return None
+    path = header.group("path")
+    interface = header.group("interface")
+    method = header.group("member")
+    if path not in _POWER_PROFILE_DBUS_PATHS:
+        return None
+    if interface == "org.freedesktop.DBus.Properties" and method != "Set":
+        return None
+    if interface in _POWER_PROFILE_DBUS_INTERFACES and method not in {"HoldProfile", "ReleaseProfile"}:
+        return None
+    if interface not in {"org.freedesktop.DBus.Properties", *_POWER_PROFILE_DBUS_INTERFACES}:
+        return None
     values: list[str] = []
     requested_profile = ""
+    cookie: int | None = None
     for line in lines[1:]:
         string_match = _DBUS_STRING_RE.match(line)
         if string_match:
@@ -1222,24 +1247,49 @@ def _power_profile_event_from_dbus(lines: list[str], *, caller: Mapping[str, obj
         variant_match = _DBUS_VARIANT_STRING_RE.match(line)
         if variant_match:
             requested_profile = variant_match.group("value")
-    if len(values) < 2 or values[1] != "ActiveProfile" or requested_profile not in {"power-saver", "balanced", "performance"}:
+            continue
+        uint_match = _DBUS_UINT_RE.match(line)
+        if uint_match:
+            cookie = int(uint_match.group("value"))
+    details: dict[str, Any] = {"path": path, "interface": interface, "method": method}
+    event_name = ""
+    dedup_parts: list[object] = [method]
+    if interface == "org.freedesktop.DBus.Properties":
+        if len(values) < 2 or values[1] != "ActiveProfile" or requested_profile not in {"power-saver", "balanced", "performance"}:
+            return None
+        event_name = "power_profile_set_requested"
+        details.update({"requested_profile": requested_profile, "property": values[1], "property_interface": values[0]})
+        dedup_parts.extend((requested_profile,))
+    elif method == "HoldProfile":
+        if not values or values[0] not in {"power-saver", "balanced", "performance"}:
+            return None
+        event_name = "power_profile_hold_requested"
+        details["requested_profile"] = values[0]
+        if len(values) > 1:
+            details["reason"] = _clean_text(values[1], 160)
+        if len(values) > 2:
+            details["application_id"] = _clean_text(values[2], 160)
+        dedup_parts.extend(values[:3])
+    elif method == "ReleaseProfile":
+        if cookie is None:
+            return None
+        event_name = "power_profile_release_requested"
+        details["cookie"] = cookie
+        dedup_parts.append(cookie)
+    else:
         return None
     timestamp = float(header.group("time"))
     sender = header.group("sender")
+    details["caller"] = dict(caller or _dbus_sender_identity(sender))
     event = _event(
         category="system",
-        name="power_profile_set_requested",
+        name=event_name,
         severity="info",
         source="dbus-monitor",
         device_id="power-profile",
-        details={
-            "requested_profile": requested_profile,
-            "interface": values[0],
-            "property": values[1],
-            "caller": dict(caller or _dbus_sender_identity(sender)),
-        },
+        details=details,
         outcome="observed",
-        dedup_key=f"dbus:power-profile:set:{sender}:{requested_profile}:{timestamp:.6f}",
+        dedup_key=f"dbus:power-profile:{sender}:{':'.join(str(part) for part in dedup_parts)}:{timestamp:.6f}",
         dedup_window_seconds=0,
     )
     event["timestamp_utc"] = _iso_from_unix(timestamp)
@@ -1247,6 +1297,34 @@ def _power_profile_event_from_dbus(lines: list[str], *, caller: Mapping[str, obj
     event["value"] = 1
     event["unit"] = "event"
     return event
+
+
+def _power_profile_dbus_event_is_complete(lines: list[str]) -> bool:
+    header = _DBUS_METHOD_RE.match(lines[0]) if lines else None
+    if not header:
+        return False
+    method = header.group("member")
+    if method == "Set":
+        return any(_DBUS_VARIANT_STRING_RE.match(line) for line in lines[1:])
+    if method == "HoldProfile":
+        return sum(1 for line in lines[1:] if _DBUS_STRING_RE.match(line)) >= 3
+    if method == "ReleaseProfile":
+        return any(_DBUS_UINT_RE.match(line) for line in lines[1:])
+    return False
+
+
+def _persist_power_profile_dbus_lines(
+    lines: list[str],
+    db: object,
+    on_event: Callable[[Event], object] | None,
+) -> int:
+    event = _power_profile_event_from_dbus(lines)
+    if event is None:
+        return 0
+    db.insert_events([event], dedup_window_seconds=0)
+    if on_event is not None:
+        on_event(event)
+    return 1
 
 
 def _consume_power_profile_dbus_stream(
@@ -1263,21 +1341,131 @@ def _consume_power_profile_dbus_stream(
         if line == "":
             break
         if _DBUS_METHOD_RE.match(line):
+            if current:
+                matched += _persist_power_profile_dbus_lines(current, db, on_event)
             current = [line]
             continue
         if not current:
             continue
         current.append(line)
-        if not _DBUS_VARIANT_STRING_RE.match(line):
+        if not _power_profile_dbus_event_is_complete(current):
             continue
-        event = _power_profile_event_from_dbus(current)
+        matched += _persist_power_profile_dbus_lines(current, db, on_event)
         current = []
-        if event is None:
+    if current:
+        matched += _persist_power_profile_dbus_lines(current, db, on_event)
+    return matched
+
+
+def _platform_profile_snapshot(sys_root: Path = Path("/sys")) -> dict[str, Any]:
+    profile_path = sys_root / "firmware" / "acpi" / "platform_profile"
+    try:
+        value = profile_path.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        value = ""
+    details: dict[str, Any] = {
+        "path": str(profile_path),
+        "platform_profile": _clean_text(value, 64) if value else "unavailable",
+        "external_online": False,
+        "batteries": [],
+    }
+    supplies = sys_root / "class" / "power_supply"
+    try:
+        supply_paths = sorted(supplies.iterdir())
+    except OSError:
+        supply_paths = []
+    batteries: list[dict[str, Any]] = []
+    for supply in supply_paths:
+        try:
+            supply_type = (supply / "type").read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
             continue
-        db.insert_events([event], dedup_window_seconds=0)
-        if on_event is not None:
-            on_event(event)
-        matched += 1
+        if supply_type in {"Mains", "USB", "USB_C"}:
+            try:
+                online = (supply / "online").read_text(encoding="utf-8", errors="replace").strip()
+            except OSError:
+                online = ""
+            details["external_online"] = bool(details["external_online"] or online == "1")
+        elif supply_type == "Battery":
+            battery: dict[str, Any] = {"device": _clean_text(supply.name, 64)}
+            try:
+                status = (supply / "status").read_text(encoding="utf-8", errors="replace").strip()
+            except OSError:
+                status = ""
+            if status:
+                battery["status"] = _clean_text(status, 64)
+            try:
+                capacity = int((supply / "capacity").read_text(encoding="utf-8", errors="replace").strip())
+            except (OSError, ValueError):
+                capacity = -1
+            if 0 <= capacity <= 100:
+                battery["capacity_percent"] = capacity
+            batteries.append(battery)
+    details["batteries"] = batteries
+    return details
+
+
+def _record_platform_profile_snapshot(
+    db: object,
+    snapshot: Mapping[str, Any],
+    *,
+    on_event: Callable[[Event], object] | None = None,
+) -> Event | None:
+    current = _clean_text(snapshot.get("platform_profile", ""), 64)
+    if not current or current == "unavailable":
+        return None
+    previous = db.get_state("platform_profile", {}, namespace="eventing")
+    db.set_state("platform_profile", dict(snapshot), namespace="eventing")
+    if not isinstance(previous, Mapping):
+        return None
+    old = _clean_text(previous.get("platform_profile", ""), 64)
+    if not old or old == current:
+        return None
+    observed_at = datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+    event = _event(
+        category="system",
+        name="platform_profile_changed",
+        severity="info",
+        source="sysfs",
+        device_id="platform",
+        details={
+            "previous": old,
+            "current": current,
+            "path": _clean_text(snapshot.get("path", ""), 320),
+            "external_online": bool(snapshot.get("external_online")),
+            "batteries": list(snapshot.get("batteries", [])) if isinstance(snapshot.get("batteries"), list) else [],
+            "observed_at_utc": observed_at,
+        },
+        outcome="observed",
+        dedup_key=f"sysfs:platform-profile:{old}:{current}:{observed_at}",
+        dedup_window_seconds=0,
+    )
+    event["timestamp_utc"] = observed_at
+    event["value"] = 1
+    event["unit"] = "event"
+    db.insert_events([event], dedup_window_seconds=0)
+    if on_event is not None:
+        on_event(event)
+    return event
+
+
+def stream_platform_profile(
+    config: Mapping[str, object],
+    db: object,
+    stop_event: object | None = None,
+    on_event: Callable[[Event], object] | None = None,
+) -> int:
+    """Persist only real ACPI platform_profile transitions from sysfs."""
+
+    del config
+    matched = 0
+    while stop_event is None or not bool(getattr(stop_event, "is_set")()):
+        event = _record_platform_profile_snapshot(db, _platform_profile_snapshot(), on_event=on_event)
+        if event is not None:
+            matched += 1
+        if stop_event is None:
+            break
+        getattr(stop_event, "wait")(30)
     return matched
 
 
@@ -1458,7 +1646,7 @@ def stream_power_profile_dbus(
     if stop_event is not None and bool(getattr(stop_event, "is_set")()):
         return 0
     process = subprocess.Popen(
-        ["dbus-monitor", "--system", _POWER_PROFILE_DBUS_MATCH],
+        ["dbus-monitor", "--system", *_POWER_PROFILE_DBUS_MATCHES],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
@@ -1486,5 +1674,6 @@ __all__ = [
     "build_network_event",
     "classify_journal",
     "stream_journal",
+    "stream_platform_profile",
     "stream_power_profile_dbus",
 ]
