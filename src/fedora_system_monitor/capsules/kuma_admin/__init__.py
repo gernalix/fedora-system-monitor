@@ -8,7 +8,6 @@ import secrets
 import string
 import tempfile
 import threading
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -264,6 +263,27 @@ def recover_chrome_session_token(profile: str | Path, origin: str) -> str:
     return token
 
 
+def _login_with_chrome_session(client: Any, chrome_profile: str | Path, base_url: str) -> None:
+    """Authenticate once, retrying only if Chrome contains a genuinely newer token."""
+    token = recover_chrome_session_token(chrome_profile, base_url)
+    try:
+        for attempt in range(2):
+            try:
+                login = client.call("loginByToken", token, timeout=30)
+            except Exception:
+                login = None
+            if isinstance(login, Mapping) and login.get("ok"):
+                return
+            if attempt == 0:
+                refreshed = recover_chrome_session_token(chrome_profile, base_url)
+                if secrets.compare_digest(refreshed, token):
+                    break
+                token = refreshed
+        raise RuntimeError("Kuma rejected the authenticated Chrome session")
+    finally:
+        token = ""
+
+
 def _monitor_payload(
     spec: KumaMonitorSpec,
     token: str,
@@ -366,7 +386,6 @@ def configure_push_monitors(
     if urlsplit(base_url).scheme not in {"http", "https"}:
         raise ValueError("Kuma base URL must use HTTP or HTTPS")
     specs = tuple(specs)
-    token = recover_chrome_session_token(chrome_profile, base_url)
     try:
         import socketio
     except ImportError as exc:
@@ -396,16 +415,7 @@ def configure_push_monitors(
     tokens: dict[str, str] = {}
     try:
         client.connect(base_url, transports=["polling"], wait_timeout=20)
-        login: object = None
-        for attempt in range(2):
-            try:
-                login = client.call("loginByToken", token, timeout=30)
-                break
-            except Exception:
-                if attempt == 0:
-                    time.sleep(2)
-        if not isinstance(login, Mapping) or not login.get("ok"):
-            raise RuntimeError("Kuma rejected the authenticated Chrome session")
+        _login_with_chrome_session(client, chrome_profile, base_url)
         monitor_ready.wait(5)
         client.call("getMonitorList", timeout=15)
         monitor_ready.wait(10)
@@ -469,7 +479,6 @@ def configure_push_monitors(
     except Exception as exc:
         raise RuntimeError(f"Kuma administration API failed: {exc.__class__.__name__}") from None
     finally:
-        token = ""
         if client.connected:
             client.disconnect()
 
