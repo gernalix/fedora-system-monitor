@@ -3,7 +3,9 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
+import fedora_system_monitor.capsules.kuma_admin as kuma_admin
 from fedora_system_monitor.capsules.kuma_admin import (
     KumaMonitorSpec,
     _monitor_payload,
@@ -19,6 +21,25 @@ def _varint(value: int) -> bytes:
         value >>= 7
     encoded.append(value)
     return bytes(encoded)
+
+
+class _FakeKumaClient:
+    def __init__(self, replies: list[object]) -> None:
+        self.replies = list(replies)
+        self.tokens: list[str] = []
+
+    def call(self, event: str, token: str, *, timeout: int) -> object:
+        self.assert_login_call(event, timeout)
+        self.tokens.append(token)
+        reply = self.replies.pop(0)
+        if isinstance(reply, BaseException):
+            raise reply
+        return reply
+
+    @staticmethod
+    def assert_login_call(event: str, timeout: int) -> None:
+        if event != "loginByToken" or timeout != 30:
+            raise AssertionError((event, timeout))
 
 
 class KumaAdminTests(unittest.TestCase):
@@ -71,6 +92,24 @@ class KumaAdminTests(unittest.TestCase):
 
             self.assertEqual(recover_chrome_session_token(root, origin), token)
             self.assertEqual(recover_chrome_session_token(profile, origin), token)
+
+    def test_login_does_not_retry_identical_stale_token(self) -> None:
+        token = "a" * 64
+        client = _FakeKumaClient([{"ok": False}])
+        with mock.patch.object(kuma_admin, "recover_chrome_session_token", side_effect=[token, token]):
+            with self.assertRaisesRegex(RuntimeError, "Kuma rejected"):
+                kuma_admin._login_with_chrome_session(client, "/tmp/profile", "https://kuma.example.test")
+
+        self.assertEqual(client.tokens, [token])
+
+    def test_login_retries_once_when_chrome_token_changed(self) -> None:
+        first = "a" * 64
+        refreshed = "b" * 64
+        client = _FakeKumaClient([{"ok": False}, {"ok": True}])
+        with mock.patch.object(kuma_admin, "recover_chrome_session_token", side_effect=[first, refreshed]):
+            kuma_admin._login_with_chrome_session(client, "/tmp/profile", "https://kuma.example.test")
+
+        self.assertEqual(client.tokens, [first, refreshed])
 
 
 if __name__ == "__main__":
