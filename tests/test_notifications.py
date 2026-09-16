@@ -163,7 +163,7 @@ class NotificationTests(unittest.TestCase):
             with patch.dict(sys.modules, {"telegram_notify": helper}):
                 result = send_telegram_message(config, "test")
             self.assertTrue(result.delivered)
-            helper.send_message.assert_called_once_with("Fedora System Monitor", "test", project_id=15)
+            helper.send_message.assert_called_once_with("Fedora System Monitor", "test")
             self.assertNotIn(token, repr(result))
             self.assertNotIn(chat_id, repr(result))
 
