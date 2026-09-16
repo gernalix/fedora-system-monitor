@@ -35,6 +35,10 @@ DEFAULT_MONITORS = (
 )
 
 
+_LEVELDB_LOG_BLOCK_SIZE = 32_768
+_LEVELDB_LOG_HEADER_SIZE = 7
+
+
 def _varint(data: bytes, position: int) -> tuple[int, int]:
     value = 0
     shift = 0
@@ -105,10 +109,107 @@ def _decode_local_storage(raw: bytes) -> str:
         return ""
 
 
+def _length_prefixed(data: bytes, position: int) -> tuple[bytes, int]:
+    length, position = _varint(data, position)
+    end = position + length
+    if end > len(data):
+        raise ValueError("truncated length-prefixed value")
+    return data[position:end], end
+
+
+def _log_records(data: bytes) -> Iterable[bytes]:
+    """Yield logical records from a LevelDB WAL without requiring CRC32C."""
+    position = 0
+    pending = bytearray()
+    while position < len(data):
+        block_remaining = _LEVELDB_LOG_BLOCK_SIZE - (position % _LEVELDB_LOG_BLOCK_SIZE)
+        if block_remaining < _LEVELDB_LOG_HEADER_SIZE:
+            position += block_remaining
+            pending.clear()
+            continue
+        if position + _LEVELDB_LOG_HEADER_SIZE > len(data):
+            return
+        header = data[position : position + _LEVELDB_LOG_HEADER_SIZE]
+        length = int.from_bytes(header[4:6], "little")
+        record_type = header[6]
+        position += _LEVELDB_LOG_HEADER_SIZE
+        payload_capacity = block_remaining - _LEVELDB_LOG_HEADER_SIZE
+        if length == 0 and record_type == 0:
+            position += payload_capacity
+            pending.clear()
+            continue
+        if length > payload_capacity or position + length > len(data):
+            position += max(0, payload_capacity)
+            pending.clear()
+            continue
+        fragment = data[position : position + length]
+        position += length
+        if record_type == 1:  # FULL
+            pending.clear()
+            yield fragment
+        elif record_type == 2:  # FIRST
+            pending = bytearray(fragment)
+        elif record_type == 3 and pending:  # MIDDLE
+            pending.extend(fragment)
+        elif record_type == 4 and pending:  # LAST
+            pending.extend(fragment)
+            yield bytes(pending)
+            pending.clear()
+        else:
+            pending.clear()
+
+
+def _write_batch_entries(data: bytes) -> Iterable[tuple[bytes, bytes, int, int]]:
+    """Yield key, value, sequence and record type from a LevelDB WriteBatch."""
+    if len(data) < 12:
+        return
+    sequence = int.from_bytes(data[:8], "little")
+    count = int.from_bytes(data[8:12], "little")
+    position = 12
+    for index in range(count):
+        if position >= len(data):
+            return
+        record_type = data[position]
+        position += 1
+        try:
+            key, position = _length_prefixed(data, position)
+            if record_type == 1:
+                value, position = _length_prefixed(data, position)
+            elif record_type == 0:
+                value = b""
+            else:
+                return
+        except ValueError:
+            return
+        yield key, value, sequence + index, record_type
+
+
+def _local_storage_leveldb(profile: str | Path) -> Path:
+    profile_path = Path(profile).expanduser()
+    direct = profile_path / "Local Storage/leveldb"
+    if direct.is_dir():
+        return direct
+    return profile_path / "Default/Local Storage/leveldb"
+
+
+def _remember_local_storage_record(
+    latest: dict[str, tuple[int, int, bytes]],
+    prefix: bytes,
+    user_key: bytes,
+    value: bytes,
+    sequence: int,
+    record_type: int,
+) -> None:
+    if not user_key.startswith(prefix):
+        return
+    key = _decode_local_storage(user_key[len(prefix) :])
+    if key and (key not in latest or sequence > latest[key][0]):
+        latest[key] = (sequence, record_type, value)
+
+
 def recover_chrome_session_token(profile: str | Path, origin: str) -> str:
-    """Recover only the Kuma JWT from Chrome LevelDB; the value never leaves memory."""
-    profile_path = Path(profile)
-    leveldb = profile_path / "Default/Local Storage/leveldb"
+    """Recover the newest Kuma JWT from Chrome LevelDB tables and active WAL."""
+    leveldb = _local_storage_leveldb(profile)
     prefix = b"_" + origin.rstrip("/").encode("utf-8") + b"\x00"
     latest: dict[str, tuple[int, int, bytes]] = {}
     for path in leveldb.glob("*.ldb"):
@@ -132,13 +233,30 @@ def recover_chrome_session_token(profile: str | Path, origin: str) -> str:
                 if len(internal_key) < 8:
                     continue
                 user_key = internal_key[:-8]
-                if not user_key.startswith(prefix):
-                    continue
                 tag = int.from_bytes(internal_key[-8:], "little")
-                sequence, record_type = tag >> 8, tag & 255
-                key = _decode_local_storage(user_key[len(prefix) :])
-                if key and (key not in latest or sequence > latest[key][0]):
-                    latest[key] = (sequence, record_type, value)
+                _remember_local_storage_record(
+                    latest,
+                    prefix,
+                    user_key,
+                    value,
+                    tag >> 8,
+                    tag & 255,
+                )
+    for path in leveldb.glob("*.log"):
+        try:
+            file_data = path.read_bytes()
+        except OSError:
+            continue
+        for record in _log_records(file_data) or ():
+            for user_key, value, sequence, record_type in _write_batch_entries(record) or ():
+                _remember_local_storage_record(
+                    latest,
+                    prefix,
+                    user_key,
+                    value,
+                    sequence,
+                    record_type,
+                )
     token_record = latest.get("token")
     token = _decode_local_storage(token_record[2]) if token_record and token_record[1] == 1 else ""
     if len(token) < 40 or len(token) > 4096:
