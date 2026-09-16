@@ -275,6 +275,36 @@ class AppTests(unittest.TestCase):
             finally:
                 database.close()
 
+    def test_absent_smartd_device_recovers_no_such_device_alert(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            database = Database(Path(temp) / "monitor.sqlite3")
+            try:
+                database.open_alert_transition(
+                    "event:smartd:smart-alert:missing",
+                    category="hardware",
+                    name="smartd_smart_alert",
+                    severity="warning",
+                    source="smartd",
+                    device_id="smartd:missing",
+                    details={
+                        "device_node": "/dev/fedora-system-monitor-missing-test",
+                        "smartd_message": (
+                            "Device: /dev/fedora-system-monitor-missing-test [USB NVMe ASMedia], "
+                            "open() of NVMe device failed: No such device"
+                        ),
+                    },
+                    message="SMART disk alert: open() of NVMe device failed: No such device",
+                )
+                with patch(
+                    "fedora_system_monitor.capsules.runtime.coordinator.run_command",
+                    return_value=Namespace(ok=True, stdout="/dev/nvme0 -d nvme # /dev/nvme0, NVMe device\n"),
+                ):
+                    recoveries = _derived_recoveries(database, [], collector_healthy=True)
+                self.assertEqual(len(recoveries), 1)
+                self.assertEqual(recoveries[0].details["recovery_source"], "smartd_device_absent")
+            finally:
+                database.close()
+
     def test_complete_filesystem_scan_recovers_absent_capacity_alert(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             database = Database(Path(temp) / "monitor.sqlite3")

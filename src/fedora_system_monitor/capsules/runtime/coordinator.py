@@ -293,6 +293,44 @@ def _derived_recoveries(
                             details={"recovery_source": "new_boot"},
                         )
                     )
+        smartd_rows = db.query(
+            "SELECT alert_key,category,name,severity,source,device_id,details_json FROM alerts "
+            "WHERE status='active' AND name='smartd_smart_alert'"
+        )
+        if smartd_rows:
+            scan = run_command(["smartctl", "--scan-open"], timeout=8, max_output=64_000)
+            scanned_devices = {
+                line.split()[0]
+                for line in (scan.stdout if scan.ok else "").splitlines()
+                if line.startswith("/dev/")
+            }
+            for row in smartd_rows:
+                try:
+                    details = json.loads(str(row.get("details_json") or "{}"))
+                except json.JSONDecodeError:
+                    details = {}
+                device_node = str(details.get("device_node") or "")
+                message = str(details.get("smartd_message") or "")
+                if (
+                    device_node.startswith("/dev/")
+                    and "No such device" in message
+                    and not Path(device_node).exists()
+                    and scan.ok
+                    and device_node not in scanned_devices
+                ):
+                    recoveries.append(
+                        AlertSignal(
+                            key=row["alert_key"],
+                            category=row["category"],
+                            name=row["name"],
+                            severity=row["severity"],
+                            active=False,
+                            message="smartd device node is absent from current SMART discovery",
+                            source="smartd_reconciliation",
+                            device_id=row["device_id"] or "host",
+                            details={"recovery_source": "smartd_device_absent", "device_node": device_node},
+                        )
+                    )
     if scope == "five_minute" and collector_healthy:
         observed_filesystems = {
             str(metric.get("device_id") or "")
