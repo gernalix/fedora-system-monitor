@@ -138,6 +138,23 @@ class JournalClassificationTests(unittest.TestCase):
             )
         )
 
+    def test_gnome_shell_coredump_is_promoted_to_graphics_incident(self) -> None:
+        event = classify_journal(
+            {
+                "MESSAGE_ID": "fc2e22bc6ee647b6b90729ab34a250b1",
+                "SYSLOG_IDENTIFIER": "systemd-coredump",
+                "COREDUMP_EXE": "/usr/bin/gnome-shell",
+                "COREDUMP_SIGNAL_NAME": "SIGSEGV",
+                "_BOOT_ID": "boot-graphics",
+                "__REALTIME_TIMESTAMP": "1789849169000000",
+            }
+        )
+        self.assertIsNotNone(event)
+        assert event is not None
+        self.assertEqual(event["category"], "graphics")
+        self.assertEqual(event["name"], "desktop_compositor_coredump")
+        self.assertTrue(event["details"]["incident_id"].startswith("gfx-"))
+
     def test_udisks_mount_failure_with_spaced_mount_path(self) -> None:
         event = classify_journal(
             {
@@ -478,6 +495,8 @@ class StreamTests(unittest.TestCase):
         command = popen.call_args.args[0]
         self.assertIn("--since=-900s", command)
         self.assertTrue(any(value.startswith("--output-fields=") for value in command))
+        self.assertIn("SYSLOG_IDENTIFIER=gnome-shell", command)
+        self.assertIn("_SYSTEMD_USER_UNIT=org.gnome.Shell@wayland.service", command)
 
     def test_existing_valid_cursor_is_used(self) -> None:
         database = _FakeDatabase()
