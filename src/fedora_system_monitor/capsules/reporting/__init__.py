@@ -88,14 +88,27 @@ def health_report(path: str | Path) -> dict[str, Any]:
     with _connection(path) as connection:
         alerts = _rows(
             connection,
-            "SELECT severity,category,name,device_id,message,first_seen_utc,last_seen_utc,occurrence_count FROM alerts WHERE status='active' ORDER BY CASE severity WHEN 'emergency' THEN 0 WHEN 'critical' THEN 1 ELSE 2 END, first_seen_utc",
+            "SELECT severity,category,name,device_id,message,details_json,first_seen_utc,last_seen_utc,occurrence_count FROM alerts WHERE status='active' ORDER BY CASE severity WHEN 'emergency' THEN 0 WHEN 'critical' THEN 1 ELSE 2 END, first_seen_utc",
         )
         failures = _rows(
             connection,
             "SELECT name,finished_at_utc,outcome,error_message FROM collector_runs WHERE outcome NOT IN ('ok','partial') ORDER BY id DESC LIMIT 10",
         )
-    storage_names = {"filesystem.free_percent", "filesystem.inode_free_percent", "smartd_smart_alert", "expected_device_mounted"}
-    storage_alerts = [item for item in alerts if item["name"] in storage_names or item["category"] == "storage"]
+    storage_names = {"smartd_smart_alert", "expected_device_mounted"}
+    host_filesystems = {"/", "/home", "/var", "/tmp", "/boot", "/boot/efi"}
+
+    def is_storage_alert(item: dict[str, Any]) -> bool:
+        if item["category"] == "storage" or item["name"] in storage_names:
+            return True
+        if item["name"] not in {"filesystem.free_percent", "filesystem.inode_free_percent"}:
+            return False
+        try:
+            details = json.loads(str(item.get("details_json") or "{}"))
+        except json.JSONDecodeError:
+            details = {}
+        return str(details.get("mount_point") or "") not in host_filesystems
+
+    storage_alerts = [item for item in alerts if is_storage_alert(item)]
     host_alerts = [item for item in alerts if item not in storage_alerts]
 
     def state_for(items: list[dict[str, Any]], *, include_failures: bool = False) -> str:

@@ -17,7 +17,7 @@ class ReportingTests(unittest.TestCase):
             db = Database(path)
             db.open_alert_transition(
                 "filesystem.free_percent:external", category="filesystem", name="filesystem.free_percent",
-                severity="emergency", source="statvfs", device_id="external", details={}, message="external full",
+                severity="emergency", source="statvfs", device_id="external", details={"mount_point": "/media/external"}, message="external full",
             )
             db.open_alert_transition(
                 "memory.pressure_level:host", category="memory", name="memory.pressure_level",
@@ -29,6 +29,20 @@ class ReportingTests(unittest.TestCase):
         self.assertEqual(report["host"]["state"], "warning")
         self.assertEqual(report["storage"]["state"], "critical")
         self.assertEqual(report["storage"]["active_alert_count"], 1)
+
+    def test_health_keeps_critical_internal_filesystem_in_host_state(self) -> None:
+        with TemporaryDirectory() as temp:
+            path = Path(temp) / "monitor.sqlite3"
+            db = Database(path)
+            db.open_alert_transition(
+                "filesystem.free_percent:root", category="filesystem", name="filesystem.free_percent",
+                severity="emergency", source="statvfs", device_id="root", details={"mount_point": "/"}, message="root full",
+            )
+            db.close()
+            report = health_report(path)
+        self.assertEqual(report["state"], "critical")
+        self.assertEqual(report["host"]["state"], "critical")
+        self.assertEqual(report["storage"]["state"], "healthy")
 
     def test_json_redacts_secret(self) -> None:
         output = render({"token": "token=very-secret-value"}, output_format="json")
