@@ -68,6 +68,8 @@ class ActivityWatchCorrelationTests(unittest.TestCase):
                                 "url": "https://example.invalid/private/path",
                                 "title": "ChatGPT - Fedora",
                                 "incognito": False,
+                                "audible": False,
+                                "tabCount": 15,
                             },
                         }
                     ]
@@ -83,6 +85,11 @@ class ActivityWatchCorrelationTests(unittest.TestCase):
         self.assertEqual(summary["afk"]["at_event"]["status"], "not-afk")
         self.assertEqual(summary["active_window"]["at_event"]["app"], "org.gnome.Ptyxis")
         self.assertEqual(summary["web_tab"]["previous_event"]["title"], "ChatGPT - Fedora")
+        self.assertEqual(summary["web_tab"]["previous_event"]["tab_count"], 15)
+        self.assertEqual(summary["web_tab"]["previous_event"]["audible"], False)
+        self.assertEqual(summary["app_mix"]["apps"][0]["app"], "org.gnome.Ptyxis")
+        self.assertIn("currentwindow_max_gap_seconds", summary["data_gap"])
+        self.assertNotIn("max_gap_seconds", summary["data_gap"])
         self.assertNotIn("private-value", rendered)
         self.assertNotIn("example.invalid/private", rendered)
 
