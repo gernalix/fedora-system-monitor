@@ -15,6 +15,7 @@ STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 
 install -d -m 0755 "$LIB_PARENT"
 install -d -m 0750 -o root -g daniele "$ETC" "$STATE" "$STATE/backups" "$STATE/install-backups" "$STATE/incidents"
+install -d -m 0750 -o daniele -g daniele /home/daniele/projects/fedora-context-data
 
 if [[ -f "$STATE/monitor.sqlite3" ]]; then
     DB_SOURCE="$STATE/monitor.sqlite3" DB_TARGET="$STATE/install-backups/monitor-$STAMP.sqlite3" /usr/bin/python3 - <<'PY'
@@ -107,7 +108,7 @@ chmod 0640 "$STATE"/monitor.sqlite3*
 
 systemctl enable fedora-system-monitor-events.service
 systemctl restart fedora-system-monitor-events.service
-systemctl enable --now fedora-system-monitor-fast.timer fedora-system-monitor-hourly.timer fedora-system-monitor-daily.timer fedora-system-monitor-weekly.timer
+systemctl enable --now fedora-system-monitor-fast.timer fedora-system-monitor-hourly.timer fedora-system-monitor-daily.timer fedora-system-monitor-weekly.timer fedora-system-monitor-context.timer
 systemctl enable --now fedora-system-monitor-software.path
 systemctl enable --now fedora-system-monitor-lifecycle.service
 
