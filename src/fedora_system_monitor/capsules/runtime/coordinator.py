@@ -85,6 +85,7 @@ DEFAULT_UNITS = (
     "fedora-system-monitor-hourly.timer",
     "fedora-system-monitor-daily.timer",
     "fedora-system-monitor-weekly.timer",
+    "fedora-system-monitor-context.timer",
     "fedora-system-monitor-software.path",
 )
 
