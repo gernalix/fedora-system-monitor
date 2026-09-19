@@ -94,7 +94,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "max_backfill_hours": 48,
         "incident_before_minutes": 10,
         "incident_after_minutes": 5,
-        "git_push": True,
+        "git_push": False,
         "git_remote": "origin",
         "git_branch": "main",
         "expected_repository": "gernalix/fedora-context-data",
