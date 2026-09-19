@@ -7,10 +7,29 @@ from tempfile import TemporaryDirectory
 
 from fedora_system_monitor.capsules.database import Database
 from fedora_system_monitor.capsules.prometheus import exposition
-from fedora_system_monitor.capsules.reporting import render, service_history_report, timeline_report, trends_report
+from fedora_system_monitor.capsules.reporting import health_report, render, service_history_report, timeline_report, trends_report
 
 
 class ReportingTests(unittest.TestCase):
+    def test_health_separates_storage_from_host_stability(self) -> None:
+        with TemporaryDirectory() as temp:
+            path = Path(temp) / "monitor.sqlite3"
+            db = Database(path)
+            db.open_alert_transition(
+                "filesystem.free_percent:external", category="filesystem", name="filesystem.free_percent",
+                severity="emergency", source="statvfs", device_id="external", details={}, message="external full",
+            )
+            db.open_alert_transition(
+                "memory.pressure_level:host", category="memory", name="memory.pressure_level",
+                severity="warning", source="procfs", device_id="host", details={}, message="pressure",
+            )
+            db.close()
+            report = health_report(path)
+        self.assertEqual(report["state"], "warning")
+        self.assertEqual(report["host"]["state"], "warning")
+        self.assertEqual(report["storage"]["state"], "critical")
+        self.assertEqual(report["storage"]["active_alert_count"], 1)
+
     def test_json_redacts_secret(self) -> None:
         output = render({"token": "token=very-secret-value"}, output_format="json")
         self.assertNotIn("very-secret-value", output)

@@ -94,12 +94,27 @@ def health_report(path: str | Path) -> dict[str, Any]:
             connection,
             "SELECT name,finished_at_utc,outcome,error_message FROM collector_runs WHERE outcome NOT IN ('ok','partial') ORDER BY id DESC LIMIT 10",
         )
-    state = "healthy"
-    if any(item["severity"] in {"critical", "emergency"} for item in alerts):
-        state = "critical"
-    elif alerts or failures:
-        state = "warning"
-    return {"state": state, "active_alert_count": len(alerts), "alerts": alerts, "recent_collector_failures": failures}
+    storage_names = {"filesystem.free_percent", "filesystem.inode_free_percent", "smartd_smart_alert", "expected_device_mounted"}
+    storage_alerts = [item for item in alerts if item["name"] in storage_names or item["category"] == "storage"]
+    host_alerts = [item for item in alerts if item not in storage_alerts]
+
+    def state_for(items: list[dict[str, Any]], *, include_failures: bool = False) -> str:
+        if any(item["severity"] in {"critical", "emergency"} for item in items):
+            return "critical"
+        if items or (include_failures and failures):
+            return "warning"
+        return "healthy"
+
+    host_state = state_for(host_alerts, include_failures=True)
+    storage_state = state_for(storage_alerts)
+    return {
+        "state": host_state,
+        "host": {"state": host_state, "active_alert_count": len(host_alerts), "alerts": host_alerts},
+        "storage": {"state": storage_state, "active_alert_count": len(storage_alerts), "alerts": storage_alerts},
+        "active_alert_count": len(alerts),
+        "alerts": alerts,
+        "recent_collector_failures": failures,
+    }
 
 
 def events_report(path: str | Path, *, limit: int = 100, category: str = "", since_hours: int = 24) -> list[dict[str, Any]]:
