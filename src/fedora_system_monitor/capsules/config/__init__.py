@@ -86,6 +86,20 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "max_scan_depth": 4,
         "metadata_hash_max_bytes": 16 * 1024 * 1024,
     },
+    "context": {
+        "activitywatch_data_path": "/home/daniele/projects/activity-watch-data",
+        "output_directory": "/home/daniele/projects/fedora-context-data",
+        "sync_lookback_minutes": 30,
+        "overlap_minutes": 10,
+        "max_backfill_hours": 48,
+        "incident_before_minutes": 10,
+        "incident_after_minutes": 5,
+        "git_push": False,
+        "git_remote": "origin",
+        "git_branch": "main",
+        "expected_repository": "gernalix/fedora-context-data",
+        "git_timeout_seconds": 120,
+    },
     "thresholds": {
         "disk": {
             "warning_free_percent": 20.0,
@@ -441,6 +455,20 @@ def validate_config(config: Mapping[str, Any] | object) -> list[str]:
         require_string_items(("inventory", key), absolute=True)
     for key in ("max_scan_depth", "metadata_hash_max_bytes"):
         _require_positive(config, ("inventory", key), errors)
+
+    if not isinstance(config.get("context"), Mapping):
+        errors.append("context must be a table")
+    for key in ("activitywatch_data_path", "output_directory", "git_remote", "git_branch", "expected_repository"):
+        _require_string(config, ("context", key), errors)
+    for key in ("activitywatch_data_path", "output_directory"):
+        value = _value(config, ("context", key))
+        if isinstance(value, str) and value and not Path(value).is_absolute():
+            errors.append(f"context.{key} must be an absolute path")
+    for key in ("sync_lookback_minutes", "overlap_minutes", "max_backfill_hours", "incident_before_minutes", "incident_after_minutes", "git_timeout_seconds"):
+        value = _value(config, ("context", key))
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+            errors.append(f"context.{key} must be a non-negative number")
+    _require_bool(config, ("context", "git_push"), errors)
 
     threshold_orders = (
         (

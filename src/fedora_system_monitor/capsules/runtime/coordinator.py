@@ -37,6 +37,12 @@ from fedora_system_monitor.capsules.eventing import (
     stream_platform_profile,
     stream_power_profile_dbus,
 )
+from fedora_system_monitor.capsules.context_index import (
+    build_context_window,
+    build_incident_bundle,
+    latest_incident,
+    sync_context_index,
+)
 from fedora_system_monitor.capsules.graphics_incident import stream_compositor_watch
 from fedora_system_monitor.capsules.kuma_admin import configure_push_monitors
 from fedora_system_monitor.capsules.notifications import (
@@ -79,6 +85,7 @@ DEFAULT_UNITS = (
     "fedora-system-monitor-hourly.timer",
     "fedora-system-monitor-daily.timer",
     "fedora-system-monitor-weekly.timer",
+    "fedora-system-monitor-context.timer",
     "fedora-system-monitor-software.path",
 )
 
@@ -1114,6 +1121,50 @@ def _self_test(config: dict[str, Any], *, system: bool) -> dict[str, Any]:
     return {"passed": all(item["passed"] for item in checks), "checks": checks}
 
 
+def _context_command(args: argparse.Namespace, config: dict[str, Any]) -> Any:
+    context = config["context"]
+    database_path = Path(config["monitor"]["database_path"])
+    activitywatch_path = Path(args.activitywatch_data) if getattr(args, "activitywatch_data", None) else Path(context["activitywatch_data_path"])
+    if args.context_command == "sync":
+        output = Path(args.output_dir) if args.output_dir else Path(context["output_directory"])
+        return sync_context_index(
+            database_path,
+            activitywatch_path,
+            output,
+            since_minutes=args.since_minutes,
+            overlap_minutes=int(context["overlap_minutes"]),
+            max_backfill_hours=int(context["max_backfill_hours"]),
+            incident_before_minutes=int(context["incident_before_minutes"]),
+            incident_after_minutes=int(context["incident_after_minutes"]),
+            publish_git=bool(context["git_push"]) and not args.no_push,
+            expected_repo=str(context["expected_repository"]),
+            git_remote=str(context["git_remote"]),
+            git_branch=str(context["git_branch"]),
+            git_timeout_seconds=int(context["git_timeout_seconds"]),
+        )
+    if args.context_command == "around":
+        return build_context_window(
+            database_path,
+            activitywatch_path,
+            center=args.timestamp,
+            before_minutes=args.before_minutes,
+            after_minutes=args.after_minutes,
+        )
+    if args.context_command == "incident":
+        before = int(context["incident_before_minutes"]) if args.before_minutes is None else args.before_minutes
+        after = int(context["incident_after_minutes"]) if args.after_minutes is None else args.after_minutes
+        return build_incident_bundle(
+            database_path,
+            activitywatch_path,
+            args.incident_id,
+            before_minutes=before,
+            after_minutes=after,
+        )
+    if args.context_command == "latest":
+        return latest_incident(database_path, incident_type=args.type) or {"incident": None}
+    raise ValueError(f"unsupported context command: {args.context_command}")
+
+
 def _report_command(args: argparse.Namespace, config: dict[str, Any], db: Database | None) -> Any:
     path = db.path if db is not None else Path(config["monitor"]["database_path"])
     if args.command == "status":
@@ -1176,7 +1227,7 @@ def execute(args: argparse.Namespace) -> int:
     read_only_commands = {
         "status", "health", "events", "metrics", "disks", "network", "software",
         "services", "service-history", "dashboard", "timeline", "trends", "prometheus",
-        "last-errors", "daily-summary", "export", "test",
+        "last-errors", "daily-summary", "export", "test", "context",
     }
     if args.command == "alerts" and not args.resolve:
         read_only_commands.add("alerts")
@@ -1195,6 +1246,9 @@ def execute(args: argparse.Namespace) -> int:
             credentials_path=args.credentials or config["notifications"]["uptime_kuma_credentials"],
         )
         _print(output, args)
+        return 0
+    if args.command == "context":
+        _print(_context_command(args, config), args)
         return 0
     if args.command == "test":
         output = _self_test(config, system=args.system)

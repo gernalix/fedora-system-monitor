@@ -15,6 +15,8 @@ fedora-system-monitor health
 fedora-system-monitor alerts
 fedora-system-monitor events --since-hours 24
 sudo fedora-system-monitor collect five_minute
+fedora-system-monitor context latest --type graphics
+fedora-system-monitor context incident <incident-id>
 ```
 
 La configurazione operativa è `/etc/fedora-system-monitor/config.toml`; gli
@@ -23,6 +25,8 @@ endpoint Kuma sono in `/home/daniele/.config/codex/secrets/fedora_system_monitor
 `/home/daniele/.config/codex/secrets/telegram.env`, anch’esso `0600`.
 L’invio passa esclusivamente dal helper condiviso `telegram_notify.py`, installato
 come pacchetto Python `telegram_notify`.
+Il timer di context indexing correla inoltre il DB locale con il mirror ActivityWatch e produce timeline/bundle incidenti bounded; la pubblicazione Git del repo derivato è opzionale e fail-closed. Vedere [Context Index](docs/human/context-index.md).
+
 Vedere [overview](docs/human/overview.md),
 [Kuma](docs/human/uptime-kuma.md) e
 [troubleshooting](docs/human/troubleshooting.md).

@@ -16,7 +16,6 @@ from fedora_system_monitor.capsules.runtime.coordinator import (
     execute,
 )
 
-
 def _default_config_path() -> Path:
     return SYSTEM_CONFIG if SYSTEM_CONFIG.exists() else PROJECT_CONFIG
 
@@ -33,6 +32,25 @@ def build_parser() -> argparse.ArgumentParser:
     timeline = subparsers.add_parser("timeline")
     timeline.add_argument("--limit", type=int, default=500)
     timeline.add_argument("--since-hours", type=int, default=24)
+    context = subparsers.add_parser("context", help="correlate Fedora telemetry with ActivityWatch")
+    context_sub = context.add_subparsers(dest="context_command", required=True)
+    context_sync = context_sub.add_parser("sync", help="refresh the derived context repository")
+    context_sync.add_argument("--since-minutes", type=int)
+    context_sync.add_argument("--activitywatch-data", type=Path)
+    context_sync.add_argument("--output-dir", type=Path)
+    context_sync.add_argument("--no-push", action="store_true")
+    context_around = context_sub.add_parser("around", help="show correlated context around a timestamp")
+    context_around.add_argument("timestamp")
+    context_around.add_argument("--before-minutes", type=int, default=10)
+    context_around.add_argument("--after-minutes", type=int, default=5)
+    context_around.add_argument("--activitywatch-data", type=Path)
+    context_incident = context_sub.add_parser("incident", help="show a complete incident bundle")
+    context_incident.add_argument("incident_id")
+    context_incident.add_argument("--before-minutes", type=int)
+    context_incident.add_argument("--after-minutes", type=int)
+    context_incident.add_argument("--activitywatch-data", type=Path)
+    context_latest = context_sub.add_parser("latest", help="show the latest indexed incident identity")
+    context_latest.add_argument("--type", default="")
     prometheus = subparsers.add_parser("prometheus")
     prometheus.add_argument("--listen", default="127.0.0.1")
     prometheus.add_argument("--port", type=int, default=9109)
@@ -87,7 +105,6 @@ def build_parser() -> argparse.ArgumentParser:
     hook.add_argument("--action", default="unknown")
     hook.add_argument("--only-if-stopping", action="store_true")
     return parser
-
 
 def main(argv: list[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)

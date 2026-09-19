@@ -1,0 +1,40 @@
+[Unit]
+Description=Build and publish Fedora + ActivityWatch context index
+Documentation=file:/home/daniele/projects/fedora-system-monitor/docs/human/context-index.md
+After=local-fs.target network-online.target
+Wants=network-online.target
+ConditionPathExists=/var/lib/fedora-system-monitor/monitor.sqlite3
+ConditionPathExists=/home/daniele/projects/activity-watch-data/metadata/buckets.json
+
+[Service]
+Type=oneshot
+User=daniele
+Group=daniele
+Environment=HOME=/home/daniele
+ExecStart=/usr/local/bin/fedora-system-monitor context sync
+TimeoutStartSec=20min
+Nice=10
+IOSchedulingClass=idle
+IOSchedulingPriority=7
+CPUWeight=20
+IOWeight=20
+UMask=0027
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectKernelLogs=yes
+ProtectHostname=yes
+ProtectClock=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadOnlyPaths=-/home/daniele/projects/activity-watch-data -/var/lib/fedora-system-monitor
+ReadWritePaths=-/home/daniele/projects/fedora-context-data

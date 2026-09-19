@@ -139,3 +139,7 @@ LINK.audit_471853=docs/ai/AUDIT_471853.md
 LINK.audit_962417=docs/ai/AUDIT_962417.md
 LINK.report_418732=docs/ai/REPORT_418732.md
 LINK.report_482731=docs/ai/REPORT_482731.md
+ARCH.context_index=15-minute derived correlation of bounded Fedora telemetry with the local activity-watch-data mirror
+ARCH.context_publication=Dedicated private gernalix/fedora-context-data repo; disabled by default until local repo bootstrap, exact-remote fail-closed publisher
+FLOW.context=Persistent timer refreshes timeline and day summaries; incident_id events materialize T-10m/T+5m bundles
+MAP.context=src/fedora_system_monitor/capsules/context_index.py;docs/human/context-index.md;systemd/fedora-system-monitor-context.*

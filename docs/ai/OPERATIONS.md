@@ -63,3 +63,8 @@ OPS.udev_remove=RUN systemctl --no-block is retained only for remove because liv
 OPS.database_compact=WAL checkpoint TRUNCATE plus PRAGMA optimize reuses free pages and intentionally avoids automatic full VACUUM
 OPS.dashboard=fedora-system-monitor dashboard;timeline;trends;service-history are bounded read-only SQLite views
 OPS.prometheus=Start fedora-system-monitor-prometheus.service explicitly or run prometheus CLI;default bind=127.0.0.1:9109;unit remains disabled unless intentionally enabled
+CADENCE.context=Every 15 minutes correlate monitor events/alerts/key metrics with ActivityWatch foreground/AFK/tab mirror
+OPS.context_query=fedora-system-monitor context around <timestamp>;context incident <incident-id>;context latest --type <type>
+OPS.context_sync=fedora-system-monitor context sync; resumes from last-sync with overlap and bounded catch-up
+OPS.context_publish=Set context.git_push=true only after private gernalix/fedora-context-data exists at configured output path
+SECURITY.context=Publisher runs as daniele, exact repo/branch validation, bounded Git, unrelated dirty files fail closed; raw ActivityWatch URLs excluded
