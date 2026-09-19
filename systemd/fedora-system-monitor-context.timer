@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh Fedora context index every 15 minutes
+
+[Timer]
+OnCalendar=*-*-* *:00/15:00
+AccuracySec=30s
+Persistent=true
+Unit=fedora-system-monitor-context.service
+
+[Install]
+WantedBy=timers.target
