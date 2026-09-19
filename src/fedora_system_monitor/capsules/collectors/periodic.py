@@ -129,6 +129,32 @@ def _zram_details() -> dict[str, float | int | bool]:
     }
 
 
+def _swap_devices() -> list[dict[str, int | str]]:
+    devices: list[dict[str, int | str]] = []
+    for line in _read(PROC_ROOT / "swaps").splitlines()[1:]:
+        fields = line.split()
+        if len(fields) < 5:
+            continue
+        try:
+            size_bytes = int(fields[2]) * 1024
+            used_bytes = int(fields[3]) * 1024
+            priority = int(fields[4])
+        except ValueError:
+            continue
+        path = fields[0]
+        kind = "zram" if path.startswith("/dev/zram") else fields[1]
+        devices.append(
+            {
+                "path": path,
+                "kind": kind,
+                "size_bytes": size_bytes,
+                "used_bytes": used_bytes,
+                "priority": priority,
+            }
+        )
+    return devices
+
+
 def collect_proc(scope: str, config: Mapping[str, Any], db: object) -> CollectionResult:
     cadence = CADENCE_SECONDS[scope]
     result = CollectionResult(scope)
@@ -196,6 +222,18 @@ def collect_proc(scope: str, config: Mapping[str, Any], db: object) -> Collectio
             record(cadence, "memory", "swap_used_bytes", swap_used, "bytes", source="procfs"),
         ]
     )
+    if scope == "minute":
+        for device in _swap_devices():
+            path = str(device["path"])
+            details = {"path": path, "kind": str(device["kind"])}
+            device_id = f"swap:{path}"
+            result.metrics.extend(
+                [
+                    record(cadence, "memory", "swap.device.size_bytes", int(device["size_bytes"]), "bytes", source="procfs", device_id=device_id, details=details),
+                    record(cadence, "memory", "swap.device.used_bytes", int(device["used_bytes"]), "bytes", source="procfs", device_id=device_id, details=details),
+                    record(cadence, "memory", "swap.device.priority", int(device["priority"]), "priority", source="procfs", device_id=device_id, details=details),
+                ]
+            )
 
     available_percent = available * 100.0 / total_memory if total_memory else 0.0
     psi = _psi_memory()

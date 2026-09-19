@@ -6,6 +6,7 @@ DB.pragma=foreign_keys ON
 DB.pragma=busy_timeout 10000ms
 DB.timestamps=timestamp_utc and timestamp_local Europe/Copenhagen
 TABLE.periodic_metrics=Numeric samples with category,name,value,unit,severity,source,device_id,JSON,outcome,error, cadence, and collector run
+METRIC.swap_device=Minute memory samples swap.device.size_bytes,swap.device.used_bytes,and swap.device.priority keyed by device_id swap:<path>; details carry path and kind (zram,file,or partition)
 TABLE.events=Deduplicated event rows with occurrence count, first seen, last seen, stable key, device identity, JSON, outcome, and error
 TABLE.alerts=Alert lifecycle with unique active key, severity, message, notification result, occurrence count, and recovery timestamp
 TABLE.hardware_inventory=Versioned hardware snapshots keyed by stable device item

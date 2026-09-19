@@ -53,6 +53,12 @@ class CollectorTests(unittest.TestCase):
                 "MemTotal: 1000 kB\nMemAvailable: 100 kB\nSwapTotal: 1000 kB\nSwapFree: 400 kB\n",
                 encoding="utf-8",
             )
+            (proc / "swaps").write_text(
+                "Filename\t\t\tType\t\tSize\t\tUsed\t\tPriority\n"
+                "/dev/zram0\t\t\tpartition\t100\t\t40\t\t100\n"
+                "/swap/swapfile\t\tfile\t\t200\t\t60\t\t10\n",
+                encoding="utf-8",
+            )
             (proc / "pressure" / "memory").write_text("some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n", encoding="utf-8")
             (proc / "vmstat").write_text("pswpin 0\npswpout 0\npgscan_kswapd 0\npgsteal_kswapd 0\noom_kill 0\n", encoding="utf-8")
             (sys / "block" / "zram0" / "mm_stat").write_text("600000 300000 320000 0 0 0 0 0 0\n", encoding="utf-8")
@@ -68,6 +74,15 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(by_name["swap.used_percent"]["severity"], "info")
         self.assertEqual(by_name["memory.pressure_level"]["value"], 0)
         self.assertEqual(by_name["zram.compression_ratio"]["value"], 2.0)
+        swap_devices = {
+            metric["device_id"]: metric
+            for metric in second.metrics
+            if metric["name"] == "swap.device.used_bytes"
+        }
+        self.assertEqual(swap_devices["swap:/dev/zram0"]["value"], 40 * 1024)
+        self.assertEqual(swap_devices["swap:/dev/zram0"]["details"]["kind"], "zram")
+        self.assertEqual(swap_devices["swap:/swap/swapfile"]["value"], 60 * 1024)
+        self.assertEqual(swap_devices["swap:/swap/swapfile"]["details"]["kind"], "file")
         self.assertTrue(any(metric["name"] == "load_15m" for metric in first.metrics))
 
     def test_memory_pressure_combines_available_psi_swap_reclaim_and_oom(self) -> None:
