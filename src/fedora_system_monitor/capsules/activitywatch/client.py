@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 import json
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urlencode, urlparse
+from urllib.parse import parse_qs, quote, urlencode, urlparse
 from urllib.request import urlopen
 
 from fedora_system_monitor.capsules.config import redact_text
@@ -76,6 +76,18 @@ def _bounded_event(event: dict[str, Any]) -> dict[str, Any]:
     tab_count = data.get("tabCount")
     if isinstance(tab_count, int) and not isinstance(tab_count, bool) and 0 <= tab_count <= 10000:
         result["tab_count"] = tab_count
+    raw_url = str(data.get("url") or "")
+    if raw_url:
+        parsed = urlparse(raw_url)
+        if parsed.scheme == "chrome":
+            result["browser_internal_page"] = _clean_text(
+                f"chrome://{parsed.netloc}{parsed.path}",
+                120,
+            )
+            if parsed.netloc == "extensions":
+                error_id = (parse_qs(parsed.query).get("errors") or [""])[0]
+                if len(error_id) == 32 and all("a" <= char <= "p" for char in error_id):
+                    result["extension_error_id"] = error_id
     return result
 
 
