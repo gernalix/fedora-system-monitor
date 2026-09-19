@@ -351,6 +351,12 @@ def _active_wayland_session(operator_user: str) -> bool | None:
     return False if seen_user else None
 
 
+def _system_state_allows_incident() -> bool:
+    result = _run(["systemctl", "is-system-running"], timeout=1)
+    state = str(result.get("stdout") or "").strip().splitlines()
+    return bool(state and state[0] in {"running", "degraded"})
+
+
 def _graphics_sysfs() -> list[dict[str, str]]:
     devices: list[dict[str, str]] = []
     for card in sorted(Path("/sys/class/drm").glob("card[0-9]*")):
@@ -435,8 +441,28 @@ def _forensic_payload(config: Mapping[str, object], event: Event) -> dict[str, A
         "SYSLOG_IDENTIFIER=gnome-shell",
         "+",
         "_SYSTEMD_USER_UNIT=org.gnome.Shell@wayland.service",
+        "+",
+        "_SYSTEMD_USER_UNIT=chrome-codex-switcher.service",
     ]
     extension_cmd = _user_command(operator_user, ["gnome-extensions", "list", "--enabled"])
+    ccs_extension_cmd = _user_command(
+        operator_user,
+        ["gnome-extensions", "info", "chrome-codex-switcher@gernalix.github.com"],
+    )
+    ccs_service_cmd = _user_command(
+        operator_user,
+        [
+            "systemctl",
+            "--user",
+            "show",
+            "chrome-codex-switcher.service",
+            "--property=ActiveState",
+            "--property=SubState",
+            "--property=Result",
+            "--property=ExecMainPID",
+            "--property=ExecMainStartTimestamp",
+        ],
+    )
     user_units_cmd = _user_command(
         operator_user,
         [
@@ -452,6 +478,10 @@ def _forensic_payload(config: Mapping[str, object], event: Event) -> dict[str, A
     )
     if extension_cmd:
         commands["enabled_gnome_extensions"] = extension_cmd
+    if ccs_extension_cmd:
+        commands["chrome_codex_gnome_extension"] = ccs_extension_cmd
+    if ccs_service_cmd:
+        commands["chrome_codex_service"] = ccs_service_cmd
     if user_units_cmd:
         commands["user_services"] = user_units_cmd
     evidence = {
@@ -519,7 +549,7 @@ def stream_compositor_watch(
         current = _shell_pids(operator_user)
         if previous and current != previous:
             active = _active_wayland_session(operator_user)
-            if active is True:
+            if active is True and _system_state_allows_incident():
                 event = build_compositor_transition_event(
                     previous,
                     current,
