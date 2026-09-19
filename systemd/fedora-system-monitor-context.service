@@ -3,6 +3,8 @@ Description=Build and publish Fedora + ActivityWatch context index
 Documentation=file:/home/daniele/projects/fedora-system-monitor/docs/human/context-index.md
 After=local-fs.target network-online.target
 Wants=network-online.target
+ConditionPathExists=/var/lib/fedora-system-monitor/monitor.sqlite3
+ConditionPathExists=/home/daniele/projects/activity-watch-data/metadata/buckets.json
 
 [Service]
 Type=oneshot
@@ -34,4 +36,5 @@ LockPersonality=yes
 MemoryDenyWriteExecute=yes
 SystemCallArchitectures=native
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadOnlyPaths=-/home/daniele/projects/activity-watch-data -/var/lib/fedora-system-monitor
 ReadWritePaths=-/home/daniele/projects/fedora-context-data
