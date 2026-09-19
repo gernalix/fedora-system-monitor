@@ -62,6 +62,14 @@ class ActivityWatchCorrelationTests(unittest.TestCase):
                 return _Response(
                     [
                         {
+                            "timestamp": "2026-08-01T17:27:30.000000+00:00",
+                            "duration": 1,
+                            "data": {
+                                "url": "chrome://extensions/?errors=mfpomnbkkfklealhaacbnmelpgpggglg",
+                                "title": "Extensions",
+                            },
+                        },
+                        {
                             "timestamp": "2026-08-01T17:27:32.535000+00:00",
                             "duration": 0,
                             "data": {
@@ -71,7 +79,7 @@ class ActivityWatchCorrelationTests(unittest.TestCase):
                                 "audible": False,
                                 "tabCount": 15,
                             },
-                        }
+                        },
                     ]
                 )
             return _Response([])
@@ -87,6 +95,9 @@ class ActivityWatchCorrelationTests(unittest.TestCase):
         self.assertEqual(summary["web_tab"]["previous_event"]["title"], "ChatGPT - Fedora")
         self.assertEqual(summary["web_tab"]["previous_event"]["tab_count"], 15)
         self.assertEqual(summary["web_tab"]["previous_event"]["audible"], False)
+        internal = summary["web_tab"]["recent_events"][0]
+        self.assertEqual(internal["browser_internal_page"], "chrome://extensions/")
+        self.assertEqual(internal["extension_error_id"], "mfpomnbkkfklealhaacbnmelpgpggglg")
         self.assertEqual(summary["app_mix"]["apps"][0]["app"], "org.gnome.Ptyxis")
         self.assertIn("currentwindow_max_gap_seconds", summary["data_gap"])
         self.assertNotIn("max_gap_seconds", summary["data_gap"])
