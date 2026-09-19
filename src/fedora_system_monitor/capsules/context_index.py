@@ -2,7 +2,7 @@
 
 The canonical sources remain:
 - /var/lib/fedora-system-monitor/monitor.sqlite3
-- geranlix/activity-watch-data (local checkout)
+- gernalix/activity-watch-data (local checkout)
 
 This capsule writes only deterministic, bounded derived views optimized for
 incident reconstruction and Git review.
@@ -685,7 +685,8 @@ class ContextGitRepo:
             self.run("push", self.remote, f"HEAD:{self.branch}")
 
     def commit(self, message: str) -> bool:
-        self.run("add", "--", *[prefix.rstrip("/") for prefix in MANAGED_PREFIXES])
+        self.assert_managed_dirty()
+        self.run("add", "--all", "--", ".")
         if self.run("diff", "--cached", "--quiet", check=False).returncode == 0:
             return False
         self.run("commit", "-m", message)
