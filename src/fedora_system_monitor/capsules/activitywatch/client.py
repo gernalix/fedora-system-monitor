@@ -71,6 +71,11 @@ def _bounded_event(event: dict[str, Any]) -> dict[str, Any]:
         result["status"] = status
     if "incognito" in data:
         result["incognito"] = bool(data.get("incognito"))
+    if "audible" in data:
+        result["audible"] = bool(data.get("audible"))
+    tab_count = data.get("tabCount")
+    if isinstance(tab_count, int) and not isinstance(tab_count, bool) and 0 <= tab_count <= 10000:
+        result["tab_count"] = tab_count
     return result
 
 
@@ -100,6 +105,14 @@ def _events_near(events: list[dict[str, Any]], timestamp: datetime) -> dict[str,
         result["previous_event"] = _bounded_event(previous_event)
     if next_event is not None:
         result["next_event"] = _bounded_event(next_event)
+    nearest = sorted(
+        bounded,
+        key=lambda item: abs((_event_interval(item)[0] - timestamp).total_seconds()),
+    )[:16]
+    result["recent_events"] = [
+        _bounded_event(item)
+        for item in sorted(nearest, key=lambda item: _event_interval(item)[0])
+    ]
     return result
 
 
@@ -163,7 +176,7 @@ def correlate_activitywatch(
             buckets[str(bucket_id)] = bucket_type
 
     summaries: dict[str, Any] = {}
-    all_events: list[dict[str, Any]] = []
+    events_by_type: dict[str, list[dict[str, Any]]] = {}
     for bucket_id, bucket_type in buckets.items():
         try:
             raw_events = _read_json(
@@ -179,18 +192,36 @@ def correlate_activitywatch(
         if not isinstance(raw_events, list):
             continue
         events = [event for event in raw_events if isinstance(event, dict)][-_MAX_EVENTS_PER_BUCKET:]
-        all_events.extend(events)
-        summaries[bucket_type or bucket_id] = _events_near(events, timestamp)
+        bucket_key = bucket_type or bucket_id
+        events_by_type[bucket_key] = events
+        summaries[bucket_key] = _events_near(events, timestamp)
 
     afk_summary = summaries.get("afkstatus", {})
     window_summary = summaries.get("currentwindow", {})
+    all_events = [event for events in events_by_type.values() for event in events]
     lock_events = [
         event
         for event in all_events
         if "lock" in json.dumps(event.get("data") or {}, sort_keys=True).lower()
         or "unlock" in json.dumps(event.get("data") or {}, sort_keys=True).lower()
     ]
-    max_gap = _max_gap_seconds(all_events, start, end)
+    core_gaps = {
+        key: _max_gap_seconds(events_by_type.get(key, []), start, end)
+        for key in ("currentwindow", "web.tab.current", "afkstatus")
+    }
+    window_events = events_by_type.get("currentwindow", [])
+    app_seconds: dict[str, float] = {}
+    for item in window_events:
+        data = item.get("data") if isinstance(item.get("data"), dict) else {}
+        app = _clean_text(data.get("app"))
+        if app:
+            app_seconds[app] = app_seconds.get(app, 0.0) + max(0.0, float(item.get("duration") or 0))
+    app_mix = [
+        {"app": app, "duration_seconds": round(seconds, 3)}
+        for app, seconds in sorted(app_seconds.items(), key=lambda pair: (-pair[1], pair[0]))[:10]
+    ]
+    foreground_gap = core_gaps.get("currentwindow")
+    afk_gap = core_gaps.get("afkstatus")
     return {
         "available": True,
         "source": "activitywatch",
@@ -202,12 +233,24 @@ def correlate_activitywatch(
         "afk": afk_summary,
         "active_window": window_summary,
         "web_tab": summaries.get("web.tab.current", {}),
+        "app_mix": {
+            "apps": app_mix,
+            "window_event_count": len(window_events),
+            "window_switch_count": max(0, len(window_events) - 1),
+        },
         "lock_unlock": {
             "event_count": len(lock_events),
             "events": [_bounded_event(event) for event in sorted(lock_events, key=lambda item: _event_interval(item)[0])[:8]],
         },
         "data_gap": {
-            "max_gap_seconds": max_gap,
-            "suspend_resume_compatible": bool(max_gap is not None and max_gap >= 120),
+            "currentwindow_max_gap_seconds": foreground_gap,
+            "web_tab_max_gap_seconds": core_gaps.get("web.tab.current"),
+            "afk_max_gap_seconds": afk_gap,
+            "suspend_resume_compatible": bool(
+                foreground_gap is not None
+                and afk_gap is not None
+                and foreground_gap >= 120
+                and afk_gap >= 120
+            ),
         },
     }

@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.4.0 - 2026-09-19
+
+- Aggiunto watchdog di `gnome-shell`: una scomparsa o sostituzione del PID mentre
+  la sessione Wayland resta attiva genera un incidente grafico con `incident_id`
+  univoco.
+- Esteso il follower journal a GNOME Shell e al relativo user unit, con
+  classificazione separata di assertion, coredump del compositor, fault AMDGPU e
+  takeover `fbcon`.
+- Ogni incidente grafico salva una scatola nera JSON limitata con versioni dello
+  stack grafico, processi senza command line, stato memoria, coredump recenti,
+  estensioni GNOME abilitate, servizi utente, journal grafico e stato DRM sysfs.
+- ActivityWatch viene correlato automaticamente agli incidenti per 10 minuti
+  attorno all'evento; conserva sequenza recente di finestre/tab, mix applicazioni,
+  conteggio tab e gap separati per watcher senza salvare URL completi.
+- Configurato `systemd-coredump` con storage esterno compresso e limiti di
+  spazio, così un futuro crash di GNOME Shell mantiene il core reale fuori dal
+  database del monitor.
+
+Timeline: `2026-09-19|fedora-system-monitor|feature|P1|GNOME compositor black box|IMPLEMENTED|incident:593872`.
+
+
 ## 1.3.1 - 2026-07-26
 
 - Corretto `smart_check_failed` falso su NVMe interno e Samsung T7 concedendo

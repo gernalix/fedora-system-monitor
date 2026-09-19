@@ -14,7 +14,7 @@ KUMA_CREDENTIALS=/home/daniele/.config/codex/secrets/fedora_system_monitor_uptim
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 
 install -d -m 0755 "$LIB_PARENT"
-install -d -m 0750 -o root -g daniele "$ETC" "$STATE" "$STATE/backups" "$STATE/install-backups"
+install -d -m 0750 -o root -g daniele "$ETC" "$STATE" "$STATE/backups" "$STATE/install-backups" "$STATE/incidents"
 
 if [[ -f "$STATE/monitor.sqlite3" ]]; then
     DB_SOURCE="$STATE/monitor.sqlite3" DB_TARGET="$STATE/install-backups/monitor-$STAMP.sqlite3" /usr/bin/python3 - <<'PY'
@@ -72,6 +72,8 @@ if [[ ! -f "$ETC/config.toml" ]]; then
     install -m 0640 -o root -g daniele "$ROOT/config/fedora-system-monitor.toml" "$ETC/config.toml"
 fi
 install -m 0644 "$ROOT/config/fedora-system-monitor.toml" "$ETC/config.toml.distribution"
+install -d -m 0755 /etc/systemd/coredump.conf.d
+install -m 0644 "$ROOT/config/60-fedora-system-monitor-coredump.conf" /etc/systemd/coredump.conf.d/60-fedora-system-monitor.conf
 if [[ -e "$KUMA_CREDENTIALS" ]]; then
     [[ -f "$KUMA_CREDENTIALS" && $(stat -c '%U:%G:%a' "$KUMA_CREDENTIALS") == daniele:daniele:600 ]] || {
         printf 'Canonical Kuma credentials must be a daniele:daniele mode 0600 file: %s\n' "$KUMA_CREDENTIALS" >&2
@@ -91,7 +93,7 @@ install -d -m 0755 /etc/NetworkManager/dispatcher.d /usr/lib/systemd/system-slee
 install -m 0755 "$ROOT/hooks/NetworkManager/90-fedora-system-monitor" /etc/NetworkManager/dispatcher.d/90-fedora-system-monitor
 install -m 0755 "$ROOT/hooks/system-sleep/fedora-system-monitor" /usr/lib/systemd/system-sleep/fedora-system-monitor
 
-command -v restorecon >/dev/null && restorecon -RF /usr/local/libexec/fedora-system-monitor /usr/local/bin/fedora-system-monitor /etc/systemd/system /etc/udev/rules.d /etc/NetworkManager/dispatcher.d /usr/lib/systemd/system-sleep /var/lib/fedora-system-monitor || true
+command -v restorecon >/dev/null && restorecon -RF /usr/local/libexec/fedora-system-monitor /usr/local/bin/fedora-system-monitor /etc/systemd/system /etc/systemd/coredump.conf.d /etc/udev/rules.d /etc/NetworkManager/dispatcher.d /usr/lib/systemd/system-sleep /var/lib/fedora-system-monitor || true
 systemctl daemon-reload
 udevadm control --reload-rules
 

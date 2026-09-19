@@ -22,6 +22,13 @@ from typing import Any, Callable, Mapping
 
 from fedora_system_monitor.capsules.activitywatch import correlate_activitywatch
 from fedora_system_monitor.capsules.config import redact_text
+from fedora_system_monitor.capsules.graphics_incident import (
+    classify_gnome_journal,
+    classify_graphics_coredump,
+    classify_graphics_kernel,
+    enrich_graphics_incident,
+    is_graphics_incident,
+)
 
 
 Event = dict[str, Any]
@@ -989,15 +996,20 @@ def classify_journal(entry: Mapping[str, object] | object) -> Event | None:
         entry.get("_SYSTEMD_UNIT", "")
     ).startswith("systemd-coredump@")
     if message_id == _COREDUMP_MESSAGE_ID and coredump_source:
-        return _classify_coredump(entry)
+        graphics_event = classify_graphics_coredump(entry)
+        return graphics_event or _classify_coredump(entry)
 
     raw_message = entry.get("MESSAGE", "")
     if not isinstance(raw_message, str) or not raw_message or len(raw_message) > _MAX_JOURNAL_LINE:
         return None
     message = _CONTROL_RE.sub(" ", raw_message).strip()
 
+    graphics_event = classify_gnome_journal(entry, message)
+    if graphics_event:
+        return graphics_event
     if _is_kernel(entry):
-        return _classify_kernel(entry, message)
+        graphics_event = classify_graphics_kernel(entry, message)
+        return graphics_event or _classify_kernel(entry, message)
     if _is_udisks(entry):
         event = _classify_udisks(message)
         if event:
@@ -1093,6 +1105,7 @@ def _journal_command(cursor: str, lookback_seconds: int) -> list[str]:
             "_TRANSPORT",
             "SYSLOG_IDENTIFIER",
             "_SYSTEMD_UNIT",
+            "_SYSTEMD_USER_UNIT",
             "UNIT",
             "JOB_RESULT",
             "RESULT",
@@ -1138,6 +1151,12 @@ def _journal_command(cursor: str, lookback_seconds: int) -> list[str]:
             "_SYSTEMD_UNIT=NetworkManager.service",
             "+",
             "_SYSTEMD_UNIT=smartd.service",
+            "+",
+            "SYSLOG_IDENTIFIER=gnome-shell",
+            "+",
+            "_COMM=gnome-shell",
+            "+",
+            "_SYSTEMD_USER_UNIT=org.gnome.Shell@wayland.service",
             "+",
             f"MESSAGE_ID={_COREDUMP_MESSAGE_ID}",
         )
@@ -1500,6 +1519,7 @@ def _consume_stream(
     db: object,
     stop_event: object | None,
     on_event: Callable[[Event], object] | None,
+    config: Mapping[str, object] | None = None,
 ) -> int:
     if process.stdout is None:
         return 0
@@ -1508,7 +1528,7 @@ def _consume_stream(
     if stop_event is None:
         line_iterator = iter(process.stdout.readline, "")
         for line in line_iterator:
-            matched += _consume_journal_line(line, db, on_event)
+            matched += _consume_journal_line(line, db, on_event, config)
         return matched
 
     try:
@@ -1519,7 +1539,7 @@ def _consume_stream(
         for line in process.stdout:
             if bool(getattr(stop_event, "is_set")()):
                 break
-            matched += _consume_journal_line(line, db, on_event)
+            matched += _consume_journal_line(line, db, on_event, config)
         return matched
 
     try:
@@ -1534,7 +1554,7 @@ def _consume_stream(
                 if process.poll() is not None:
                     break
                 continue
-            matched += _consume_journal_line(line, db, on_event)
+            matched += _consume_journal_line(line, db, on_event, config)
     finally:
         selector.close()
     return matched
@@ -1544,6 +1564,7 @@ def _consume_journal_line(
     line: str,
     db: object,
     on_event: Callable[[Event], object] | None = None,
+    config: Mapping[str, object] | None = None,
 ) -> int:
     if not line or len(line) > _MAX_JOURNAL_LINE:
         return 0
@@ -1565,6 +1586,8 @@ def _consume_journal_line(
             ).isoformat(timespec="microseconds").replace("+00:00", "Z")
         except (OverflowError, OSError, ValueError):
             pass
+    if is_graphics_incident(event):
+        enrich_graphics_incident(config or {}, event)
     # At-least-once ordering: never advance the cursor until the event insert
     # (including deduplication) has completed successfully.
     _persist_event(db, event)
@@ -1623,7 +1646,7 @@ def stream_journal(
         close_fds=True,
     )
     try:
-        return _consume_stream(process, db, stop_event, on_event)
+        return _consume_stream(process, db, stop_event, on_event, config)
     finally:
         if process.poll() is None:
             process.terminate()

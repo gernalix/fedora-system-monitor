@@ -37,6 +37,7 @@ from fedora_system_monitor.capsules.eventing import (
     stream_platform_profile,
     stream_power_profile_dbus,
 )
+from fedora_system_monitor.capsules.graphics_incident import stream_compositor_watch
 from fedora_system_monitor.capsules.kuma_admin import configure_push_monitors
 from fedora_system_monitor.capsules.notifications import (
     endpoint_key,
@@ -967,9 +968,20 @@ def _daemon(config: dict[str, Any], db: Database) -> int:
                 LOGGER.warning("platform profile watcher failed: %s", redact_text(exc)[:300])
             stop_event.wait(3)
 
+    def compositor_worker() -> None:
+        while not stop_event.is_set():
+            try:
+                matched = stream_compositor_watch(config, db, stop_event, on_event=on_event)
+                if not stop_event.is_set():
+                    LOGGER.warning("compositor watcher exited after %s matched events", matched)
+            except Exception as exc:  # noqa: BLE001 - keep journal capture alive if the watchdog fails.
+                LOGGER.warning("compositor watcher failed: %s", redact_text(exc)[:300])
+            stop_event.wait(3)
+
     threads = [
         threading.Thread(target=power_profile_worker, name="power-profile-dbus", daemon=True),
         threading.Thread(target=platform_profile_worker, name="platform-profile-sysfs", daemon=True),
+        threading.Thread(target=compositor_worker, name="gnome-compositor-watch", daemon=True),
     ]
     for thread in threads:
         thread.start()
@@ -984,7 +996,7 @@ def _daemon(config: dict[str, Any], db: Database) -> int:
 
 def _backfill(args: argparse.Namespace, config: dict[str, Any], db: Database) -> dict[str, Any]:
     consolidation = db.consolidate_journal_events()
-    fields = "MESSAGE,MESSAGE_ID,PRIORITY,_TRANSPORT,SYSLOG_IDENTIFIER,_SYSTEMD_UNIT,UNIT,JOB_RESULT,RESULT,_PID,_COMM,_UID,COREDUMP_EXE,COREDUMP_COMM,COREDUMP_SIGNAL,COREDUMP_SIGNAL_NAME,COREDUMP_UNIT,COREDUMP_UID"
+    fields = "MESSAGE,MESSAGE_ID,PRIORITY,_TRANSPORT,SYSLOG_IDENTIFIER,_SYSTEMD_UNIT,_SYSTEMD_USER_UNIT,UNIT,JOB_RESULT,RESULT,_PID,_COMM,_UID,COREDUMP_EXE,COREDUMP_COMM,COREDUMP_SIGNAL,COREDUMP_SIGNAL_NAME,COREDUMP_UNIT,COREDUMP_UID"
     command = [
         "journalctl",
         f"--since=-{max(1, args.since_hours)}h",
@@ -1004,6 +1016,12 @@ def _backfill(args: argparse.Namespace, config: dict[str, Any], db: Database) ->
         "_SYSTEMD_UNIT=NetworkManager.service",
         "+",
         "_SYSTEMD_UNIT=smartd.service",
+        "+",
+        "SYSLOG_IDENTIFIER=gnome-shell",
+        "+",
+        "_COMM=gnome-shell",
+        "+",
+        "_SYSTEMD_USER_UNIT=org.gnome.Shell@wayland.service",
         "+",
         "MESSAGE_ID=fc2e22bc6ee647b6b90729ab34a250b1",
     ]
