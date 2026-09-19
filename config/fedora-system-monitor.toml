@@ -113,4 +113,4 @@ telegram_credentials = "/home/daniele/.config/codex/secrets/telegram.env"
 filesystem_free_change_gib = 1.0
 reminder_seconds = 21600
 timeout_seconds = 5
-inverted_categories = []
+inverted_categories = ["storage"]
