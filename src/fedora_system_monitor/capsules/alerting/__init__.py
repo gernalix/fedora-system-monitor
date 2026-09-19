@@ -140,11 +140,30 @@ def _metric_condition(metric: dict[str, Any], active_level: str, config: dict[st
     if name == "swap.used_percent":
         return "", 0, f"swap use is informational at {value:.1f}%"
     if name == "memory.pressure_level":
-        if value >= 2:
-            return "critical", 0, "memory pressure is critical"
+        details = metric.get("details") or {}
         if value >= 1:
-            return "warning", 0, "memory pressure is elevated"
-        return "", 0, "memory pressure recovered"
+            level = "critical" if value >= 2 else "elevated"
+            available_gib = float(details.get("available_bytes") or 0) / 1024**3
+            swap_percent = float(details.get("swap_used_percent") or 0)
+            psi_some = float(details.get("psi_some_avg10_percent") or 0)
+            psi_full = float(details.get("psi_full_avg10_percent") or 0)
+            message = (
+                f"OOM risk {level}: MemAvailable {available_gib:.2f} GiB, "
+                f"swap {swap_percent:.1f}%, PSI some/full {psi_some:.1f}/{psi_full:.1f}%"
+            )
+            processes = details.get("top_memory_processes") or []
+            if isinstance(processes, list):
+                top = []
+                for process in processes[:3]:
+                    if not isinstance(process, dict):
+                        continue
+                    executable = str(process.get("executable") or "?")
+                    memory_percent = float(process.get("memory_percent") or 0)
+                    top.append(f"{executable} {memory_percent:.1f}%")
+                if top:
+                    message += "; top RAM " + ", ".join(top)
+            return ("critical" if value >= 2 else "warning"), 0, message
+        return "", 0, "OOM risk recovered"
     if name in {"temperature.cpu_c", "temperature.nvme_c"}:
         kind = "nvme" if name.endswith("nvme_c") else "cpu"
         level, duration = _high_level(
@@ -275,7 +294,7 @@ def evaluate_metric_alerts(
                         message=message,
                         source=str(metric.get("source") or "collector"),
                         device_id=device_id,
-                        details={"value": metric.get("value"), "unit": metric.get("unit")},
+                        details={**dict(metric.get("details") or {}), "value": metric.get("value"), "unit": metric.get("unit")},
                     )
                 )
                 state["active_level"] = desired
@@ -297,7 +316,7 @@ def evaluate_metric_alerts(
                             message=message,
                             source=str(metric.get("source") or "collector"),
                             device_id=device_id,
-                            details={"value": metric.get("value"), "unit": metric.get("unit")},
+                            details={**dict(metric.get("details") or {}), "value": metric.get("value"), "unit": metric.get("unit")},
                         )
                     )
                     state["active_level"] = ""
