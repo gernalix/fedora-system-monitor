@@ -18,6 +18,7 @@ THRESHOLD.memory_pressure=Zram used percent is informational and never alerts al
 THRESHOLD.memory_warning=MemAvailable below 10 percent plus PSI,swap-out,or reclaim evidence;or PSI some at least 10 percent
 THRESHOLD.memory_critical=OOM delta,PSI full at least 5 percent,or MemAvailable below 5 percent with severe activity
 THRESHOLD.memory_inputs=MemAvailable,PSI some/full avg10,swap in/out bytes per second,reclaim pages per second,OOM delta,zram compression and writeback
+ALERT.memory_oom_risk=Existing memory.pressure_level alert is the anti-OOM guard;warning/critical transitions include MemAvailable,swap occupancy,PSI some/full,and up to three current top-RAM processes sampled only while pressure is active
 THRESHOLD.smart=Critical health,spare below 10 percent,used life at least 100 percent,media errors,error log,or failed self-test alert;standby rotational devices are not woken
 THRESHOLD.battery=Wear and temperature alert only when configured anomaly thresholds are crossed;missing optional temperature is informational
 THRESHOLD.btrfs=Nonzero device stats or last scrub errors alert in Storage

@@ -244,8 +244,13 @@ def collect_proc(scope: str, config: Mapping[str, Any], db: object) -> Collectio
         reasons.append("sustained_pressure")
     pressure_details = {
         "available_percent": round(available_percent, 3),
+        "available_bytes": available,
+        "total_memory_bytes": total_memory,
         "psi_some_avg10_percent": round(psi_some, 3),
         "psi_full_avg10_percent": round(psi_full, 3),
+        "swap_used_percent": round(swap_percent, 3),
+        "swap_used_bytes": swap_used,
+        "swap_total_bytes": swap_total,
         "swap_in_bytes_per_second": round(swap_in_bps, 3),
         "swap_out_bytes_per_second": round(swap_out_bps, 3),
         "reclaim_scan_pages_per_second": round(scan_rate, 3),
@@ -254,6 +259,33 @@ def collect_proc(scope: str, config: Mapping[str, Any], db: object) -> Collectio
         "zram_compression_ratio": round(float(zram["compression_ratio"]), 3),
         "reasons": reasons,
     }
+    if pressure_level:
+        limit = max(1, int(_number(config_value(config, ("collection", "top_process_limit"), default=5), 5)))
+        process_list = external(
+            config,
+            ["ps", "-eo", "pid=,user=,comm=,%mem=", "--sort=-%mem"],
+            max_output=131_072,
+        )
+        if process_list.ok:
+            top_memory: list[dict[str, Any]] = []
+            for line in process_list.stdout.splitlines():
+                fields = line.split(None, 3)
+                if len(fields) != 4:
+                    continue
+                try:
+                    top_memory.append(
+                        {
+                            "pid": int(fields[0]),
+                            "user": fields[1],
+                            "executable": fields[2],
+                            "memory_percent": float(fields[3]),
+                        }
+                    )
+                except ValueError:
+                    continue
+                if len(top_memory) >= limit:
+                    break
+            pressure_details["top_memory_processes"] = top_memory
     severity = "critical" if pressure_level == 2 else "warning" if pressure_level == 1 else "info"
     result.metrics.extend(
         [

@@ -79,16 +79,18 @@ class CollectorTests(unittest.TestCase):
             (proc / "meminfo").write_text("MemTotal: 1000 kB\nMemAvailable: 40 kB\nSwapTotal: 1000 kB\nSwapFree: 100 kB\n", encoding="utf-8")
             (proc / "pressure" / "memory").write_text("some avg10=12.00 avg60=1.00 avg300=0.00 total=1\nfull avg10=6.00 avg60=1.00 avg300=0.00 total=1\n", encoding="utf-8")
             (proc / "vmstat").write_text("pswpin 0\npswpout 0\npgscan_kswapd 0\npgsteal_kswapd 0\noom_kill 0\n", encoding="utf-8")
-            with mock.patch.object(periodic, "PROC_ROOT", proc), mock.patch.object(periodic, "SYS_ROOT", proc / "missing"), mock.patch.object(periodic.time, "time", return_value=100.0):
+            with mock.patch.object(periodic, "PROC_ROOT", proc), mock.patch.object(periodic, "SYS_ROOT", proc / "missing"), mock.patch.object(periodic.time, "time", return_value=100.0), mock.patch.object(periodic, "external", return_value=command_result("123 me java 22.0\n124 me qemu-system-x86 9.6\n")):
                 periodic.collect_proc("minute", {}, self.db)
             (proc / "vmstat").write_text("pswpin 10\npswpout 5000\npgscan_kswapd 5000\npgsteal_kswapd 4000\noom_kill 1\n", encoding="utf-8")
-            with mock.patch.object(periodic, "PROC_ROOT", proc), mock.patch.object(periodic, "SYS_ROOT", proc / "missing"), mock.patch.object(periodic.time, "time", return_value=160.0):
+            with mock.patch.object(periodic, "PROC_ROOT", proc), mock.patch.object(periodic, "SYS_ROOT", proc / "missing"), mock.patch.object(periodic.time, "time", return_value=160.0), mock.patch.object(periodic, "external", return_value=command_result("123 me java 22.0\n124 me qemu-system-x86 9.6\n")):
                 result = periodic.collect_proc("minute", {}, self.db)
         by_name = {metric["name"]: metric for metric in result.metrics}
         self.assertEqual(by_name["memory.pressure_level"]["value"], 2)
         self.assertEqual(by_name["memory.oom_kills_delta"]["value"], 1)
         self.assertGreater(by_name["memory.swap_out_bytes_per_second"]["value"], 0)
         self.assertEqual(by_name["memory.pressure_level"]["details"]["reclaim_efficiency_percent"], 80.0)
+        self.assertEqual(by_name["memory.pressure_level"]["details"]["swap_used_percent"], 90.0)
+        self.assertEqual(by_name["memory.pressure_level"]["details"]["top_memory_processes"][0]["executable"], "java")
 
     def test_filesystem_emergency_and_unsupported_inodes(self) -> None:
         fake_stat = SimpleNamespace(f_blocks=100, f_bavail=4, f_frsize=1024, f_files=0, f_favail=0)
