@@ -10,7 +10,7 @@ if [[ ${1:-} == "--purge-data" ]]; then
     PURGE=true
 fi
 
-systemctl disable --now fedora-system-monitor-fast.timer fedora-system-monitor-hourly.timer fedora-system-monitor-daily.timer fedora-system-monitor-weekly.timer fedora-system-monitor-software.path fedora-system-monitor-events.service 2>/dev/null || true
+systemctl disable --now fedora-system-monitor-fast.timer fedora-system-monitor-hourly.timer fedora-system-monitor-daily.timer fedora-system-monitor-weekly.timer fedora-system-monitor-context.timer fedora-system-monitor-software.path fedora-system-monitor-events.service 2>/dev/null || true
 systemctl disable fedora-system-monitor-lifecycle.service 2>/dev/null || true
 systemctl stop fedora-system-monitor-lifecycle.service 'fedora-system-monitor-collect@*.service' 'fedora-system-monitor-device-*@*.service' 2>/dev/null || true
 rm -f /etc/systemd/system/fedora-system-monitor-*.service /etc/systemd/system/fedora-system-monitor-*.timer /etc/systemd/system/fedora-system-monitor-*.path
