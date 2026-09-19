@@ -87,9 +87,26 @@ class AlertingTests(unittest.TestCase):
         recovery = evaluate_metric_alerts([zram], self.config, self.get, self.set)
         self.assertEqual(len(recovery), 1)
         self.assertFalse(recovery[0].active)
-        pressure = {"category": "memory", "name": "memory.pressure_level", "value": 2, "unit": "level", "device_id": "host", "source": "procfs"}
+        pressure = {
+            "category": "memory",
+            "name": "memory.pressure_level",
+            "value": 2,
+            "unit": "level",
+            "device_id": "host",
+            "source": "procfs",
+            "details": {
+                "available_bytes": 1536 * 1024**2,
+                "swap_used_percent": 99.5,
+                "psi_some_avg10_percent": 35.0,
+                "psi_full_avg10_percent": 20.0,
+                "top_memory_processes": [{"executable": "java", "memory_percent": 22.0}],
+            },
+        }
         active = evaluate_metric_alerts([pressure], self.config, self.get, self.set)
         self.assertEqual(active[0].severity, "critical")
+        self.assertIn("OOM risk critical", active[0].message)
+        self.assertIn("top RAM java 22.0%", active[0].message)
+        self.assertEqual(active[0].details["swap_used_percent"], 99.5)
 
     def test_storage_and_battery_anomalies_alert(self) -> None:
         metrics = [
