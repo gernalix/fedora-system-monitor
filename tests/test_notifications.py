@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 import tempfile
 import unittest
@@ -138,6 +139,40 @@ class NotificationTests(unittest.TestCase):
         self.assertEqual(mocked.call_count, 1)
         self.assertTrue(mocked.call_args.kwargs["up"])
         self.assertEqual(mocked.call_args.kwargs["message"], "storage: collectors complete; active alerts=1")
+
+    def test_telegram_prefers_systemd_credential_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            credential = Path(temp) / "telegram.env"
+            credential.write_text(
+                "TELEGRAM_BOT_TOKEN=test-token\nTELEGRAM_CHAT_ID=123\n",
+                encoding="utf-8",
+            )
+            credential.chmod(0o600)
+            config = {
+                "notifications": {
+                    "telegram_credentials": "/legacy/should-not-be-used.env",
+                    "timeout_seconds": 1,
+                }
+            }
+            observed: list[str] = []
+
+            def capture_config_path() -> None:
+                observed.append(os.environ.get("TELEGRAM_NOTIFY_CONFIG", ""))
+
+            helper = SimpleNamespace(
+                load_config_files=mock.Mock(side_effect=capture_config_path),
+                validate_config=mock.Mock(),
+                send_message=mock.Mock(),
+            )
+            with patch.dict(
+                os.environ,
+                {"CREDENTIALS_DIRECTORY": temp},
+                clear=False,
+            ), patch.dict(sys.modules, {"telegram_notify": helper}):
+                result = send_telegram_message(config, "test")
+
+            self.assertTrue(result.delivered)
+            self.assertEqual(observed, [str(credential)])
 
     def test_telegram_result_never_contains_credentials(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
