@@ -39,6 +39,11 @@ def _credentials_path(config: dict[str, Any]) -> Path:
 
 
 def _telegram_credentials_path(config: Mapping[str, Any]) -> Path:
+    credentials_directory = os.environ.get("CREDENTIALS_DIRECTORY")
+    if credentials_directory:
+        candidate = Path(credentials_directory) / "telegram.env"
+        if candidate.is_file():
+            return candidate
     return Path(
         str(
             config.get("notifications", {}).get(
