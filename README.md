@@ -19,12 +19,16 @@ fedora-system-monitor context latest --type graphics
 fedora-system-monitor context incident <incident-id>
 ```
 
-La configurazione operativa è `/etc/fedora-system-monitor/config.toml`; gli
-endpoint Kuma sono in `/home/daniele/.config/codex/secrets/fedora_system_monitor_uptime_kuma.toml` con permessi
-`0600`; Telegram riusa
-`/home/daniele/.config/codex/secrets/telegram.env`, anch’esso `0600`.
-L’invio passa esclusivamente dal helper condiviso `telegram_notify.py`, installato
-come pacchetto Python `telegram_notify`.
+La configurazione operativa è `/etc/fedora-system-monitor/config.toml`.
+Per i servizi systemd il percorso preferito per i segreti è
+`$CREDENTIALS_DIRECTORY`: `uptime-kuma.toml` e `telegram.env` vengono letti
+da lì quando presenti, così le unità possono usare `LoadCredential=` o
+`LoadCredentialEncrypted=`. I vecchi file
+`/home/daniele/.config/codex/secrets/fedora_system_monitor_uptime_kuma.toml` e
+`/home/daniele/.config/codex/secrets/telegram.env` restano fallback di
+compatibilità durante la migrazione e devono essere `0600`.
+L’invio Telegram passa esclusivamente dal helper condiviso `telegram_notify.py`,
+installato come pacchetto Python `telegram_notify`.
 Il timer di context indexing correla inoltre il DB locale con il mirror ActivityWatch e produce timeline/bundle incidenti bounded; la pubblicazione Git del repo derivato è opzionale e fail-closed. Vedere [Context Index](docs/human/context-index.md).
 
 Vedere [overview](docs/human/overview.md),
