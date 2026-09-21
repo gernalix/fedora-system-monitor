@@ -838,7 +838,7 @@ def _collect_command(args: argparse.Namespace, config: dict[str, Any], db: Datab
         if heartbeat.delivered:
             signature, _ = _endpoint_alert_snapshot(db, category)
             db.set_state(f"endpoint:{category}", signature, namespace="notification")
-    if "minute" in scopes:
+    if "minute" in scopes and hasattr(db, "query"):
         minute_failed = any(
             item.get("scope") == "minute" and item.get("outcome") == "error"
             for item in results
