@@ -259,6 +259,7 @@ def endpoint_key(category: str) -> str:
         "service": "services",
         "services": "services",
         "software": "software",
+        "discord_exporter": "discord_exporter",
     }.get(category, "system")
 
 
