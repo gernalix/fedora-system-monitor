@@ -44,13 +44,14 @@ from fedora_system_monitor.capsules.context_index import (
     sync_context_index,
 )
 from fedora_system_monitor.capsules.graphics_incident import stream_compositor_watch
-from fedora_system_monitor.capsules.kuma_admin import configure_push_monitors
+from fedora_system_monitor.capsules.kuma_admin import DEFAULT_MONITORS, configure_push_monitors
 from fedora_system_monitor.capsules.notifications import (
     endpoint_key,
     integration_status,
     notify_filesystem_free_changes,
     send_category_heartbeat,
 )
+from fedora_system_monitor.capsules.service_health import send_service_heartbeats, service_monitor_specs
 from fedora_system_monitor.capsules.prometheus import exposition as prometheus_exposition, serve as serve_prometheus
 from fedora_system_monitor.capsules.reporting import (
     alerts_report,
@@ -854,6 +855,15 @@ def _collect_command(args: argparse.Namespace, config: dict[str, Any], db: Datab
             ping_ms=duration,
         )
         heartbeats.append(discord_heartbeat.__dict__)
+        heartbeats.extend(
+            item.__dict__
+            for item in send_service_heartbeats(
+                config,
+                db,
+                collector_failed=minute_failed,
+                ping_ms=duration,
+            )
+        )
     output: dict[str, Any] = {"results": results, "heartbeats": heartbeats}
     log_record(LOGGER, "collection_complete", scopes=scopes, outcomes=[item["outcome"] for item in results])
     return output
@@ -1311,6 +1321,7 @@ def execute(args: argparse.Namespace) -> int:
             base_url=args.base_url,
             chrome_profile=args.chrome_profile,
             credentials_path=args.credentials or config["notifications"]["uptime_kuma_credentials"],
+            specs=(*DEFAULT_MONITORS, *service_monitor_specs(args.service_unit)),
         )
         _print(output, args)
         return 0
