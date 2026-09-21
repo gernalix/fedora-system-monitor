@@ -67,6 +67,7 @@ class NotificationTests(unittest.TestCase):
     def test_endpoint_routing(self) -> None:
         self.assertEqual(endpoint_key("filesystem"), "storage")
         self.assertEqual(endpoint_key("service"), "services")
+        self.assertEqual(endpoint_key("discord_exporter"), "discord_exporter")
         self.assertEqual(endpoint_key("memory"), "system")
 
     def test_explicit_root_only_http_transport(self) -> None:
