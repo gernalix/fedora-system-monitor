@@ -48,7 +48,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "services": {
         "auto_detect": True,
-        "essential": ["NetworkManager.service", "firewalld.service"],
+        "essential": ["NetworkManager.service", "firewalld.service", "user:discord-exporter-crawl.service"],
         "secondary": [
             "bluetooth.service",
             "libvirtd.service",
