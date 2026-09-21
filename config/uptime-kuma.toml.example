@@ -6,6 +6,8 @@ storage = ""
 network = ""
 services = ""
 software = ""
+# Independent custom services are added as deterministic keys:
+# service_<slug>_<hash> = ""
 
 [transport]
 allow_insecure_http = false

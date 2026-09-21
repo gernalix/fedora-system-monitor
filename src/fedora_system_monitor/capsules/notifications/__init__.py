@@ -106,6 +106,11 @@ def _load_endpoints(config: dict[str, Any]) -> dict[str, str]:
     }
 
 
+def configured_push_keys(config: dict[str, Any]) -> set[str]:
+    """Return configured Kuma endpoint names without exposing endpoint values."""
+    return set(_load_endpoints(config))
+
+
 def _push(url: str, *, up: bool, message: str, ping_ms: int | None, timeout: float) -> tuple[bool, str]:
     parsed = urllib.parse.urlsplit(url)
     query = dict(urllib.parse.parse_qsl(parsed.query, keep_blank_values=True))
@@ -301,6 +306,29 @@ def send_heartbeat(config: dict[str, Any], *, healthy: bool, message: str, ping_
     return NotificationResult("uptime-kuma", "heartbeat", True, delivered, status, "" if delivered else status)
 
 
+def send_named_heartbeat(
+    config: dict[str, Any],
+    endpoint: str,
+    *,
+    healthy: bool,
+    message: str,
+    ping_ms: int | None = None,
+) -> NotificationResult:
+    """Send one heartbeat to an exact configured push endpoint key."""
+    endpoints = _load_endpoints(config)
+    url = endpoints.get(endpoint)
+    if not url:
+        return NotificationResult("uptime-kuma", endpoint, False, False, "not configured")
+    delivered, status = _push(
+        url,
+        up=healthy,
+        message=message,
+        ping_ms=ping_ms,
+        timeout=float(config.get("notifications", {}).get("timeout_seconds", 5)),
+    )
+    return NotificationResult("uptime-kuma", endpoint, True, delivered, status, "" if delivered else status)
+
+
 def send_category_heartbeat(
     config: dict[str, Any],
     category: str,
@@ -351,11 +379,13 @@ def send_category_heartbeat(
 
 __all__ = [
     "NotificationResult",
+    "configured_push_keys",
     "endpoint_key",
     "integration_status",
     "notify_filesystem_free_changes",
     "notify_signals",
     "send_category_heartbeat",
     "send_heartbeat",
+    "send_named_heartbeat",
     "send_telegram_message",
 ]
