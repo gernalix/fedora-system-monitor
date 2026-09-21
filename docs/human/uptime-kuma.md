@@ -1,7 +1,6 @@
 # Integrazione Uptime Kuma
 
-Sono presenti cinque Push Monitor, scelti per fornire segnali distinti senza
-moltiplicare le notifiche:
+Restano presenti cinque Push Monitor aggregati per il quadro generale:
 
 | ID | Monitor | Heartbeat | Copertura |
 |---:|---|---:|---|
@@ -16,11 +15,34 @@ retry e nessun reinvio periodico dello stesso stato. Gli alert sono aggregati pe
 categoria: una transizione apre `DOWN`, la recovery invia una sola transizione
 `UP`, mentre gli heartbeat rappresentano lo stato complessivo corrente.
 
-`Fedora Services` include esplicitamente anche
-`fedora-diagnostics-telemetry.service`, `x-repost-downloader.service` e la unità
-utente `codex-session-archive.service`. Questi servizi oneshot sono sani quando
-l'ultima esecuzione ha `Result=success`; un fallimento rende rosso lo stesso
-failure domain senza creare monitor duplicati per ogni unità.
+`Fedora Services` resta il failure domain aggregato. In aggiunta, ogni servizio
+personalizzato registrato come operativo può avere un Push Monitor indipendente
+`Fedora Service · <systemd identity>`. Gli endpoint sono identificati da una
+chiave deterministica `service_<slug>_<hash>`; il token resta esclusivamente nel
+file credenziali protetto e non compare in Git, MegaVault o log.
+
+Il runtime legge gli stessi campioni `service.active` del collector systemd e
+invia heartbeat solo ai monitor individuali effettivamente presenti nel file
+credenziali. Un daemon è UP solo se il campione è fresco, non è in restart loop e
+risulta attivo; un oneshot terminato con successo può essere UP anche quando
+`ActiveState=inactive`. Per timer/oneshot con SLA temporale, il provisioning live
+deve inoltre verificare la freschezza dell'ultima run rispetto alla relativa
+schedulazione.
+
+Il comando amministrativo supporta il provisioning esplicito dei servizi senza
+inserire token nelle unità:
+
+```bash
+sudo fedora-system-monitor kuma-configure \
+  --base-url https://kuma.danielegalati.com \
+  --service-unit example.service \
+  --service-unit user:example-user.service
+```
+
+La lista passata deve rappresentare l'insieme che si vuole provisionare in quella
+riconciliazione. Sul runtime reale è ammessa anche la riconciliazione transazionale
+diretta del DB Kuma: backup consistente, modifica con Kuma fermo quando richiesto,
+riavvio e readback autorevole sono parte dell'acceptance.
 
 Gli URL sono in `/home/daniele/.config/codex/secrets/fedora_system_monitor_uptime_kuma.toml`,
 con modo `0600`. Non vanno mai stampati, copiati nei documenti o
