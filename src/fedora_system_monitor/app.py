@@ -15,7 +15,6 @@ from fedora_system_monitor.capsules.runtime.coordinator import (
     SYSTEM_CONFIG,
     execute,
 )
-
 def _default_config_path() -> Path:
     return SYSTEM_CONFIG if SYSTEM_CONFIG.exists() else PROJECT_CONFIG
 
