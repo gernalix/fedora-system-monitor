@@ -736,6 +736,56 @@ def _latest_persisted_scope_result(db: Database, scope: str, boundary_id: int) -
     }
 
 
+_DISCORD_EXPORTER_SERVICE_ID = "user:discord-exporter-crawl.service"
+
+
+def _discord_exporter_service_health(
+    db: Database,
+    *,
+    minute_failed: bool,
+    now: datetime | None = None,
+) -> tuple[bool, str]:
+    """Return independent health for the persistent Discord exporter user service."""
+
+    rows = db.query(
+        "SELECT value,timestamp_utc,details_json FROM periodic_metrics "
+        "WHERE name='service.active' AND device_id=? ORDER BY id DESC LIMIT 1",
+        (_DISCORD_EXPORTER_SERVICE_ID,),
+    )
+    if not rows:
+        return False, "discord-exporter-crawl.service: no service sample"
+    row = rows[0]
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    try:
+        observed = datetime.fromisoformat(str(row["timestamp_utc"]).replace("Z", "+00:00"))
+        if observed.tzinfo is None:
+            observed = observed.replace(tzinfo=timezone.utc)
+        age_seconds = (current - observed).total_seconds()
+        fresh = -30 <= age_seconds <= 180
+    except (TypeError, ValueError):
+        fresh = False
+    try:
+        details = json.loads(str(row.get("details_json") or "{}"))
+    except (AttributeError, json.JSONDecodeError):
+        details = {}
+    active_state = str(details.get("active_state") or "unknown")
+    sub_state = str(details.get("sub_state") or "unknown")
+    try:
+        active = float(row["value"] or 0) > 0
+    except (TypeError, ValueError):
+        active = False
+    healthy = bool(active and fresh and not minute_failed)
+    if minute_failed:
+        reason = "minute collector failed"
+    elif not fresh:
+        reason = "service sample stale"
+    else:
+        reason = f"{active_state}/{sub_state}"
+    return healthy, f"discord-exporter-crawl.service: {reason}"
+
+
 def _collect_command(args: argparse.Namespace, config: dict[str, Any], db: Database) -> dict[str, Any]:
     scopes: list[str]
     if args.scope == "fast":
@@ -787,6 +837,23 @@ def _collect_command(args: argparse.Namespace, config: dict[str, Any], db: Datab
         if heartbeat.delivered:
             signature, _ = _endpoint_alert_snapshot(db, category)
             db.set_state(f"endpoint:{category}", signature, namespace="notification")
+    if "minute" in scopes:
+        minute_failed = any(
+            item.get("scope") == "minute" and item.get("outcome") == "error"
+            for item in results
+        )
+        discord_healthy, discord_message = _discord_exporter_service_health(
+            db,
+            minute_failed=minute_failed,
+        )
+        discord_heartbeat = send_category_heartbeat(
+            config,
+            "discord_exporter",
+            healthy=discord_healthy,
+            message=discord_message,
+            ping_ms=duration,
+        )
+        heartbeats.append(discord_heartbeat.__dict__)
     output: dict[str, Any] = {"results": results, "heartbeats": heartbeats}
     log_record(LOGGER, "collection_complete", scopes=scopes, outcomes=[item["outcome"] for item in results])
     return output
