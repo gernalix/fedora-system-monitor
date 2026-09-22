@@ -190,6 +190,26 @@ NRestarts=0
         self.assertTrue(oneshot["details"]["successful_inactive_oneshot"])
         self.assertEqual(oneshot["details"]["importance"], "secondary")
 
+    def test_service_discovery_cache_invalidates_when_config_changes(self) -> None:
+        self.db.set_state(
+            "services.discovery",
+            {
+                "time": 9_999_999_999,
+                "system": ["old.service"],
+                "user": [],
+                "signature": {"essential": [], "secondary": ["old.service"], "patterns": []},
+            },
+            namespace="collector",
+        )
+        config = {"services": {"secondary": ["new.service"], "name_patterns": []}}
+        with (
+            mock.patch.object(periodic, "discover_services", return_value=[]) as discover,
+            mock.patch.object(periodic, "_discover_user_services", return_value=[]) as discover_user,
+        ):
+            periodic.collect_services("minute", config, self.db)
+        discover.assert_called_once_with(config)
+        discover_user.assert_called_once_with(config, set())
+
     def test_service_restart_loop_is_stateful_and_isolated(self) -> None:
         first_show = """Id=demo.service
 LoadState=loaded
