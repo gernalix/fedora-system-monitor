@@ -6,6 +6,7 @@ import json
 import os
 import secrets
 import string
+import subprocess
 import tempfile
 import threading
 from dataclasses import dataclass
@@ -34,18 +35,71 @@ DEFAULT_MONITORS = (
 )
 
 CANONICAL_ORACLE_SSH_HELPER = Path("/home/daniele/projects/vm_oracle/scripts/oracle_ssh.sh")
-CANONICAL_KUMA_COMPOSE_DIRECTORY = Path("/opt/uptime-kuma")
-CANONICAL_KUMA_DATABASE_PATH = CANONICAL_KUMA_COMPOSE_DIRECTORY / "data/kuma.db"
+CANONICAL_KUMA_CONTAINER = "uptime-kuma"
+
+
+def _remote_output(command: str, *, ssh_helper: Path = CANONICAL_ORACLE_SSH_HELPER) -> str:
+    if not ssh_helper.is_file() or not os.access(ssh_helper, os.X_OK):
+        raise RuntimeError(f"canonical Oracle SSH helper is unavailable: {ssh_helper}")
+    result = subprocess.run(
+        [str(ssh_helper), command],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=30,
+        check=False,
+    )
+    if result.returncode:
+        detail = result.stderr.strip().splitlines()[-1] if result.stderr.strip() else "remote command failed"
+        raise RuntimeError(f"cannot inspect the authoritative Kuma runtime: {detail}")
+    return result.stdout.strip()
 
 
 def runtime_descriptor() -> dict[str, str]:
-    """Return the non-secret canonical Uptime Kuma administration locations."""
-    database_path = str(CANONICAL_KUMA_DATABASE_PATH)
+    """Resolve non-secret Kuma paths from the live Docker runtime on Oracle."""
+    mounts = json.loads(
+        _remote_output(
+            "sudo -n docker inspect uptime-kuma --format '{{json .Mounts}}'"
+        )
+    )
+    labels = json.loads(
+        _remote_output(
+            "sudo -n docker inspect uptime-kuma --format '{{json .Config.Labels}}'"
+        )
+    )
+    identity = _remote_output(
+        "sudo -n docker inspect uptime-kuma --format '{{.Id}}|{{.Name}}|{{.Config.Image}}|{{.State.Status}}'"
+    ).split("|", 3)
+    if len(identity) != 4 or identity[3] != "running":
+        raise RuntimeError("authoritative Kuma container is not running")
+    data_mounts = [
+        item
+        for item in mounts
+        if item.get("Destination") == "/app/data"
+        and item.get("Type") == "bind"
+        and item.get("RW") is True
+    ]
+    if len(data_mounts) != 1:
+        raise RuntimeError("authoritative Kuma /app/data bind mount is missing or ambiguous")
+    data_directory = Path(str(data_mounts[0].get("Source") or ""))
+    if not data_directory.is_absolute():
+        raise RuntimeError("authoritative Kuma data mount is not an absolute host path")
+    database_path = data_directory / "kuma.db"
+    compose_directory = str(labels.get("com.docker.compose.project.working_dir") or "")
+    if not compose_directory.startswith("/"):
+        raise RuntimeError("authoritative Kuma Compose working directory is unavailable")
     return {
         "ssh_helper": str(CANONICAL_ORACLE_SSH_HELPER),
-        "compose_directory": str(CANONICAL_KUMA_COMPOSE_DIRECTORY),
-        "database_path": database_path,
-        "backup_path_template": database_path + ".backup-<UTC_TIMESTAMP>",
+        "runtime": "docker",
+        "instance": identity[1].removeprefix("/"),
+        "container_id": identity[0],
+        "image": identity[2],
+        "status": identity[3],
+        "compose_directory": compose_directory,
+        "data_directory": str(data_directory),
+        "database_path": str(database_path),
+        "backup_directory": str(data_directory),
+        "backup_path_template": str(database_path) + ".backup-<UTC_TIMESTAMP>",
     }
 
 
