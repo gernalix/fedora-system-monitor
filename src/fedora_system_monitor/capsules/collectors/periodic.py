@@ -597,16 +597,29 @@ def _parse_systemctl_show(output: str) -> list[dict[str, str]]:
 def collect_services(scope: str, config: Mapping[str, Any], db: object) -> CollectionResult:
     cadence = CADENCE_SECONDS[scope]
     result = CollectionResult(scope)
-    essential, _, patterns = _configured_service_sets(config)
+    essential, secondary, patterns = _configured_service_sets(config)
+    discovery_signature = {
+        "essential": sorted(essential),
+        "secondary": sorted(secondary),
+        "patterns": sorted(patterns),
+    }
     now = time.time()
     cached = state_get(db, "services.discovery", {})
-    if isinstance(cached, Mapping) and now - _number(cached.get("time"), 0) < 3600:
+    if (
+        isinstance(cached, Mapping)
+        and cached.get("signature") == discovery_signature
+        and now - _number(cached.get("time"), 0) < 3600
+    ):
         units = [str(unit) for unit in cached.get("system", [])]
         user_units = [str(unit) for unit in cached.get("user", [])]
     else:
         units = discover_services(config)
         user_units = _discover_user_services(config, patterns)
-        state_set(db, "services.discovery", {"time": now, "system": units, "user": user_units})
+        state_set(
+            db,
+            "services.discovery",
+            {"time": now, "system": units, "user": user_units, "signature": discovery_signature},
+        )
     if not units and not user_units:
         result.metrics.append(record(cadence, "service", "monitored_service_count", 0, "services", source="systemd"))
         return result
