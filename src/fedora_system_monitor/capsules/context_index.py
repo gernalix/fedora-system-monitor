@@ -33,6 +33,7 @@ MANAGED_PREFIXES = ("metadata/", "timeline/", "incidents/", "summaries/")
 _ACTIVITY_TYPES = {"afkstatus", "currentwindow", "web.tab.current"}
 _MAX_TEXT = 500
 _MAX_CONTEXT_ROWS = 20_000
+_URL_RE = re.compile(r"(?i)\b(?:https?|ftp)://[^\s\"'<>]+")
 
 # Deliberately compact: this is a derived forensic index, not a duplicate of
 # the raw monitor database. Events/alerts remain complete; metrics are selected
@@ -80,7 +81,8 @@ def _now() -> datetime:
 
 
 def _clean(value: object, limit: int = _MAX_TEXT) -> str:
-    return redact_text(str(value or "").replace("\x00", " ").strip())[:limit]
+    text = redact_text(str(value or "").replace("\x00", " ").strip())
+    return _URL_RE.sub("[REDACTED_URL]", text)[:limit]
 
 
 def _sanitize(value: Any) -> Any:
@@ -527,7 +529,7 @@ def _write_day(
             continue
         if replace_start <= timestamp <= replace_end:
             continue
-        kept.append(row)
+        kept.append(_sanitize(row))
     merged = {str(row["record_id"]): row for row in kept}
     for row in records:
         merged[str(row["record_id"])] = row
