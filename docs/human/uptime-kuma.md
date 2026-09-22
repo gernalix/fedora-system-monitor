@@ -29,6 +29,24 @@ risulta attivo; un oneshot terminato con successo può essere UP anche quando
 deve inoltre verificare la freschezza dell'ultima run rispetto alla relativa
 schedulazione.
 
+Il tooling espone anche i path canonici non segreti usati per le operazioni
+amministrative dirette sul runtime Oracle:
+
+```bash
+fedora-system-monitor kuma-runtime --json
+```
+
+Il descriptor restituisce:
+- helper SSH canonico: `/home/daniele/projects/vm_oracle/scripts/oracle_ssh.sh`;
+- directory Docker Compose: `/opt/uptime-kuma`;
+- DB live: `/opt/uptime-kuma/data/kuma.db`;
+- template backup: `/opt/uptime-kuma/data/kuma.db.backup-<UTC_TIMESTAMP>`.
+
+Questi valori non contengono token o credenziali. Per una modifica DB diretta:
+eseguire prima un backup SQLite verificabile, fermare Kuma quando la modifica lo
+richiede, applicare una sola transazione mirata, riavviare e fare readback
+autorevole. Non indovinare path alternativi.
+
 Il comando amministrativo supporta il provisioning esplicito dei servizi senza
 inserire token nelle unità:
 
