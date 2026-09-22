@@ -11,6 +11,7 @@ from fedora_system_monitor.capsules.kuma_admin import (
     _monitor_payload,
     _monitor_upside_down,
     recover_chrome_session_token,
+    runtime_descriptor,
 )
 
 
@@ -51,6 +52,19 @@ class KumaAdminTests(unittest.TestCase):
             480,
             180,
             2,
+        )
+
+    def test_runtime_descriptor_exposes_canonical_non_secret_paths(self) -> None:
+        descriptor = runtime_descriptor()
+        self.assertEqual(
+            descriptor["ssh_helper"],
+            "/home/daniele/projects/vm_oracle/scripts/oracle_ssh.sh",
+        )
+        self.assertEqual(descriptor["compose_directory"], "/opt/uptime-kuma")
+        self.assertEqual(descriptor["database_path"], "/opt/uptime-kuma/data/kuma.db")
+        self.assertEqual(
+            descriptor["backup_path_template"],
+            "/opt/uptime-kuma/data/kuma.db.backup-<UTC_TIMESTAMP>",
         )
 
     def test_payload_can_preserve_upside_down(self) -> None:
