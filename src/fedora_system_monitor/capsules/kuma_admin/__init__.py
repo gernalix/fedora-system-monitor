@@ -33,6 +33,22 @@ DEFAULT_MONITORS = (
     KumaMonitorSpec("software", "Fedora Software", "Fedora software health: package transactions, pending updates and inventory changes.", 5400, 900, 2),
 )
 
+CANONICAL_ORACLE_SSH_HELPER = Path("/home/daniele/projects/vm_oracle/scripts/oracle_ssh.sh")
+CANONICAL_KUMA_COMPOSE_DIRECTORY = Path("/opt/uptime-kuma")
+CANONICAL_KUMA_DATABASE_PATH = CANONICAL_KUMA_COMPOSE_DIRECTORY / "data/kuma.db"
+
+
+def runtime_descriptor() -> dict[str, str]:
+    """Return the non-secret canonical Uptime Kuma administration locations."""
+    database_path = str(CANONICAL_KUMA_DATABASE_PATH)
+    return {
+        "ssh_helper": str(CANONICAL_ORACLE_SSH_HELPER),
+        "compose_directory": str(CANONICAL_KUMA_COMPOSE_DIRECTORY),
+        "database_path": database_path,
+        "backup_path_template": database_path + ".backup-<UTC_TIMESTAMP>",
+    }
+
+
 
 _LEVELDB_LOG_BLOCK_SIZE = 32_768
 _LEVELDB_LOG_HEADER_SIZE = 7
