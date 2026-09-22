@@ -86,6 +86,10 @@ def runtime_descriptor() -> dict[str, str]:
         raise RuntimeError("authoritative Kuma data mount is not an absolute host path")
     database_path = data_directory / "kuma.db"
     compose_directory = str(labels.get("com.docker.compose.project.working_dir") or "")
+    # A restored container can retain the source backup's Compose label.  The
+    # canonical deployed layout is anchored by the authoritative /app/data bind.
+    if data_directory == Path("/opt/uptime-kuma/data"):
+        compose_directory = str(data_directory.parent)
     if not compose_directory.startswith("/"):
         raise RuntimeError("authoritative Kuma Compose working directory is unavailable")
     return {
