@@ -159,7 +159,7 @@ class ContextIndexTests(unittest.TestCase):
                     "duration": 60,
                     "data": {
                         "app": "google-chrome",
-                        "title": "ChatGPT",
+                        "title": "ChatGPT https://example.invalid/private",
                         "url": "https://example.invalid/private",
                     },
                 }
@@ -196,8 +196,9 @@ class ContextIndexTests(unittest.TestCase):
             row for row in result["timeline"]
             if row["source"] == "activitywatch" and row["details"].get("app") == "google-chrome"
         )
-        self.assertEqual("ChatGPT", chrome["details"]["title"])
+        self.assertEqual("ChatGPT [REDACTED_URL]", chrome["details"]["title"])
         self.assertNotIn("url", chrome["details"])
+        self.assertNotIn("https://", json.dumps(result))
 
     def test_incident_bundle_and_latest(self) -> None:
         latest = latest_incident(self.db, incident_type="graphics")
@@ -231,6 +232,15 @@ class ContextIndexTests(unittest.TestCase):
         self.assertTrue((self.out / "timeline" / "2026" / "09" / "2026-09-19.jsonl").exists())
         self.assertTrue((self.out / "summaries" / "2026-09-19.json").exists())
         self.assertTrue((self.out / "incidents" / "gfx-test-1.json").exists())
+        timeline = self.out / "timeline" / "2026" / "09" / "2026-09-19.jsonl"
+        with timeline.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps({
+                "record_id": "stale-url", "timestamp_utc": "2026-09-19T10:00:00Z",
+                "details": {"title": "https://example.invalid/stale"},
+            }) + "\n")
+        with patch("fedora_system_monitor.capsules.context_index._now", return_value=fake_now):
+            sync_context_index(self.db, self.aw, self.out, since_minutes=5, publish_git=False)
+        self.assertNotIn("https://", timeline.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":
