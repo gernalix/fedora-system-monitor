@@ -83,6 +83,7 @@ def build_parser() -> argparse.ArgumentParser:
     smart_alert.add_argument("--no-open", action="store_true")
     subparsers.add_parser("config-check")
     subparsers.add_parser("db-check")
+    subparsers.add_parser("kuma-runtime", help="show non-secret canonical Uptime Kuma administration locations")
     kuma = subparsers.add_parser("kuma-configure")
     kuma.add_argument("--base-url", required=True)
     kuma.add_argument("--chrome-profile", type=Path, default=Path("/home/daniele/.var/app/com.google.Chrome/config/google-chrome"))
