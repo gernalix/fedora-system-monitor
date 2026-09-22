@@ -31,7 +31,23 @@ class AppTests(unittest.TestCase):
 
     def test_kuma_runtime_cli_is_read_only_and_non_secret(self) -> None:
         output = io.StringIO()
-        with redirect_stdout(output):
+        descriptor = {
+            "ssh_helper": "/home/daniele/projects/vm_oracle/scripts/oracle_ssh.sh",
+            "runtime": "docker",
+            "instance": "uptime-kuma",
+            "container_id": "abc123",
+            "image": "louislam/uptime-kuma:2.4.0",
+            "status": "running",
+            "compose_directory": "/srv/kuma-compose",
+            "data_directory": "/srv/kuma-data",
+            "database_path": "/srv/kuma-data/kuma.db",
+            "backup_directory": "/srv/kuma-data",
+            "backup_path_template": "/srv/kuma-data/kuma.db.backup-<UTC_TIMESTAMP>",
+        }
+        with patch(
+            "fedora_system_monitor.capsules.runtime.coordinator.runtime_descriptor",
+            return_value=descriptor,
+        ), redirect_stdout(output):
             result = main(["--config", str(self.config), "kuma-runtime", "--json"])
         self.assertEqual(result, 0)
         payload = json.loads(output.getvalue())
@@ -39,10 +55,10 @@ class AppTests(unittest.TestCase):
             payload["ssh_helper"],
             "/home/daniele/projects/vm_oracle/scripts/oracle_ssh.sh",
         )
-        self.assertEqual(payload["database_path"], "/opt/uptime-kuma/data/kuma.db")
+        self.assertEqual(payload["database_path"], "/srv/kuma-data/kuma.db")
         self.assertEqual(
             payload["backup_path_template"],
-            "/opt/uptime-kuma/data/kuma.db.backup-<UTC_TIMESTAMP>",
+            "/srv/kuma-data/kuma.db.backup-<UTC_TIMESTAMP>",
         )
 
     def test_db_check_and_read_only_status(self) -> None:
