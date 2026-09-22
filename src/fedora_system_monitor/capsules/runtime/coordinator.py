@@ -44,7 +44,7 @@ from fedora_system_monitor.capsules.context_index import (
     sync_context_index,
 )
 from fedora_system_monitor.capsules.graphics_incident import stream_compositor_watch
-from fedora_system_monitor.capsules.kuma_admin import DEFAULT_MONITORS, configure_push_monitors
+from fedora_system_monitor.capsules.kuma_admin import DEFAULT_MONITORS, configure_push_monitors, runtime_descriptor
 from fedora_system_monitor.capsules.notifications import (
     endpoint_key,
     integration_status,
@@ -1308,7 +1308,7 @@ def execute(args: argparse.Namespace) -> int:
     }
     if args.command == "alerts" and not args.resolve:
         read_only_commands.add("alerts")
-    database_required = args.command not in {"config-check", "kuma-configure", *read_only_commands}
+    database_required = args.command not in {"config-check", "kuma-configure", "kuma-runtime", *read_only_commands}
     if args.command == "smart-alert" and (args.action in {"details", "disks"} or args.no_open):
         database_required = False
     config, db = _load_runtime(args, database=database_required)
@@ -1316,6 +1316,9 @@ def execute(args: argparse.Namespace) -> int:
         errors = validate_config(config)
         _print({"ok": not errors, "errors": errors, "uptime_kuma": integration_status(config)}, args)
         return 0 if not errors else 2
+    if args.command == "kuma-runtime":
+        _print(runtime_descriptor(), args)
+        return 0
     if args.command == "kuma-configure":
         output = configure_push_monitors(
             base_url=args.base_url,
