@@ -87,6 +87,19 @@ class KumaAdminTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "missing or ambiguous"):
                 runtime_descriptor()
 
+    def test_runtime_descriptor_uses_canonical_root_for_restored_fedora_layout(self) -> None:
+        with mock.patch.object(
+            kuma_admin,
+            "_remote_output",
+            side_effect=[
+                '[{"Type":"bind","Source":"/opt/uptime-kuma/data","Destination":"/app/data","RW":true}]',
+                '{"com.docker.compose.project.working_dir":"/opt/uptime-kuma/backups/old"}',
+                "abc123|/uptime-kuma|louislam/uptime-kuma:2.4.0|running",
+            ],
+        ):
+            descriptor = runtime_descriptor()
+        self.assertEqual(descriptor["compose_directory"], "/opt/uptime-kuma")
+
     def test_payload_can_preserve_upside_down(self) -> None:
         payload = _monitor_payload(
             self.spec,

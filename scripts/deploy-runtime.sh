@@ -10,7 +10,7 @@ LIB_PARENT=/usr/local/libexec
 LIB=$LIB_PARENT/fedora-system-monitor
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 
-if [[ ! -d "$ROOT/.git" ]]; then
+if ! git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     printf 'Runtime-only deploy requires a Git checkout: %s\n' "$ROOT" >&2
     exit 1
 fi
