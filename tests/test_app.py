@@ -29,6 +29,22 @@ from fedora_system_monitor.capsules.notifications import NotificationResult
 class AppTests(unittest.TestCase):
     config = Path(__file__).resolve().parents[1] / "config/fedora-system-monitor.toml"
 
+    def test_kuma_runtime_cli_is_read_only_and_non_secret(self) -> None:
+        output = io.StringIO()
+        with redirect_stdout(output):
+            result = main(["--config", str(self.config), "kuma-runtime", "--json"])
+        self.assertEqual(result, 0)
+        payload = json.loads(output.getvalue())
+        self.assertEqual(
+            payload["ssh_helper"],
+            "/home/daniele/projects/vm_oracle/scripts/oracle_ssh.sh",
+        )
+        self.assertEqual(payload["database_path"], "/opt/uptime-kuma/data/kuma.db")
+        self.assertEqual(
+            payload["backup_path_template"],
+            "/opt/uptime-kuma/data/kuma.db.backup-<UTC_TIMESTAMP>",
+        )
+
     def test_db_check_and_read_only_status(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             database = Path(temp) / "monitor.sqlite3"
