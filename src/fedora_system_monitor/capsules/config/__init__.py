@@ -60,6 +60,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "uptime-kuma.service",
         ],
         "name_patterns": ["backup", "adb", "kuma", "megavault", "monitor"],
+        "freshness_seconds": {},
     },
     "storage": {
         "known_labels": ["Ventoy", "VTOYEFI", "VEEAMRE", "Seagate Expansion Drive"],
@@ -341,7 +342,11 @@ def validate_config(config: Mapping[str, Any] | object) -> list[str]:
         for key, value in current.items():
             if key not in defaults:
                 errors.append(f"unknown configuration key: {'.'.join((*prefix, str(key)))}")
-            elif isinstance(value, Mapping) and isinstance(defaults[key], Mapping):
+            elif (
+                isinstance(value, Mapping)
+                and isinstance(defaults[key], Mapping)
+                and defaults[key]
+            ):
                 validate_known_keys(value, defaults[key], (*prefix, str(key)))
 
     def require_string_items(path: tuple[str, ...], *, absolute: bool = False) -> None:
@@ -422,6 +427,21 @@ def validate_config(config: Mapping[str, Any] | object) -> list[str]:
                 if not valid:
                     errors.append(f"services.{key}[{index}] must be a unit string or a name/essential table")
     require_string_items(("services", "name_patterns"))
+    freshness = _value(config, ("services", "freshness_seconds"))
+    if not isinstance(freshness, Mapping):
+        errors.append("services.freshness_seconds must be a table")
+    else:
+        for identity, seconds in freshness.items():
+            if not isinstance(identity, str) or not identity.strip():
+                errors.append("services.freshness_seconds keys must be non-empty unit identities")
+            if (
+                isinstance(seconds, bool)
+                or not isinstance(seconds, (int, float))
+                or seconds <= 0
+            ):
+                errors.append(
+                    f"services.freshness_seconds.{identity} must be a positive number"
+                )
 
     if not isinstance(config.get("storage"), Mapping):
         errors.append("storage must be a table")
