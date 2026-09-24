@@ -1,0 +1,18 @@
+[Unit]
+Description=Archive one Telegram 1-day auto-delete chat
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=%h/.config/fedora-telegram-autodelete/collector.env
+ConditionPathExists=%h/.local/share/fedora-telegram-history/account.session
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/flock -n %h/.cache/fedora-telegram-history/session.lock %h/.local/libexec/fedora-telegram-history/venv/bin/python %h/.local/libexec/fedora-telegram-history/telegram_autodelete_archiver.py sync --config %h/.config/fedora-telegram-autodelete/collector.env
+TimeoutStartSec=12min
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/share/fedora-telegram-history %h/.local/share/fedora-telegram-autodelete %h/.cache/fedora-telegram-history
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
