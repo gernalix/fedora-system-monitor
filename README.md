@@ -35,6 +35,16 @@ Vedere [overview](docs/human/overview.md),
 [Kuma](docs/human/uptime-kuma.md) e
 [troubleshooting](docs/human/troubleshooting.md).
 
+## Telegram notification history
+
+The separate account-level collector in `scripts/telegram_history_collector.py` reads only the peer in the local `TELEGRAM_CHAT` setting and writes text/metadata to the private `gernalix/telegram-notification-history` repository. Install its isolated runtime and disabled user units with `bash scripts/install-telegram-history-runtime.sh`; fill `~/.config/fedora-telegram-history/collector.env` locally, then bootstrap the Telethon account session explicitly with:
+
+```bash
+~/.local/libexec/fedora-telegram-history/venv/bin/python ~/.local/libexec/fedora-telegram-history/telegram_history_collector.py login --config ~/.config/fedora-telegram-history/collector.env
+```
+
+After successful login, enable the timer with `systemctl --user enable --now telegram-notification-history.timer`. The periodic service never starts an interactive login. Credentials, session files, and binary media stay outside Git.
+
 ## Sviluppo
 
 ```bash

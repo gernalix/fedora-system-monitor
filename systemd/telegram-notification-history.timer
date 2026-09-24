@@ -1,0 +1,11 @@
+[Unit]
+Description=Sync Telegram notification history every 15 minutes
+
+[Timer]
+OnCalendar=*-*-* *:00/15:00
+AccuracySec=30s
+Persistent=true
+Unit=telegram-notification-history.service
+
+[Install]
+WantedBy=timers.target
