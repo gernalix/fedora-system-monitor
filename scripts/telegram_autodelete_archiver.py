@@ -97,7 +97,18 @@ def create_human_view(conn: sqlite3.Connection) -> None:
                     || CAST(strftime('%H', date_utc, 'localtime') AS INTEGER)
                     || ':' || strftime('%M', date_utc, 'localtime')
             END AS quando,
-            COALESCE(NULLIF(sender_name, ''), 'Sconosciuto') AS mittente,
+            COALESCE(
+                NULLIF(sender_name, ''),
+                (
+                    SELECT NULLIF(m2.sender_name, '')
+                    FROM messages AS m2
+                    WHERE m2.sender_id = messages.sender_id
+                      AND m2.sender_name IS NOT NULL
+                      AND m2.sender_name <> ''
+                    LIMIT 1
+                ),
+                CASE WHEN sender_id IS NULL THEN 'Sistema' ELSE 'Sconosciuto' END
+            ) AS mittente,
             CASE
                 WHEN text <> '' THEN text
                 WHEN action_text IS NOT NULL AND action_text <> '' THEN action_text

@@ -295,6 +295,22 @@ class TelegramAutodeleteArchiveTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(human["mittente"], "Daniele")
         self.assertEqual(human["messaggio"], "Chiamata annullata")
 
+        legacy = Message(62, "legacy sender fallback", when=now, sender_id=58037506)
+        snapshot = archiver.snapshot_from_message(legacy, sender_name=None)
+        archiver.store_snapshot(
+            self.conn,
+            self.peer_id,
+            snapshot,
+            archiver.iso_utc(now),
+            None,
+            None,
+        )
+        self.conn.commit()
+        legacy_human = self.conn.execute(
+            "SELECT * FROM messages_human WHERE messaggio='legacy sender fallback'"
+        ).fetchone()
+        self.assertEqual(legacy_human["mittente"], "Daniele")
+
 
 if __name__ == "__main__":
     unittest.main()
