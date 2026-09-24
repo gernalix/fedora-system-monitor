@@ -24,8 +24,26 @@ journal_lookback_minutes = 20
 [services]
 auto_detect = true
 essential = ["NetworkManager.service", "firewalld.service", "user:discord-exporter-crawl.service"]
-secondary = ["bluetooth.service", "libvirtd.service", "podman.service", "docker.service", "rustdesk.service", "smartd.service", "sshd.service", "uptime-kuma.service", "fedora-diagnostics-telemetry.service", "x-repost-downloader.service", "user:codex-session-archive.service", "fedora-system-monitor-events.service", "fedora-system-monitor-prometheus.service", "user:activitywatch.service", "user:activitywatch-wayland-watcher.service", "user:espanso.service", "user:tailscale-systray.service", "user:adb-device-keeper.service", "user:workflowy-bridge.service", "user:chrome-codex-switcher.service"]
+secondary = ["bluetooth.service", "libvirtd.service", "podman.service", "docker.service", "rustdesk.service", "smartd.service", "sshd.service", "uptime-kuma.service", "fedora-diagnostics-telemetry.service", "x-repost-downloader.service", "amici-fb.service", "fedora-system-monitor-events.service", "fedora-system-monitor-prometheus.service", "user:activitywatch.service", "user:activitywatch-wayland-watcher.service", "user:espanso.service", "user:tailscale-systray.service", "user:adb-device-keeper.service", "user:telegram-insert-bot.service", "user:workflowy-bridge.service", "user:workflowy-roadmap-sync.service", "user:chrome-codex-switcher.service", "user:github-autosync.service", "user:repo-integrator.service", "user:activity-watch-uploader.service", "user:codex-usage-monitor.service", "user:codex-session-archive.service", "user:codex-usage-publisher.service", "user:prompt-history-sync.service", "user:personalhub-consolidation.service", "user:livinggaul-x-source-availability.service", "user:logseq-updater.service", "user:duplicate-photos-detector-watch.service"]
 name_patterns = ["backup", "adb", "kuma", "megavault", "monitor"]
+
+# Scheduled oneshot services need semantic freshness, not merely a successful
+# inactive state. Values are deliberately wider than their nominal timer cadence
+# so one slow run does not flap. The live reconciliation task must verify actual
+# installed unit names/cadences before provisioning dedicated Kuma monitors.
+[services.freshness_seconds]
+"user:github-autosync.service" = 300
+"user:repo-integrator.service" = 300
+"user:workflowy-roadmap-sync.service" = 300
+"user:personalhub-consolidation.service" = 300
+"user:activity-watch-uploader.service" = 3600
+"user:codex-usage-monitor.service" = 2400
+"user:codex-session-archive.service" = 2400
+"user:codex-usage-publisher.service" = 2400
+"user:prompt-history-sync.service" = 2400
+"user:livinggaul-x-source-availability.service" = 10800
+"user:logseq-updater.service" = 10800
+"amici-fb.service" = 129600
 
 [storage]
 known_labels = ["Ventoy", "VTOYEFI", "VEEAMRE", "Seagate Expansion Drive"]
