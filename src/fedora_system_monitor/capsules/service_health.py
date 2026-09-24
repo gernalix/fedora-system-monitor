@@ -31,7 +31,7 @@ def service_monitor_spec(state_id: str) -> KumaMonitorSpec:
     return KumaMonitorSpec(
         service_monitor_key(identity),
         f"Fedora Service · {identity}",
-        f"Independent systemd health for {identity}; state is pushed by Fedora System Monitor.",
+        f"Central systemd health for {identity}; daemon liveness or configured job freshness is pushed by Fedora System Monitor.",
         180,
         60,
         2,
@@ -73,6 +73,7 @@ def _healthy(row: Mapping[str, Any], details: Mapping[str, Any], *, fresh: bool,
         str(details.get("active_state") or "") == "failed"
         or str(details.get("result") or "") not in {"", "success"}
         or bool(details.get("restart_loop"))
+        or details.get("freshness_ok") is False
     )
     return not failed and (active or successful_oneshot)
 
@@ -128,6 +129,10 @@ def send_service_heartbeats(
         reason = "collector failed" if collector_failed else "stale sample" if not fresh else f"{active_state}/{sub_state}"
         if details.get("restart_loop"):
             reason += "; restart loop"
+        if details.get("freshness_ok") is False:
+            age = details.get("last_success_age_seconds")
+            threshold = details.get("freshness_seconds")
+            reason += f"; job freshness stale age={age if age is not None else 'missing'}s threshold={threshold}s"
         results.append(
             send_named_heartbeat(
                 config,
