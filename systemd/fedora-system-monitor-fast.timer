@@ -2,11 +2,11 @@
 Description=Run Fedora System Monitor light collectors every minute
 
 [Timer]
-OnCalendar=*-*-* *:*:00
-AccuracySec=10s
+OnCalendar=*-*-* *:*:15
+AccuracySec=1s
+RandomizedDelaySec=0
 Persistent=true
 Unit=fedora-system-monitor-collect@fast.service
 
 [Install]
 WantedBy=timers.target
-
