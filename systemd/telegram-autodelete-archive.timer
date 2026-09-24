@@ -1,0 +1,12 @@
+[Unit]
+Description=Archive Telegram auto-delete chat every 5 minutes
+
+[Timer]
+OnCalendar=*-*-* *:00/5:00
+AccuracySec=20s
+Persistent=true
+RandomizedDelaySec=15s
+Unit=telegram-autodelete-archive.service
+
+[Install]
+WantedBy=timers.target
