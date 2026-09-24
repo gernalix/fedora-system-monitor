@@ -7,7 +7,7 @@ ConditionPathExists=%h/.local/share/fedora-telegram-history/account.session
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/flock -n %h/.cache/fedora-telegram-history/session.lock %h/.local/libexec/fedora-telegram-history/venv/bin/python %h/.local/libexec/fedora-telegram-history/telegram_autodelete_archiver.py sync --config %h/.config/fedora-telegram-autodelete/collector.env
+ExecStart=/usr/bin/flock -w 120 %h/.cache/fedora-telegram-history/session.lock %h/.local/libexec/fedora-telegram-history/venv/bin/python %h/.local/libexec/fedora-telegram-history/telegram_autodelete_archiver.py sync --config %h/.config/fedora-telegram-autodelete/collector.env
 TimeoutStartSec=12min
 UMask=0077
 NoNewPrivileges=yes
