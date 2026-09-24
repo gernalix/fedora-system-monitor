@@ -1,0 +1,14 @@
+{
+  "targets": [
+    {"key": "oracle_datasette_api", "kind": "http", "url": "http://127.0.0.1:8002/-/versions.json"},
+    {"key": "oracle_personalhub_projection", "kind": "daemon", "unit": "personalhub-projection.service"},
+    {"key": "oracle_telegram_insert_bot", "kind": "daemon", "unit": "telegram-insert-bot.service"},
+    {"key": "oracle_workflowy_import", "kind": "jobs", "jobs": [
+      {"unit": "workflowy-import.service", "freshness_seconds": 129600}
+    ]},
+    {"key": "oracle_backup", "kind": "jobs", "jobs": [
+      {"unit": "oracle-backup.service", "freshness_seconds": 5400},
+      {"unit": "oracle-backup-healthcheck.service", "freshness_seconds": 1500}
+    ]}
+  ]
+}

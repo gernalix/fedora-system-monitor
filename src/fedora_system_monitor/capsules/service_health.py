@@ -69,13 +69,14 @@ def _healthy(row: Mapping[str, Any], details: Mapping[str, Any], *, fresh: bool,
         return False
     active = str(details.get("active_state") or "") == "active"
     successful_oneshot = bool(details.get("successful_inactive_oneshot"))
+    running_fresh_oneshot = bool(details.get("running_oneshot")) and details.get("freshness_ok") is True
     failed = (
         str(details.get("active_state") or "") == "failed"
         or str(details.get("result") or "") not in {"", "success"}
         or bool(details.get("restart_loop"))
         or details.get("freshness_ok") is False
     )
-    return not failed and (active or successful_oneshot)
+    return not failed and (active or successful_oneshot or running_fresh_oneshot)
 
 
 def send_service_heartbeats(
