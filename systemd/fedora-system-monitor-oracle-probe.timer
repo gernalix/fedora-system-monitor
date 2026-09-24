@@ -1,0 +1,11 @@
+[Unit]
+Description=Run central Oracle health probes every minute
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+Persistent=true
+Unit=fedora-system-monitor-oracle-probe.service
+
+[Install]
+WantedBy=timers.target

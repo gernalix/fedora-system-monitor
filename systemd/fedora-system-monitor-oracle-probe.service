@@ -1,0 +1,14 @@
+[Unit]
+Description=Central Oracle runtime health probes for Uptime Kuma
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/libexec/fedora-system-monitor-oracle-probe.py --config /etc/fedora-system-monitor/oracle-probe.json
+LoadCredential=oracle_push.toml:/etc/fedora-system-monitor/oracle-probe-push.toml
+StateDirectory=fedora-system-monitor-oracle-probe
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/fedora-system-monitor-oracle-probe

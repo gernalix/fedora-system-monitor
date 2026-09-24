@@ -28,6 +28,7 @@ from fedora_system_monitor.capsules.command import (
 )
 from fedora_system_monitor.capsules.config import load_config, redact_text, validate_config
 from fedora_system_monitor.capsules.database import Database
+from fedora_system_monitor.capsules.event_jobs import send_event_job_heartbeats
 from fedora_system_monitor.capsules.eventing import (
     build_device_event,
     build_lifecycle_event,
@@ -864,6 +865,7 @@ def _collect_command(args: argparse.Namespace, config: dict[str, Any], db: Datab
                 ping_ms=duration,
             )
         )
+        heartbeats.extend(item.__dict__ for item in send_event_job_heartbeats(config, ping_ms=duration))
     output: dict[str, Any] = {"results": results, "heartbeats": heartbeats}
     log_record(LOGGER, "collection_complete", scopes=scopes, outcomes=[item["outcome"] for item in results])
     return output
