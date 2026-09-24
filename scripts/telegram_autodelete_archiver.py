@@ -410,9 +410,13 @@ async def reconcile(
     cutoff_iso = iso_utc(cutoff)
     seen_ids: set[int] = set()
     counts = {"inserted": 0, "updated": 0, "unchanged": 0, "deleted": 0}
+    initial_backfill = conn.execute(
+        "SELECT 1 FROM messages WHERE peer_id=? LIMIT 1",
+        (peer_id,),
+    ).fetchone() is None
 
     async for message in client.iter_messages(entity):
-        if message.date is not None:
+        if not initial_backfill and message.date is not None:
             message_date = message.date if message.date.tzinfo else message.date.replace(tzinfo=UTC)
             if message_date.astimezone(UTC) < cutoff:
                 break

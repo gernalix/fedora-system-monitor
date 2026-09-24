@@ -219,6 +219,22 @@ class TelegramAutodeleteArchiveTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["deleted"], 0)
         self.assertIsNone(self.row(41)["deleted_at_utc"])
 
+    async def test_first_sync_backfills_visible_history_beyond_window(self):
+        now = dt.datetime.now(tz=UTC)
+        old = Message(51, "pre-auto-delete legacy", when=now - dt.timedelta(days=10))
+        recent = Message(52, "recent", when=now)
+        result = await archiver.reconcile(
+            FakeClient([recent, old]),
+            object(),
+            self.peer_id,
+            self.conn,
+            self.media_root,
+            108000,
+        )
+        self.assertEqual(result["inserted"], 2)
+        self.assertEqual(self.row(51)["text"], "pre-auto-delete legacy")
+        self.assertEqual(self.row(52)["text"], "recent")
+
 
 if __name__ == "__main__":
     unittest.main()
