@@ -255,7 +255,11 @@ def telegram_client(config: dict[str, str], *, interactive: bool) -> Any:
     os.chmod(session_path.parent, 0o700)
     client = TelegramClient(str(session_path), int(config["TELEGRAM_API_ID"]), config["TELEGRAM_API_HASH"])
     if interactive:
-        client.start(phone=config.get("TELEGRAM_PHONE") or None)
+        phone = config.get("TELEGRAM_PHONE")
+        if phone:
+            client.start(phone=phone)
+        else:
+            client.start()
     else:
         client.connect()
         if not client.is_user_authorized():
