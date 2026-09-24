@@ -71,32 +71,43 @@ def ensure_columns(
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {declaration}")
 
 
-def create_human_view(conn: sqlite3.Connection) -> None:
-    conn.execute("DROP VIEW IF EXISTS messages_human")
-    conn.execute(
-        """
-        CREATE VIEW messages_human AS
-        SELECT
-            CASE
-                WHEN date(date_utc, 'localtime') = date('now', 'localtime')
-                    THEN 'oggi ' || CAST(strftime('%H', date_utc, 'localtime') AS INTEGER)
-                         || ':' || strftime('%M', date_utc, 'localtime')
-                WHEN date(date_utc, 'localtime') = date('now', 'localtime', '-1 day')
-                    THEN 'ieri ' || CAST(strftime('%H', date_utc, 'localtime') AS INTEGER)
-                         || ':' || strftime('%M', date_utc, 'localtime')
+def human_time_sql(column: str) -> str:
+    return f"""CASE
+                WHEN date({column}, 'localtime') = date('now', 'localtime')
+                    THEN 'oggi ' || CAST(strftime('%H', {column}, 'localtime') AS INTEGER)
+                         || ':' || strftime('%M', {column}, 'localtime')
+                WHEN date({column}, 'localtime') = date('now', 'localtime', '-1 day')
+                    THEN 'ieri ' || CAST(strftime('%H', {column}, 'localtime') AS INTEGER)
+                         || ':' || strftime('%M', {column}, 'localtime')
                 ELSE
-                    CASE strftime('%w', date_utc, 'localtime')
+                    CASE strftime('%w', {column}, 'localtime')
                         WHEN '0' THEN 'dom' WHEN '1' THEN 'lun'
                         WHEN '2' THEN 'mar' WHEN '3' THEN 'mer'
                         WHEN '4' THEN 'gio' WHEN '5' THEN 'ven'
                         WHEN '6' THEN 'sab'
                     END || ' '
-                    || CAST(strftime('%d', date_utc, 'localtime') AS INTEGER) || '/'
-                    || CAST(strftime('%m', date_utc, 'localtime') AS INTEGER) || '/'
-                    || substr(strftime('%Y', date_utc, 'localtime'), 3, 2) || ' '
-                    || CAST(strftime('%H', date_utc, 'localtime') AS INTEGER)
-                    || ':' || strftime('%M', date_utc, 'localtime')
-            END AS quando,
+                    || CAST(strftime('%d', {column}, 'localtime') AS INTEGER) || '/'
+                    || CAST(strftime('%m', {column}, 'localtime') AS INTEGER) || '/'
+                    || substr(strftime('%Y', {column}, 'localtime'), 3, 2) || ' '
+                    || CAST(strftime('%H', {column}, 'localtime') AS INTEGER)
+                    || ':' || strftime('%M', {column}, 'localtime')
+            END"""
+
+
+def create_human_view(conn: sqlite3.Connection) -> None:
+    message_time = human_time_sql("date_utc")
+    event_time = human_time_sql("event_time_utc")
+    conn.executescript(
+        f"""
+        DROP VIEW IF EXISTS chat_human;
+        DROP VIEW IF EXISTS relationship_events_human;
+        DROP VIEW IF EXISTS messages_human;
+        DROP VIEW IF EXISTS _messages_human_rows;
+
+        CREATE VIEW _messages_human_rows AS
+        SELECT
+            date_utc AS sort_utc,
+            {message_time} AS quando,
             COALESCE(
                 NULLIF(sender_name, ''),
                 (
@@ -128,8 +139,47 @@ def create_human_view(conn: sqlite3.Connection) -> None:
                 WHEN edit_date_utc IS NOT NULL THEN 'modificato'
                 ELSE ''
             END AS stato
-        FROM messages
-        ORDER BY date_utc DESC
+        FROM messages;
+
+        CREATE VIEW messages_human AS
+        SELECT quando, mittente, messaggio, media, stato
+        FROM _messages_human_rows
+        ORDER BY sort_utc DESC;
+
+        CREATE VIEW relationship_events_human AS
+        SELECT
+            {event_time} AS quando,
+            'Sistema' AS mittente,
+            summary AS messaggio,
+            '' AS media,
+            CASE confidence
+                WHEN 'certain' THEN 'certo'
+                WHEN 'inferred' THEN 'inferito'
+                ELSE confidence
+            END AS stato
+        FROM relationship_events
+        ORDER BY event_time_utc DESC;
+
+        CREATE VIEW chat_human AS
+        SELECT quando, mittente, messaggio, media, stato
+        FROM (
+            SELECT sort_utc, quando, mittente, messaggio, media, stato
+            FROM _messages_human_rows
+            UNION ALL
+            SELECT
+                event_time_utc AS sort_utc,
+                {event_time} AS quando,
+                'Sistema' AS mittente,
+                summary AS messaggio,
+                '' AS media,
+                CASE confidence
+                    WHEN 'certain' THEN 'certo'
+                    WHEN 'inferred' THEN 'inferito'
+                    ELSE confidence
+                END AS stato
+            FROM relationship_events
+        )
+        ORDER BY sort_utc DESC;
         """
     )
 
@@ -182,6 +232,29 @@ def open_archive(path: Path) -> sqlite3.Connection:
             ON messages(peer_id, date_utc);
         CREATE INDEX IF NOT EXISTS idx_messages_deleted
             ON messages(peer_id, deleted_at_utc);
+
+        CREATE TABLE IF NOT EXISTS relationship_state (
+            peer_id INTEGER PRIMARY KEY,
+            peer_name TEXT,
+            own_blocked INTEGER NOT NULL,
+            peer_status_type TEXT NOT NULL,
+            peer_status_label TEXT NOT NULL,
+            peer_status_json TEXT NOT NULL,
+            observed_at_utc TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS relationship_events (
+            event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            peer_id INTEGER NOT NULL,
+            event_time_utc TEXT NOT NULL,
+            observed_at_utc TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            confidence TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            evidence_json TEXT NOT NULL,
+            UNIQUE(peer_id, event_type, event_time_utc, summary)
+        );
+        CREATE INDEX IF NOT EXISTS idx_relationship_events_time
+            ON relationship_events(peer_id, event_time_utc);
         """
     )
     ensure_columns(
@@ -241,6 +314,291 @@ def entity_display_name(entity: Any) -> str | None:
         if value and str(value).strip():
             return str(value).strip()
     return None
+
+
+STATUS_LABELS = {
+    "UserStatusOnline": "online",
+    "UserStatusOffline": "last_seen_exact",
+    "UserStatusRecently": "recently",
+    "UserStatusLastWeek": "last_week",
+    "UserStatusLastMonth": "last_month",
+    "UserStatusEmpty": "long_time_ago",
+}
+
+
+def peer_status_snapshot(status: Any) -> dict[str, Any]:
+    status_type = type(status).__name__ if status is not None else "UserStatusEmpty"
+    payload = (
+        status.to_dict()
+        if status is not None and hasattr(status, "to_dict")
+        else {"_": status_type}
+    )
+    was_online = getattr(status, "was_online", None) if status is not None else None
+    return {
+        "type": status_type,
+        "label": STATUS_LABELS.get(status_type, status_type),
+        "long_time_ago": status_type == "UserStatusEmpty",
+        "was_online_utc": iso_utc(was_online) if was_online is not None else None,
+        "raw": payload,
+    }
+
+
+def status_was_recent(snapshot: dict[str, Any], observed_at_utc: str) -> bool:
+    status_type = snapshot.get("type")
+    if status_type in {"UserStatusOnline", "UserStatusRecently"}:
+        return True
+    if status_type != "UserStatusOffline" or not snapshot.get("was_online_utc"):
+        return False
+    try:
+        age = parse_iso(observed_at_utc) - parse_iso(str(snapshot["was_online_utc"]))
+    except (TypeError, ValueError):
+        return False
+    return dt.timedelta(0) <= age <= dt.timedelta(days=3)
+
+
+def insert_relationship_event(
+    conn: sqlite3.Connection,
+    *,
+    peer_id: int,
+    event_time_utc: str,
+    observed_at_utc: str,
+    event_type: str,
+    confidence: str,
+    summary: str,
+    evidence: dict[str, Any],
+) -> int:
+    cursor = conn.execute(
+        """
+        INSERT OR IGNORE INTO relationship_events (
+            peer_id,event_time_utc,observed_at_utc,event_type,
+            confidence,summary,evidence_json
+        ) VALUES (?,?,?,?,?,?,?)
+        """,
+        (
+            peer_id,
+            event_time_utc,
+            observed_at_utc,
+            event_type,
+            confidence,
+            summary,
+            json.dumps(evidence, ensure_ascii=False, sort_keys=True, default=str),
+        ),
+    )
+    return max(cursor.rowcount, 0)
+
+
+def record_relationship_observation(
+    conn: sqlite3.Connection,
+    *,
+    peer_id: int,
+    peer_name: str,
+    own_blocked: bool,
+    own_block_date_utc: str | None,
+    peer_status: dict[str, Any],
+    observed_at_utc: str,
+) -> int:
+    previous = conn.execute(
+        "SELECT * FROM relationship_state WHERE peer_id=?",
+        (peer_id,),
+    ).fetchone()
+    events = 0
+
+    if previous is None:
+        if own_blocked:
+            event_time = own_block_date_utc or observed_at_utc
+            events += insert_relationship_event(
+                conn,
+                peer_id=peer_id,
+                event_time_utc=event_time,
+                observed_at_utc=observed_at_utc,
+                event_type="my_block",
+                confidence="certain",
+                summary=f"Hai bloccato {peer_name}",
+                evidence={
+                    "blocked": True,
+                    "timestamp_source": (
+                        "telegram_blocklist_date"
+                        if own_block_date_utc
+                        else "first_observation"
+                    ),
+                },
+            )
+    else:
+        previous_blocked = bool(previous["own_blocked"])
+        if previous_blocked != own_blocked:
+            if own_blocked:
+                event_time = own_block_date_utc or observed_at_utc
+                event_type = "my_block"
+                summary = f"Hai bloccato {peer_name}"
+                timestamp_source = (
+                    "telegram_blocklist_date"
+                    if own_block_date_utc
+                    else "observation"
+                )
+            else:
+                event_time = observed_at_utc
+                event_type = "my_unblock"
+                summary = f"Hai sbloccato {peer_name}"
+                timestamp_source = "observation"
+            events += insert_relationship_event(
+                conn,
+                peer_id=peer_id,
+                event_time_utc=event_time,
+                observed_at_utc=observed_at_utc,
+                event_type=event_type,
+                confidence="certain",
+                summary=summary,
+                evidence={
+                    "previous_blocked": previous_blocked,
+                    "blocked": own_blocked,
+                    "timestamp_source": timestamp_source,
+                },
+            )
+
+        try:
+            previous_status = json.loads(str(previous["peer_status_json"]))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            previous_status = {
+                "type": str(previous["peer_status_type"]),
+                "label": str(previous["peer_status_label"]),
+                "long_time_ago": str(previous["peer_status_type"]) == "UserStatusEmpty",
+            }
+        current_long = bool(peer_status.get("long_time_ago"))
+        previous_long = bool(previous_status.get("long_time_ago"))
+        if not previous_long and current_long and status_was_recent(
+            previous_status, str(previous["observed_at_utc"])
+        ):
+            events += insert_relationship_event(
+                conn,
+                peer_id=peer_id,
+                event_time_utc=observed_at_utc,
+                observed_at_utc=observed_at_utc,
+                event_type="peer_block_inferred",
+                confidence="inferred",
+                summary=f"Probabile blocco da {peer_name}",
+                evidence={
+                    "previous_status": previous_status,
+                    "current_status": peer_status,
+                    "reason": "recent_visibility_to_long_time_ago",
+                },
+            )
+        elif previous_long and not current_long and status_was_recent(
+            peer_status, observed_at_utc
+        ):
+            events += insert_relationship_event(
+                conn,
+                peer_id=peer_id,
+                event_time_utc=observed_at_utc,
+                observed_at_utc=observed_at_utc,
+                event_type="peer_unblock_inferred",
+                confidence="inferred",
+                summary=f"Probabile sblocco da {peer_name}",
+                evidence={
+                    "previous_status": previous_status,
+                    "current_status": peer_status,
+                    "reason": "long_time_ago_to_recent_visibility",
+                },
+            )
+
+    conn.execute(
+        """
+        INSERT INTO relationship_state (
+            peer_id,peer_name,own_blocked,peer_status_type,
+            peer_status_label,peer_status_json,observed_at_utc
+        ) VALUES (?,?,?,?,?,?,?)
+        ON CONFLICT(peer_id) DO UPDATE SET
+            peer_name=excluded.peer_name,
+            own_blocked=excluded.own_blocked,
+            peer_status_type=excluded.peer_status_type,
+            peer_status_label=excluded.peer_status_label,
+            peer_status_json=excluded.peer_status_json,
+            observed_at_utc=excluded.observed_at_utc
+        """,
+        (
+            peer_id,
+            peer_name,
+            int(own_blocked),
+            str(peer_status["type"]),
+            str(peer_status["label"]),
+            json.dumps(peer_status, ensure_ascii=False, sort_keys=True, default=str),
+            observed_at_utc,
+        ),
+    )
+    return events
+
+
+async def fetch_relationship_observation(
+    client: Any,
+    entity: Any,
+) -> tuple[str, bool, str | None, dict[str, Any]]:
+    from telethon.tl import functions
+
+    response = await client(functions.users.GetFullUserRequest(entity))
+    full = response.full_user
+    user = next(
+        (
+            item
+            for item in response.users
+            if getattr(item, "id", None) == getattr(entity, "id", None)
+        ),
+        entity,
+    )
+    peer_name = entity_display_name(user) or entity_display_name(entity) or "contatto"
+    own_blocked = bool(getattr(full, "blocked", False))
+    block_date_utc: str | None = None
+
+    if own_blocked:
+        offset = 0
+        while True:
+            blocked = await client(
+                functions.contacts.GetBlockedRequest(offset=offset, limit=100)
+            )
+            entries = list(getattr(blocked, "blocked", ()) or ())
+            match = next(
+                (
+                    item
+                    for item in entries
+                    if getattr(getattr(item, "peer_id", None), "user_id", None)
+                    == getattr(user, "id", None)
+                ),
+                None,
+            )
+            if match is not None:
+                block_date_utc = iso_utc(getattr(match, "date", None))
+                break
+            if not entries or len(entries) < 100:
+                break
+            offset += len(entries)
+
+    return (
+        peer_name,
+        own_blocked,
+        block_date_utc,
+        peer_status_snapshot(getattr(user, "status", None)),
+    )
+
+
+async def observe_relationship_state(
+    client: Any,
+    entity: Any,
+    peer_id: int,
+    conn: sqlite3.Connection,
+) -> int:
+    observed_at = iso_utc(utc_now())
+    peer_name, own_blocked, block_date, peer_status = (
+        await fetch_relationship_observation(client, entity)
+    )
+    events = record_relationship_observation(
+        conn,
+        peer_id=peer_id,
+        peer_name=peer_name,
+        own_blocked=own_blocked,
+        own_block_date_utc=block_date,
+        peer_status=peer_status,
+        observed_at_utc=observed_at,
+    )
+    conn.commit()
+    return events
 
 
 async def sender_name_for_message(
@@ -687,11 +1045,14 @@ async def run_sync(config: dict[str, str]) -> int:
     conn = open_archive(archive_db)
     try:
         entity, peer_id = await resolve_target(client, config, state_dir)
+        relationship_events = await observe_relationship_state(
+            client, entity, peer_id, conn
+        )
         counts = await reconcile(client, entity, peer_id, conn, media_root, horizon_seconds)
         print(
             "Telegram auto-delete archive sync complete; "
             + " ".join(f"{key}={value}" for key, value in counts.items())
-            + f" peer_id={peer_id}."
+            + f" relationship_events={relationship_events} peer_id={peer_id}."
         )
         return 0
     finally:

@@ -311,6 +311,133 @@ class TelegramAutodeleteArchiveTests(unittest.IsolatedAsyncioTestCase):
         ).fetchone()
         self.assertEqual(legacy_human["mittente"], "Daniele")
 
+    def test_relationship_events_are_deduped_and_interleaved(self):
+        recent = {
+            "type": "UserStatusRecently",
+            "label": "recently",
+            "long_time_ago": False,
+            "was_online_utc": None,
+            "raw": {"_": "UserStatusRecently"},
+        }
+        long_ago = {
+            "type": "UserStatusEmpty",
+            "label": "long_time_ago",
+            "long_time_ago": True,
+            "was_online_utc": None,
+            "raw": {"_": "UserStatusEmpty"},
+        }
+        self.assertEqual(
+            archiver.record_relationship_observation(
+                self.conn,
+                peer_id=self.peer_id,
+                peer_name="Carlo",
+                own_blocked=False,
+                own_block_date_utc=None,
+                peer_status=recent,
+                observed_at_utc="2026-09-24T14:00:00Z",
+            ),
+            0,
+        )
+        self.assertEqual(
+            archiver.record_relationship_observation(
+                self.conn,
+                peer_id=self.peer_id,
+                peer_name="Carlo",
+                own_blocked=False,
+                own_block_date_utc=None,
+                peer_status=long_ago,
+                observed_at_utc="2026-09-24T14:05:00Z",
+            ),
+            1,
+        )
+        row = self.conn.execute(
+            "SELECT * FROM relationship_events ORDER BY event_id DESC LIMIT 1"
+        ).fetchone()
+        self.assertEqual(row["event_type"], "peer_block_inferred")
+        self.assertEqual(row["confidence"], "inferred")
+        self.assertIn("Probabile blocco da Carlo", row["summary"])
+
+        self.assertEqual(
+            archiver.record_relationship_observation(
+                self.conn,
+                peer_id=self.peer_id,
+                peer_name="Carlo",
+                own_blocked=False,
+                own_block_date_utc=None,
+                peer_status=recent,
+                observed_at_utc="2026-09-24T14:10:00Z",
+            ),
+            1,
+        )
+        row = self.conn.execute(
+            "SELECT * FROM relationship_events ORDER BY event_id DESC LIMIT 1"
+        ).fetchone()
+        self.assertEqual(row["event_type"], "peer_unblock_inferred")
+
+        self.assertEqual(
+            archiver.record_relationship_observation(
+                self.conn,
+                peer_id=self.peer_id,
+                peer_name="Carlo",
+                own_blocked=True,
+                own_block_date_utc="2026-09-24T14:12:34Z",
+                peer_status=recent,
+                observed_at_utc="2026-09-24T14:15:00Z",
+            ),
+            1,
+        )
+        row = self.conn.execute(
+            "SELECT * FROM relationship_events ORDER BY event_id DESC LIMIT 1"
+        ).fetchone()
+        self.assertEqual(row["event_type"], "my_block")
+        self.assertEqual(row["confidence"], "certain")
+        self.assertEqual(row["event_time_utc"], "2026-09-24T14:12:34Z")
+
+        self.assertEqual(
+            archiver.record_relationship_observation(
+                self.conn,
+                peer_id=self.peer_id,
+                peer_name="Carlo",
+                own_blocked=False,
+                own_block_date_utc=None,
+                peer_status=recent,
+                observed_at_utc="2026-09-24T14:20:00Z",
+            ),
+            1,
+        )
+        human = self.conn.execute(
+            "SELECT * FROM chat_human WHERE messaggio LIKE 'Hai sbloccato%'"
+        ).fetchone()
+        self.assertIsNotNone(human)
+        self.assertEqual(human["mittente"], "Sistema")
+        self.assertEqual(human["stato"], "certo")
+
+    def test_initial_current_block_uses_server_date_without_false_peer_history(self):
+        long_ago = {
+            "type": "UserStatusEmpty",
+            "label": "long_time_ago",
+            "long_time_ago": True,
+            "was_online_utc": None,
+            "raw": {"_": "UserStatusEmpty"},
+        }
+        events = archiver.record_relationship_observation(
+            self.conn,
+            peer_id=self.peer_id,
+            peer_name="Carlo",
+            own_blocked=True,
+            own_block_date_utc="2026-09-24T12:34:56Z",
+            peer_status=long_ago,
+            observed_at_utc="2026-09-24T14:00:00Z",
+        )
+        self.assertEqual(events, 1)
+        rows = self.conn.execute(
+            "SELECT event_type,event_time_utc,confidence FROM relationship_events"
+        ).fetchall()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["event_type"], "my_block")
+        self.assertEqual(rows[0]["event_time_utc"], "2026-09-24T12:34:56Z")
+        self.assertEqual(rows[0]["confidence"], "certain")
+
 
 if __name__ == "__main__":
     unittest.main()
