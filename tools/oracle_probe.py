@@ -23,16 +23,21 @@ def systemd_properties(unit: str) -> dict[str, str]:
     return dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
 
 
-def check_job(unit: str, freshness_seconds: int, now_monotonic: float) -> tuple[bool, str]:
+def check_job(unit: str, freshness_seconds: int, now_monotonic: float, now_wall: float, state: dict) -> tuple[bool, str]:
     props = systemd_properties(unit)
     try:
         ended = int(props.get("ExecMainExitTimestampMonotonic", "0")) / 1_000_000
         exit_status = int(props.get("ExecMainStatus", "1"))
     except ValueError:
         return False, f"{unit}: invalid systemd result"
-    age = now_monotonic - ended
-    good = props.get("Result") == "success" and exit_status == 0 and ended > 0 and 0 <= age <= freshness_seconds
-    return good, f"{unit}: result={props.get('Result', 'unknown')} age={round(age) if ended else 'missing'}s limit={freshness_seconds}s"
+    saved = state.get(f"job:{unit}", {})
+    last_success_wall = float(saved.get("last_success_wall", 0))
+    if props.get("Result") == "success" and exit_status == 0 and 0 < ended <= now_monotonic:
+        last_success_wall = max(last_success_wall, now_wall - (now_monotonic - ended))
+        state[f"job:{unit}"] = {"last_success_wall": last_success_wall}
+    age = now_wall - last_success_wall if last_success_wall > 0 else None
+    good = props.get("Result") == "success" and exit_status == 0 and age is not None and 0 <= age <= freshness_seconds
+    return good, f"{unit}: result={props.get('Result', 'unknown')} age={round(age) if age is not None else 'missing'}s limit={freshness_seconds}s"
 
 
 def check_daemon(unit: str, now_wall: float, state: dict) -> tuple[bool, str]:
@@ -104,7 +109,7 @@ def run(config_path: Path, state_path: Path) -> dict[str, object]:
         elif target["kind"] == "daemon":
             healthy, reason = check_daemon(target["unit"], now_wall, state)
         elif target["kind"] == "jobs":
-            checks = [check_job(item["unit"], item["freshness_seconds"], now_monotonic) for item in target["jobs"]]
+            checks = [check_job(item["unit"], item["freshness_seconds"], now_monotonic, now_wall, state) for item in target["jobs"]]
             healthy = all(ok for ok, _ in checks)
             reason = "; ".join(message for _, message in checks)
         else:

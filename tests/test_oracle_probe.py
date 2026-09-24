@@ -18,12 +18,16 @@ spec.loader.exec_module(probe)
 class OracleProbeTests(unittest.TestCase):
     def test_backup_job_requires_success_and_freshness(self) -> None:
         properties = {"Result": "success", "ExecMainStatus": "0", "ExecMainExitTimestampMonotonic": "900000000"}
+        state = {}
         with mock.patch.object(probe, "systemd_properties", return_value=properties):
-            self.assertTrue(probe.check_job("oracle-backup.service", 150, 1000)[0])
-            self.assertFalse(probe.check_job("oracle-backup.service", 50, 1000)[0])
+            self.assertTrue(probe.check_job("oracle-backup.service", 150, 1000, 2000, state)[0])
+            self.assertFalse(probe.check_job("oracle-backup.service", 50, 1000, 2000, state)[0])
+            properties["ExecMainExitTimestampMonotonic"] = "0"
+            self.assertTrue(probe.check_job("oracle-backup.service", 150, 1050, 2050, state)[0])
+            self.assertFalse(probe.check_job("oracle-backup.service", 150, 200, 2200, state)[0])
         properties["Result"] = "exit-code"
         with mock.patch.object(probe, "systemd_properties", return_value=properties):
-            self.assertFalse(probe.check_job("oracle-backup.service", 150, 1000)[0])
+            self.assertFalse(probe.check_job("oracle-backup.service", 150, 1000, 2050, state)[0])
 
     def test_daemon_restart_loop_is_independent_of_active_state(self) -> None:
         state = {"datasette.service": {"restart_count": 1, "restart_events": []}}
