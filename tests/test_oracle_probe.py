@@ -46,6 +46,21 @@ class OracleProbeTests(unittest.TestCase):
             self.assertTrue(result["results"][0]["healthy"])
             self.assertIn("run_id=", push.call_args.args[2])
 
+    def test_delivery_failure_does_not_log_or_expose_endpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = root / "config.json"
+            config.write_text(json.dumps({"targets": [{"key": "api", "kind": "http", "url": "http://127.0.0.1:8002/-/versions.json"}]}))
+            (root / "oracle_push.toml").write_text('[push]\napi = "http://127.0.0.1:3002/api/push/private"\n')
+            with (
+                mock.patch.dict(os.environ, {"CREDENTIALS_DIRECTORY": str(root)}),
+                mock.patch.object(probe, "check_http", return_value=(True, "HTTP API status=200")),
+                mock.patch.object(probe, "push", side_effect=OSError("transport failed")),
+            ):
+                result = probe.run(config, root / "state.json")
+            self.assertFalse(result["results"][0]["delivered"])
+            self.assertNotIn("private", json.dumps(result))
+
 
 if __name__ == "__main__":
     unittest.main()

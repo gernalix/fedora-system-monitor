@@ -109,8 +109,12 @@ def run(config_path: Path, state_path: Path) -> dict[str, object]:
             reason = "; ".join(message for _, message in checks)
         else:
             raise ValueError("unsupported Oracle probe kind")
-        push(endpoints[key], healthy, f"run_id={run_id}; {reason}")
-        results.append({"key": key, "healthy": healthy})
+        try:
+            push(endpoints[key], healthy, f"run_id={run_id}; {reason}")
+            delivered = True
+        except (OSError, ValueError, RuntimeError):
+            delivered = False
+        results.append({"key": key, "healthy": healthy, "delivered": delivered})
     save_state(state_path, state)
     return {"run_id": run_id, "results": results}
 
@@ -122,7 +126,7 @@ def main() -> int:
     args = parser.parse_args()
     result = run(args.config, args.state)
     print(json.dumps(result, sort_keys=True))
-    return 0 if all(item["healthy"] for item in result["results"]) else 1
+    return 0 if all(item["healthy"] and item["delivered"] for item in result["results"]) else 1
 
 
 if __name__ == "__main__":
