@@ -235,6 +235,31 @@ ExecMainExitTimestampMonotonic=0
         self.assertTrue(metric["details"]["freshness_ok"])
         self.assertEqual(metric["details"]["last_success_age_seconds"], 100.0)
 
+    def test_oneshot_freshness_survives_reboot(self) -> None:
+        unit = "amici-fb.service"
+        self.db.set_state("services.runtime", {unit: {"last_success_exit_monotonic_us": 900_000_000, "last_success_wall_epoch": 1_000.0}}, namespace="collector")
+        show = """Id=amici-fb.service
+ActiveState=inactive
+SubState=dead
+Type=oneshot
+Result=success
+NRestarts=0
+ExecMainExitTimestampMonotonic=0
+
+"""
+        config = {"services": {"secondary": [unit], "freshness_seconds": {unit: 300}}}
+        with (
+            mock.patch.object(periodic, "discover_services", return_value=[unit]),
+            mock.patch.object(periodic, "_discover_user_services", return_value=[]),
+            mock.patch.object(periodic, "external", return_value=command_result(show)),
+            mock.patch.object(periodic.time, "monotonic", return_value=50.0),
+            mock.patch.object(periodic.time, "time", return_value=1_100.0),
+        ):
+            result = periodic.collect_services("minute", config, self.db)
+        metric = next(row for row in result.metrics if row.get("device_id") == unit and row["name"] == "service.active")
+        self.assertTrue(metric["details"]["freshness_ok"])
+        self.assertEqual(metric["details"]["last_success_age_seconds"], 100.0)
+
     def test_service_restart_loop_is_stateful_and_isolated(self) -> None:
         first_show = """Id=demo.service
 LoadState=loaded

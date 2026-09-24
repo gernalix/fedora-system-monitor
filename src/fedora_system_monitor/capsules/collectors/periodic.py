@@ -684,14 +684,21 @@ def collect_services(scope: str, config: Mapping[str, Any], db: object) -> Colle
         last_success_age_seconds: float | None = None
         freshness_ok: bool | None = None
         exit_monotonic_us = int(_number(item.get("ExecMainExitTimestampMonotonic"), 0))
+        now_monotonic = time.monotonic()
         last_success_us = exit_monotonic_us if successful_oneshot and exit_monotonic_us > 0 else int(_number(old.get("last_success_exit_monotonic_us"), 0))
-        if last_success_us > time.monotonic() * 1_000_000:
+        last_success_wall = float(_number(old.get("last_success_wall_epoch"), 0))
+        if successful_oneshot and exit_monotonic_us > 0:
+            last_success_wall = time.time() - max(0.0, now_monotonic - exit_monotonic_us / 1_000_000.0)
+        if last_success_us > now_monotonic * 1_000_000:
             last_success_us = 0
         if freshness_seconds is not None:
             if active and item.get("Type") != "oneshot":
                 freshness_ok = True
-            elif (successful_oneshot or running_oneshot) and last_success_us > 0:
-                last_success_age_seconds = max(0.0, time.monotonic() - (last_success_us / 1_000_000.0))
+            elif (successful_oneshot or running_oneshot) and (last_success_us > 0 or last_success_wall > 0):
+                if last_success_wall > 0:
+                    last_success_age_seconds = max(0.0, time.time() - last_success_wall)
+                else:
+                    last_success_age_seconds = max(0.0, now_monotonic - (last_success_us / 1_000_000.0))
                 freshness_ok = last_success_age_seconds <= freshness_seconds
             else:
                 freshness_ok = False
@@ -750,7 +757,7 @@ def collect_services(scope: str, config: Mapping[str, Any], db: object) -> Colle
             result.events.append(record(cadence, "service", "service_restarted", delta_restarts, "restarts", source="systemd", device_id=state_id, details={"unit": unit, "scope": unit_scope, "restart_count": restart_count}, outcome="recovered"))
         if old.get("active_state") == "failed" and active:
             result.events.append(record(cadence, "service", "service_recovered", 1, "event", source="systemd", device_id=state_id, details={"unit": unit, "scope": unit_scope}, outcome="recovered"))
-        current_runtime[state_id] = {"active_state": item.get("ActiveState"), "restart_count": restart_count, "restart_times": restart_times, "last_success_exit_monotonic_us": last_success_us}
+        current_runtime[state_id] = {"active_state": item.get("ActiveState"), "restart_count": restart_count, "restart_times": restart_times, "last_success_exit_monotonic_us": last_success_us, "last_success_wall_epoch": last_success_wall}
     state_set(db, "services.runtime", current_runtime)
     result.metrics.append(record(cadence, "service", "monitored_service_count", len(units) + len(user_units), "services", source="systemd", details={"system": len(units), "user": len(user_units)}))
     result.metrics.append(
