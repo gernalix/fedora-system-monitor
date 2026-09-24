@@ -7,7 +7,7 @@ ConditionPathExists=%h/.local/share/fedora-telegram-history/account.session
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/flock -n %h/.cache/fedora-telegram-history/collector.lock /home/daniele/.local/libexec/fedora-telegram-history/venv/bin/python /home/daniele/.local/libexec/fedora-telegram-history/telegram_history_collector.py sync --config %h/.config/fedora-telegram-history/collector.env
+ExecStart=/usr/bin/flock -n %h/.cache/fedora-telegram-history/session.lock /home/daniele/.local/libexec/fedora-telegram-history/venv/bin/python /home/daniele/.local/libexec/fedora-telegram-history/telegram_history_collector.py sync --config %h/.config/fedora-telegram-history/collector.env
 TimeoutStartSec=10min
 UMask=0077
 NoNewPrivileges=yes
