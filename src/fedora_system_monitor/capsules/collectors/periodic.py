@@ -538,10 +538,26 @@ def _configured_service_sets(config: Mapping[str, Any]) -> tuple[set[str], set[s
     return essential, secondary, patterns
 
 
+def _configured_service_freshness(config: Mapping[str, Any]) -> dict[str, int]:
+    raw = config_value(config, ("services", "freshness_seconds"), default={})
+    if not isinstance(raw, Mapping):
+        return {}
+    result: dict[str, int] = {}
+    for key, value in raw.items():
+        seconds = int(_number(value, 0))
+        identity = str(key).strip()
+        if identity and seconds > 0:
+            result[identity] = seconds
+    return result
+
+
 def discover_services(config: Mapping[str, Any]) -> list[str]:
     essential, secondary, patterns = _configured_service_sets(config)
+    freshness = _configured_service_freshness(config)
     auto_detect = bool(config_value(config, ("services", "auto_detect"), default=True))
-    candidates = (_DEFAULT_SERVICES if auto_detect else set()) | {unit for unit in essential | secondary if not unit.startswith("user:")}
+    candidates = (_DEFAULT_SERVICES if auto_detect else set()) | {
+        unit for unit in essential | secondary | set(freshness) if not unit.startswith("user:")
+    }
     listing = external(config, ["systemctl", "list-unit-files", "--type=service", "--all", "--no-legend", "--no-pager"])
     if listing.ok:
         states = {fields[0]: fields[1] for line in listing.stdout.splitlines() if len(fields := line.split()) >= 2 and fields[0].endswith(".service")}
@@ -566,7 +582,12 @@ def _discover_user_services(config: Mapping[str, Any], patterns: set[str]) -> li
     if not bool(config_value(config, ("services", "monitor_user"), default=True)):
         return []
     essential, secondary, _ = _configured_service_sets(config)
-    explicit = {unit.removeprefix("user:") for unit in essential | secondary if unit.startswith("user:")}
+    freshness = _configured_service_freshness(config)
+    explicit = {
+        unit.removeprefix("user:")
+        for unit in essential | secondary | set(freshness)
+        if unit.startswith("user:")
+    }
     listing = operator_external(config, ["systemctl", "--user", "list-unit-files", "--type=service", "--all", "--no-legend", "--no-pager"])
     if not listing.ok:
         return sorted(explicit)
@@ -598,10 +619,12 @@ def collect_services(scope: str, config: Mapping[str, Any], db: object) -> Colle
     cadence = CADENCE_SECONDS[scope]
     result = CollectionResult(scope)
     essential, secondary, patterns = _configured_service_sets(config)
+    freshness = _configured_service_freshness(config)
     discovery_signature = {
         "essential": sorted(essential),
         "secondary": sorted(secondary),
         "patterns": sorted(patterns),
+        "freshness_seconds": sorted(freshness.items()),
     }
     now = time.time()
     cached = state_get(db, "services.discovery", {})
@@ -624,7 +647,7 @@ def collect_services(scope: str, config: Mapping[str, Any], db: object) -> Colle
         result.metrics.append(record(cadence, "service", "monitored_service_count", 0, "services", source="systemd"))
         return result
 
-    properties = "--property=Id,LoadState,ActiveState,SubState,UnitFileState,Type,Result,NRestarts,Triggers"
+    properties = "--property=Id,LoadState,ActiveState,SubState,UnitFileState,Type,Result,NRestarts,Triggers,ExecMainExitTimestampMonotonic"
     blocks: list[tuple[dict[str, str], str]] = []
     if units:
         status = external(config, ["systemctl", "show", properties, "--", *units])
@@ -654,6 +677,18 @@ def collect_services(scope: str, config: Mapping[str, Any], db: object) -> Colle
         active = item.get("ActiveState") == "active"
         failed = item.get("ActiveState") == "failed" or item.get("Result") not in {"", "success"}
         successful_oneshot = item.get("Type") == "oneshot" and item.get("Result") in {"", "success"} and item.get("ActiveState") == "inactive"
+        freshness_seconds = freshness.get(state_id, freshness.get(unit))
+        last_success_age_seconds: float | None = None
+        freshness_ok: bool | None = None
+        if freshness_seconds is not None:
+            exit_monotonic_us = int(_number(item.get("ExecMainExitTimestampMonotonic"), 0))
+            if active:
+                freshness_ok = True
+            elif successful_oneshot and exit_monotonic_us > 0:
+                last_success_age_seconds = max(0.0, time.monotonic() - (exit_monotonic_us / 1_000_000.0))
+                freshness_ok = last_success_age_seconds <= freshness_seconds
+            else:
+                freshness_ok = False
         restart_count = int(item.get("NRestarts") or 0)
         old = previous_runtime.get(state_id, {})
         old = old if isinstance(old, Mapping) else {}
@@ -662,7 +697,11 @@ def collect_services(scope: str, config: Mapping[str, Any], db: object) -> Colle
         restart_times.extend([now] * min(delta_restarts, loop_count + 1))
         restart_loop = len(restart_times) >= loop_count
         severity = "info"
+        unhealthy_freshness = freshness_ok is False
         if failed:
+            severity = "critical" if is_essential else "warning"
+            failed_count += 1
+        elif unhealthy_freshness:
             severity = "critical" if is_essential else "warning"
             failed_count += 1
         elif is_essential and not active and not successful_oneshot:
@@ -692,6 +731,11 @@ def collect_services(scope: str, config: Mapping[str, Any], db: object) -> Colle
                     "restart_count_window": len(restart_times),
                     "restart_loop": restart_loop,
                     "successful_inactive_oneshot": successful_oneshot,
+                    "freshness_seconds": freshness_seconds,
+                    "last_success_age_seconds": (
+                        round(last_success_age_seconds, 3) if last_success_age_seconds is not None else None
+                    ),
+                    "freshness_ok": freshness_ok,
                     "importance": "essential" if is_essential else "secondary",
                 },
             )
