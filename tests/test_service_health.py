@@ -73,6 +73,51 @@ class ServiceHealthTests(unittest.TestCase):
     @mock.patch(
         "fedora_system_monitor.capsules.service_health.configured_push_keys",
     )
+    def test_stale_scheduled_oneshot_is_down(self, keys, sender):
+        identity = "user:workflowy-roadmap-sync.service"
+        keys.return_value = {service_monitor_key(identity)}
+        now = datetime(2026, 9, 24, 1, 0, tzinfo=timezone.utc)
+        rows = [{
+            "device_id": identity,
+            "value": 0,
+            "timestamp_utc": now.isoformat(),
+            "details_json": '{"active_state":"inactive","sub_state":"dead","result":"success","successful_inactive_oneshot":true,"freshness_seconds":300,"last_success_age_seconds":901,"freshness_ok":false}',
+        }]
+
+        send_service_heartbeats({}, _DB(rows), now=now)
+
+        self.assertFalse(sender.call_args.kwargs["healthy"])
+        self.assertIn("freshness stale", sender.call_args.kwargs["message"])
+
+    @mock.patch(
+        "fedora_system_monitor.capsules.service_health.send_named_heartbeat",
+        return_value=NotificationResult("uptime-kuma", "service_x", True, True, "delivered"),
+    )
+    @mock.patch(
+        "fedora_system_monitor.capsules.service_health.configured_push_keys",
+    )
+    def test_fresh_scheduled_oneshot_is_up(self, keys, sender):
+        identity = "user:workflowy-roadmap-sync.service"
+        keys.return_value = {service_monitor_key(identity)}
+        now = datetime(2026, 9, 24, 1, 0, tzinfo=timezone.utc)
+        rows = [{
+            "device_id": identity,
+            "value": 0,
+            "timestamp_utc": now.isoformat(),
+            "details_json": '{"active_state":"inactive","sub_state":"dead","result":"success","successful_inactive_oneshot":true,"freshness_seconds":300,"last_success_age_seconds":75,"freshness_ok":true}',
+        }]
+
+        send_service_heartbeats({}, _DB(rows), now=now)
+
+        self.assertTrue(sender.call_args.kwargs["healthy"])
+
+    @mock.patch(
+        "fedora_system_monitor.capsules.service_health.send_named_heartbeat",
+        return_value=NotificationResult("uptime-kuma", "service_x", True, True, "delivered"),
+    )
+    @mock.patch(
+        "fedora_system_monitor.capsules.service_health.configured_push_keys",
+    )
     def test_inactive_long_running_service_is_down(self, keys, sender):
         identity = "example.service"
         keys.return_value = {service_monitor_key(identity)}
