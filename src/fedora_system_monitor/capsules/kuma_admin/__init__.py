@@ -9,6 +9,7 @@ import string
 import subprocess
 import tempfile
 import threading
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -419,10 +420,19 @@ def _default_notifications(raw: object) -> dict[str, bool]:
 
 def _write_credentials(path: Path, base_url: str, tokens: Mapping[str, str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
+    urls = {key: f"{base_url.rstrip('/')}/api/push/{token}" for key, token in tokens.items()}
+    if path.exists():
+        with path.open("rb") as handle:
+            previous = tomllib.load(handle).get("push", {})
+        if not isinstance(previous, dict) or not all(
+            isinstance(key, str) and isinstance(value, str)
+            for key, value in previous.items()
+        ):
+            raise ValueError("invalid existing Kuma credentials")
+        urls = {**previous, **urls}
     lines = ["[push]"]
-    for key in sorted(tokens):
-        url = f"{base_url.rstrip('/')}/api/push/{tokens[key]}"
-        lines.append(f"{key} = {json.dumps(url)}")
+    for key in sorted(urls):
+        lines.append(f"{key} = {json.dumps(urls[key])}")
     lines.extend(("", "[transport]", f"allow_insecure_http = {'true' if urlsplit(base_url).scheme == 'http' else 'false'}", ""))
     descriptor, temporary = tempfile.mkstemp(prefix=".uptime-kuma-", suffix=".toml", dir=path.parent)
     try:

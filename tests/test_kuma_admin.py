@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -108,6 +109,16 @@ class KumaAdminTests(unittest.TestCase):
             upside_down=True,
         )
         self.assertTrue(payload["upsideDown"])
+
+    def test_credential_provisioning_preserves_unselected_endpoints(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "kuma.toml"
+            path.write_text('[push]\nlegacy = "https://kuma.example/api/push/old"\n')
+            kuma_admin._write_credentials(path, "https://kuma.example", {"new": "token"})
+            with path.open("rb") as handle:
+                push = tomllib.load(handle)["push"]
+            self.assertEqual(push["legacy"], "https://kuma.example/api/push/old")
+            self.assertEqual(push["new"], "https://kuma.example/api/push/token")
 
     def test_existing_upside_down_aliases_are_preserved(self) -> None:
         self.assertTrue(_monitor_upside_down({"upsideDown": True}))

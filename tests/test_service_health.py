@@ -115,6 +115,23 @@ class ServiceHealthTests(unittest.TestCase):
         "fedora_system_monitor.capsules.service_health.send_named_heartbeat",
         return_value=NotificationResult("uptime-kuma", "service_x", True, True, "delivered"),
     )
+    @mock.patch("fedora_system_monitor.capsules.service_health.configured_push_keys")
+    def test_running_scheduled_oneshot_requires_previous_fresh_success(self, keys, sender):
+        identity = "user:github-autosync.service"
+        keys.return_value = {service_monitor_key(identity)}
+        now = datetime(2026, 9, 24, 1, 0, tzinfo=timezone.utc)
+        row = {"device_id": identity, "value": 0, "timestamp_utc": now.isoformat(),
+               "details_json": '{"active_state":"activating","sub_state":"start","result":"success","running_oneshot":true,"freshness_ok":true}'}
+        send_service_heartbeats({}, _DB([row]), now=now)
+        self.assertTrue(sender.call_args.kwargs["healthy"])
+        row["details_json"] = row["details_json"].replace('"freshness_ok":true', '"freshness_ok":false')
+        send_service_heartbeats({}, _DB([row]), now=now)
+        self.assertFalse(sender.call_args.kwargs["healthy"])
+
+    @mock.patch(
+        "fedora_system_monitor.capsules.service_health.send_named_heartbeat",
+        return_value=NotificationResult("uptime-kuma", "service_x", True, True, "delivered"),
+    )
     @mock.patch(
         "fedora_system_monitor.capsules.service_health.configured_push_keys",
     )
