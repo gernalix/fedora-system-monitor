@@ -71,6 +71,36 @@ il traffico al reverse proxy Caddy sulla VM Oracle; Kuma e il precedente proxy
 Nginx restano esposti solo su loopback. HTTP pubblico viene reindirizzato a
 HTTPS e la porta pubblica `3001` è chiusa.
 
+## Control plane unico cross-repository
+
+Questa integrazione e' il controller canonico di Uptime Kuma per i runtime Fedora.
+I repository applicativi non devono possedere monitor, naming, provisioning o token
+Kuma quando lo stesso failure domain e' osservabile qui.
+
+Il piano globale vive in `MegaVault/megavault.sqlite:monitoring_targets` e viene
+riconciliato con il DB Kuma live. Ogni target e' classificato come daemon,
+job schedulato con freshness, probe HTTP, job event-driven, manuale o escluso.
+I repository di soli dati vengono collegati al producer che li aggiorna invece
+di ricevere un monitor duplicato.
+
+Per i timer/oneshot il collector usa `services.freshness_seconds`: un ultimo
+`Result=success` non basta. Il monitor resta UP solo se la run conclusa e'
+ancora entro la finestra configurata; un timer fermo diventa quindi visibile
+anche quando la service e' semplicemente `inactive/dead` con l'ultimo risultato
+storicamente positivo.
+
+Le integrazioni Kuma repo-specifiche preesistenti sono compatibilita' di migrazione,
+non la destinazione finale. Il cutover corretto e':
+1. provisionare il target centrale;
+2. produrre un heartbeat/probe reale;
+3. fare readback dal DB Kuma autorevole;
+4. solo allora rimuovere il vecchio producer/token/monitor duplicato dal repo
+   applicativo e dalla configurazione live.
+
+Per runtime remoti, un probe nativo Kuma (ad esempio HTTP per Datasette) puo'
+essere il producer migliore; resta comunque registrato nello stesso inventario,
+con mapping al progetto e un'unica policy di naming/provisioning/readback.
+
 ## Gate di verifica end-to-end
 
 Per future migrazioni di endpoint, proxy, tunnel, DNS o TLS, una risposta HTTP
