@@ -140,7 +140,25 @@ def serialize_changes(root: Path, last_id: int, records: list[dict[str, Any]]) -
 
 def collect(client: Any, peer: str, last_id: int) -> list[dict[str, Any]]:
     configured_peer: str | int = int(peer) if re.fullmatch(r"-?\d+", peer) else peer
-    entity = client.get_entity(configured_peer)
+    try:
+        entity = client.get_entity(configured_peer)
+    except ValueError:
+        entity = None
+        real_peer_id = None
+        if isinstance(configured_peer, int):
+            if configured_peer <= -1_000_000_000_000:
+                real_peer_id = -configured_peer - 1_000_000_000_000
+            elif configured_peer < 0:
+                real_peer_id = -configured_peer
+            else:
+                real_peer_id = configured_peer
+        for dialog in client.iter_dialogs():
+            dialog_entity_id = getattr(dialog.entity, "id", None)
+            if dialog.id == configured_peer or dialog_entity_id == real_peer_id:
+                entity = dialog.entity
+                break
+        if entity is None:
+            raise
     records = []
     for message in client.iter_messages(entity, min_id=last_id, reverse=True):
         records.append(message_record(message))
@@ -283,7 +301,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     try:
         config = load_env(config_path)
-        os.chmod(config_path, 0o600)
+        if config_path.stat().st_mode & 0o077:
+            raise PermissionError("collector config permissions are too broad")
         required = ("TELEGRAM_API_ID", "TELEGRAM_API_HASH", "TELEGRAM_CHAT", "SESSION_FILE", "DATA_REPO")
         if any(not config.get(key) for key in required):
             raise ValueError("required configuration is incomplete")
@@ -303,7 +322,7 @@ def main(argv: list[str] | None = None) -> int:
         finally:
             client.disconnect()
     except Exception as exc:
-        print(f"Telegram history sync failed ({type(exc).__name__}).", file=sys.stderr)
+        print(f"Telegram history sync failed ({type(exc).__name__}: {exc}).", file=sys.stderr)
         return 1
 
 

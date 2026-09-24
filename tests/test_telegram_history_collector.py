@@ -104,6 +104,27 @@ class TelegramHistoryCollectorTests(unittest.TestCase):
         self.assertFalse((self.repo / "archive/state.json").exists())
         self.assertEqual(git(self.repo, "status", "--porcelain"), "")
 
+    def test_numeric_peer_falls_back_to_dialog_cache(self):
+        entity = type("Entity", (), {"id": 4426028673})()
+        dialog = type("Dialog", (), {"id": 999, "entity": entity})()
+
+        class DialogClient(FakeClient):
+            def get_entity(self, peer):
+                self.peer = peer
+                raise ValueError("not cached")
+
+            def iter_dialogs(self):
+                return iter([dialog])
+
+            def iter_messages(self, resolved, *, min_id, reverse):
+                self.asserted_entity = resolved
+                return iter(self.messages)
+
+        client = DialogClient([Message(8, "resolved notification")])
+        records = collector.collect(client, "-1004426028673", 0)
+        self.assertIs(client.asserted_entity, entity)
+        self.assertEqual([item["message_id"] for item in records], [8])
+
     def test_media_metadata_is_text_only(self):
         message = Message(7, "caption")
         message.document = type("Document", (), {"mime_type": "text/plain", "size": 123,
