@@ -60,6 +60,69 @@ def ensure_private_parent(path: Path) -> None:
     os.chmod(path.parent, 0o700)
 
 
+def ensure_columns(
+    conn: sqlite3.Connection,
+    table: str,
+    columns: dict[str, str],
+) -> None:
+    existing = {str(row["name"]) for row in conn.execute(f"PRAGMA table_info({table})")}
+    for name, declaration in columns.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {declaration}")
+
+
+def create_human_view(conn: sqlite3.Connection) -> None:
+    conn.execute("DROP VIEW IF EXISTS messages_human")
+    conn.execute(
+        """
+        CREATE VIEW messages_human AS
+        SELECT
+            CASE
+                WHEN date(date_utc, 'localtime') = date('now', 'localtime')
+                    THEN 'oggi ' || CAST(strftime('%H', date_utc, 'localtime') AS INTEGER)
+                         || ':' || strftime('%M', date_utc, 'localtime')
+                WHEN date(date_utc, 'localtime') = date('now', 'localtime', '-1 day')
+                    THEN 'ieri ' || CAST(strftime('%H', date_utc, 'localtime') AS INTEGER)
+                         || ':' || strftime('%M', date_utc, 'localtime')
+                ELSE
+                    CASE strftime('%w', date_utc, 'localtime')
+                        WHEN '0' THEN 'dom' WHEN '1' THEN 'lun'
+                        WHEN '2' THEN 'mar' WHEN '3' THEN 'mer'
+                        WHEN '4' THEN 'gio' WHEN '5' THEN 'ven'
+                        WHEN '6' THEN 'sab'
+                    END || ' '
+                    || CAST(strftime('%d', date_utc, 'localtime') AS INTEGER) || '/'
+                    || CAST(strftime('%m', date_utc, 'localtime') AS INTEGER) || '/'
+                    || substr(strftime('%Y', date_utc, 'localtime'), 3, 2) || ' '
+                    || CAST(strftime('%H', date_utc, 'localtime') AS INTEGER)
+                    || ':' || strftime('%M', date_utc, 'localtime')
+            END AS quando,
+            COALESCE(NULLIF(sender_name, ''), 'Sconosciuto') AS mittente,
+            CASE
+                WHEN text <> '' THEN text
+                WHEN action_text IS NOT NULL AND action_text <> '' THEN action_text
+                WHEN media_kind = 'photo' THEN '[Foto]'
+                WHEN media_kind = 'document' THEN '[Documento]'
+                WHEN media_kind IS NOT NULL THEN '[' || media_kind || ']'
+                ELSE '(messaggio senza testo)'
+            END AS messaggio,
+            CASE
+                WHEN media_kind = 'photo' THEN 'foto'
+                WHEN media_kind = 'document' THEN 'documento'
+                WHEN media_kind IS NOT NULL THEN media_kind
+                ELSE ''
+            END AS media,
+            CASE
+                WHEN deleted_at_utc IS NOT NULL THEN 'eliminato da Telegram'
+                WHEN edit_date_utc IS NOT NULL THEN 'modificato'
+                ELSE ''
+            END AS stato
+        FROM messages
+        ORDER BY date_utc DESC
+        """
+    )
+
+
 def open_archive(path: Path) -> sqlite3.Connection:
     ensure_private_parent(path)
     conn = sqlite3.connect(path)
@@ -110,6 +173,28 @@ def open_archive(path: Path) -> sqlite3.Connection:
             ON messages(peer_id, deleted_at_utc);
         """
     )
+    ensure_columns(
+        conn,
+        "messages",
+        {
+            "sender_name": "TEXT",
+            "action_type": "TEXT",
+            "action_text": "TEXT",
+            "action_json": "TEXT",
+        },
+    )
+    ensure_columns(
+        conn,
+        "revisions",
+        {
+            "sender_name": "TEXT",
+            "action_type": "TEXT",
+            "action_text": "TEXT",
+            "action_json": "TEXT",
+        },
+    )
+    create_human_view(conn)
+    conn.commit()
     os.chmod(path, 0o600)
     return conn
 
@@ -127,23 +212,113 @@ def media_identity(message: Any) -> tuple[str | None, str | None]:
     return None, None
 
 
-def snapshot_from_message(message: Any) -> dict[str, Any]:
+def entity_display_name(entity: Any) -> str | None:
+    if entity is None:
+        return None
+    parts = [
+        str(value).strip()
+        for value in (
+            getattr(entity, "first_name", None),
+            getattr(entity, "last_name", None),
+        )
+        if value and str(value).strip()
+    ]
+    if parts:
+        return " ".join(parts)
+    for attr in ("title", "username"):
+        value = getattr(entity, attr, None)
+        if value and str(value).strip():
+            return str(value).strip()
+    return None
+
+
+async def sender_name_for_message(
+    message: Any,
+    cache: dict[int, str | None],
+) -> str | None:
+    sender_id = getattr(message, "sender_id", None)
+    if sender_id is None:
+        return None
+    sender_id = int(sender_id)
+    if sender_id in cache:
+        return cache[sender_id]
+    sender = getattr(message, "sender", None)
+    if sender is None:
+        getter = getattr(message, "get_sender", None)
+        if getter is not None:
+            sender = await getter()
+    name = entity_display_name(sender)
+    cache[sender_id] = name
+    return name
+
+
+def phone_call_text(message: Any, action: Any) -> str:
+    reason_name = type(getattr(action, "reason", None)).__name__
+    outgoing = bool(getattr(message, "out", False))
+    if reason_name == "PhoneCallDiscardReasonMissed":
+        label = "Chiamata annullata" if outgoing else "Chiamata persa"
+    elif reason_name == "PhoneCallDiscardReasonBusy":
+        label = "Chiamata rifiutata" if outgoing else "Chiamata non risposta (occupato)"
+    elif reason_name == "PhoneCallDiscardReasonDisconnect":
+        label = "Chiamata interrotta"
+    elif reason_name == "PhoneCallDiscardReasonHangup":
+        label = "Chiamata terminata"
+    else:
+        label = "Chiamata"
+    duration = getattr(action, "duration", None)
+    if duration:
+        minutes, seconds = divmod(int(duration), 60)
+        elapsed = f"{minutes}m {seconds}s" if minutes else f"{seconds}s"
+        label += f" · {elapsed}"
+    if bool(getattr(action, "video", False)):
+        label = label.replace("Chiamata", "Videochiamata", 1)
+    return label
+
+
+def action_details(message: Any) -> tuple[str | None, str | None, str | None]:
+    action = getattr(message, "action", None)
+    if action is None:
+        return None, None, None
+    action_type = type(action).__name__
+    if action_type == "MessageActionPhoneCall":
+        action_text = phone_call_text(message, action)
+    else:
+        action_text = action_type.removeprefix("MessageAction")
+    payload = action.to_dict() if hasattr(action, "to_dict") else {"type": action_type}
+    return (
+        action_type,
+        action_text,
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str),
+    )
+
+
+def snapshot_from_message(
+    message: Any,
+    *,
+    sender_name: str | None = None,
+) -> dict[str, Any]:
     reply_id = getattr(getattr(message, "reply_to", None), "reply_to_msg_id", None)
     kind, remote_id = media_identity(message)
     sender_id = getattr(message, "sender_id", None)
+    action_type, action_text, action_json = action_details(message)
     return {
         "message_id": int(message.id),
         "date_utc": iso_utc(message.date),
         "sender_id": int(sender_id) if sender_id is not None else None,
+        "sender_name": sender_name,
         "text": getattr(message, "message", None) or "",
         "edit_date_utc": iso_utc(getattr(message, "edit_date", None)),
         "reply_to_message_id": int(reply_id) if reply_id is not None else None,
         "media_kind": kind,
         "media_remote_id": remote_id,
+        "action_type": action_type,
+        "action_text": action_text,
+        "action_json": action_json,
     }
 
 
 CONTENT_FIELDS = (
+    "sender_name",
     "text",
     "edit_date_utc",
     "reply_to_message_id",
@@ -151,6 +326,9 @@ CONTENT_FIELDS = (
     "media_remote_id",
     "media_path",
     "media_sha256",
+    "action_type",
+    "action_text",
+    "action_json",
 )
 
 
@@ -213,32 +391,35 @@ def store_snapshot(
         conn.execute(
             """
             INSERT INTO messages (
-                peer_id,message_id,date_utc,sender_id,text,edit_date_utc,
-                reply_to_message_id,media_kind,media_remote_id,media_path,
-                media_sha256,current_revision,first_seen_at_utc,last_seen_at_utc,
-                deleted_at_utc,deletion_reason
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,1,?,?,NULL,NULL)
+                peer_id,message_id,date_utc,sender_id,sender_name,text,edit_date_utc,
+                reply_to_message_id,media_kind,media_remote_id,media_path,media_sha256,
+                action_type,action_text,action_json,current_revision,
+                first_seen_at_utc,last_seen_at_utc,deleted_at_utc,deletion_reason
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,NULL,NULL)
             """,
             (
                 peer_id, message_id, material["date_utc"], material["sender_id"],
-                material["text"], material["edit_date_utc"],
+                material["sender_name"], material["text"], material["edit_date_utc"],
                 material["reply_to_message_id"], material["media_kind"],
                 material["media_remote_id"], material["media_path"],
-                material["media_sha256"], seen_at, seen_at,
+                material["media_sha256"], material["action_type"],
+                material["action_text"], material["action_json"], seen_at, seen_at,
             ),
         )
         conn.execute(
             """
             INSERT INTO revisions (
-                peer_id,message_id,revision_no,captured_at_utc,text,edit_date_utc,
-                reply_to_message_id,media_kind,media_remote_id,media_path,media_sha256
-            ) VALUES (?,?,1,?,?,?,?,?,?,?,?)
+                peer_id,message_id,revision_no,captured_at_utc,sender_name,text,
+                edit_date_utc,reply_to_message_id,media_kind,media_remote_id,
+                media_path,media_sha256,action_type,action_text,action_json
+            ) VALUES (?,?,1,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
-                peer_id, message_id, seen_at, material["text"],
+                peer_id, message_id, seen_at, material["sender_name"], material["text"],
                 material["edit_date_utc"], material["reply_to_message_id"],
                 material["media_kind"], material["media_remote_id"],
                 material["media_path"], material["media_sha256"],
+                material["action_type"], material["action_text"], material["action_json"],
             ),
         )
         return "inserted"
@@ -249,31 +430,37 @@ def store_snapshot(
         conn.execute(
             """
             INSERT INTO revisions (
-                peer_id,message_id,revision_no,captured_at_utc,text,edit_date_utc,
-                reply_to_message_id,media_kind,media_remote_id,media_path,media_sha256
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                peer_id,message_id,revision_no,captured_at_utc,sender_name,text,
+                edit_date_utc,reply_to_message_id,media_kind,media_remote_id,
+                media_path,media_sha256,action_type,action_text,action_json
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
-                peer_id, message_id, revision, seen_at, material["text"],
-                material["edit_date_utc"], material["reply_to_message_id"],
-                material["media_kind"], material["media_remote_id"],
-                material["media_path"], material["media_sha256"],
+                peer_id, message_id, revision, seen_at, material["sender_name"],
+                material["text"], material["edit_date_utc"],
+                material["reply_to_message_id"], material["media_kind"],
+                material["media_remote_id"], material["media_path"],
+                material["media_sha256"], material["action_type"],
+                material["action_text"], material["action_json"],
             ),
         )
         conn.execute(
             """
             UPDATE messages SET
-                sender_id=?, text=?, edit_date_utc=?, reply_to_message_id=?,
-                media_kind=?, media_remote_id=?, media_path=?, media_sha256=?,
-                current_revision=?, last_seen_at_utc=?,
+                sender_id=?, sender_name=?, text=?, edit_date_utc=?,
+                reply_to_message_id=?, media_kind=?, media_remote_id=?,
+                media_path=?, media_sha256=?, action_type=?, action_text=?,
+                action_json=?, current_revision=?, last_seen_at_utc=?,
                 deleted_at_utc=NULL, deletion_reason=NULL
             WHERE peer_id=? AND message_id=?
             """,
             (
-                material["sender_id"], material["text"], material["edit_date_utc"],
-                material["reply_to_message_id"], material["media_kind"],
-                material["media_remote_id"], material["media_path"],
-                material["media_sha256"], revision, seen_at, peer_id, message_id,
+                material["sender_id"], material["sender_name"], material["text"],
+                material["edit_date_utc"], material["reply_to_message_id"],
+                material["media_kind"], material["media_remote_id"],
+                material["media_path"], material["media_sha256"],
+                material["action_type"], material["action_text"],
+                material["action_json"], revision, seen_at, peer_id, message_id,
             ),
         )
         return "updated"
@@ -409,6 +596,7 @@ async def reconcile(
     cutoff = now - dt.timedelta(seconds=horizon_seconds)
     cutoff_iso = iso_utc(cutoff)
     seen_ids: set[int] = set()
+    sender_cache: dict[int, str | None] = {}
     counts = {"inserted": 0, "updated": 0, "unchanged": 0, "deleted": 0}
     initial_backfill = conn.execute(
         "SELECT 1 FROM messages WHERE peer_id=? LIMIT 1",
@@ -420,7 +608,8 @@ async def reconcile(
             message_date = message.date if message.date.tzinfo else message.date.replace(tzinfo=UTC)
             if message_date.astimezone(UTC) < cutoff:
                 break
-        snapshot = snapshot_from_message(message)
+        sender_name = await sender_name_for_message(message, sender_cache)
+        snapshot = snapshot_from_message(message, sender_name=sender_name)
         seen_ids.add(int(snapshot["message_id"]))
         previous = conn.execute(
             "SELECT * FROM messages WHERE peer_id=? AND message_id=?",

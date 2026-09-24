@@ -16,6 +16,25 @@ class Document:
         self.id = document_id
 
 
+class PhoneCallDiscardReasonMissed:
+    pass
+
+
+class MessageActionPhoneCall:
+    def __init__(self, *, duration=None, video=False):
+        self.reason = PhoneCallDiscardReasonMissed()
+        self.duration = duration
+        self.video = video
+
+    def to_dict(self):
+        return {
+            "_": "MessageActionPhoneCall",
+            "reason": {"_": "PhoneCallDiscardReasonMissed"},
+            "duration": self.duration,
+            "video": self.video,
+        }
+
+
 class Message:
     def __init__(
         self,
@@ -25,17 +44,27 @@ class Message:
         when=None,
         edit_date=None,
         sender_id=10,
+        sender_name=None,
         document=None,
         reply_to_id=None,
+        action=None,
+        out=False,
     ):
         self.id = message_id
         self.date = when or dt.datetime.now(tz=UTC)
         self.message = text
         self.edit_date = edit_date
         self.sender_id = sender_id
+        self.sender = (
+            type("Sender", (), {"first_name": sender_name, "last_name": None})()
+            if sender_name is not None
+            else None
+        )
         self.document = document
         self.photo = None
         self.media = document
+        self.action = action
+        self.out = out
         self.reply_to = (
             type("Reply", (), {"reply_to_msg_id": reply_to_id})()
             if reply_to_id is not None
@@ -234,6 +263,37 @@ class TelegramAutodeleteArchiveTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["inserted"], 2)
         self.assertEqual(self.row(51)["text"], "pre-auto-delete legacy")
         self.assertEqual(self.row(52)["text"], "recent")
+
+    async def test_phone_call_and_sender_are_human_readable(self):
+        now = dt.datetime.now(tz=UTC)
+        call = Message(
+            61,
+            "",
+            when=now,
+            sender_id=58037506,
+            sender_name="Daniele",
+            action=MessageActionPhoneCall(),
+            out=True,
+        )
+        result = await archiver.reconcile(
+            FakeClient([call]), object(), self.peer_id, self.conn, self.media_root, 108000
+        )
+        self.assertEqual(result["inserted"], 1)
+        raw = self.row(61)
+        self.assertEqual(raw["sender_name"], "Daniele")
+        self.assertEqual(raw["action_type"], "MessageActionPhoneCall")
+        self.assertEqual(raw["action_text"], "Chiamata annullata")
+        self.assertIn("PhoneCallDiscardReasonMissed", raw["action_json"])
+
+        cursor = self.conn.execute(
+            "SELECT * FROM messages_human WHERE mittente='Daniele'"
+        )
+        columns = [item[0] for item in cursor.description]
+        self.assertEqual(columns, ["quando", "mittente", "messaggio", "media", "stato"])
+        human = cursor.fetchone()
+        self.assertTrue(human["quando"].startswith("oggi "))
+        self.assertEqual(human["mittente"], "Daniele")
+        self.assertEqual(human["messaggio"], "Chiamata annullata")
 
 
 if __name__ == "__main__":
