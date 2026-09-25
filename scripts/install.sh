@@ -73,6 +73,8 @@ if [[ ! -f "$ETC/config.toml" ]]; then
     install -m 0640 -o root -g daniele "$ROOT/config/fedora-system-monitor.toml" "$ETC/config.toml"
 fi
 install -m 0644 "$ROOT/config/fedora-system-monitor.toml" "$ETC/config.toml.distribution"
+/usr/bin/python3 "$ROOT/tools/reconcile_smartd.py" \
+    --backup-dir "$STATE/install-backups"
 install -d -m 0755 /etc/systemd/coredump.conf.d
 install -m 0644 "$ROOT/config/60-fedora-system-monitor-coredump.conf" /etc/systemd/coredump.conf.d/60-fedora-system-monitor.conf
 if [[ -e "$KUMA_CREDENTIALS" ]]; then
@@ -106,6 +108,7 @@ chown root:daniele "$STATE"/monitor.sqlite3*
 chmod 0640 "$STATE"/monitor.sqlite3*
 /usr/local/bin/fedora-system-monitor backfill --since-hours 168
 
+systemctl try-restart smartd.service
 systemctl enable fedora-system-monitor-events.service
 systemctl restart fedora-system-monitor-events.service
 systemctl enable --now fedora-system-monitor-fast.timer fedora-system-monitor-hourly.timer fedora-system-monitor-daily.timer fedora-system-monitor-weekly.timer fedora-system-monitor-context.timer
