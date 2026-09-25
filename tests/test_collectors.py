@@ -527,6 +527,30 @@ NRestarts=1
         self.assertEqual(unsupported.metrics[0]["name"], "smart.supported")
         self.assertEqual(unsupported.metrics[0]["outcome"], "skipped")
 
+    def test_smart_t7_periodic_probe_is_skipped_before_smartctl(self) -> None:
+        nodes = [{
+            "type": "disk",
+            "path": "/dev/sdc",
+            "name": "sdc",
+            "serial": "local-serial",
+            "model": "PSSD T7 Shield",
+            "tran": "usb",
+        }]
+        config = {"collection": {"smart_periodic_skip_model_patterns": ["T7 Shield"]}}
+        with (
+            mock.patch.object(system_collectors, "_block_listing", return_value=(nodes, None)),
+            mock.patch.object(system_collectors, "external") as external,
+        ):
+            result = system_collectors.collect_smart("hourly", config, self.db, detailed=False)
+        external.assert_not_called()
+        self.assertEqual(result.events, [])
+        self.assertEqual(len(result.metrics), 1)
+        metric = result.metrics[0]
+        self.assertEqual(metric["name"], "smart.periodic_probe_enabled")
+        self.assertEqual(metric["value"], 0)
+        self.assertEqual(metric["outcome"], "skipped")
+        self.assertEqual(metric["details"]["reason"], "usb_bridge_periodic_smart_passthrough_unsafe")
+
     def test_smart_usb_nvme_detailed_mode_avoids_error_log(self) -> None:
         nodes = [{"type": "disk", "path": "/dev/test", "name": "test", "serial": "local-serial", "model": "USB NVMe", "tran": "usb"}]
         health = json.dumps(

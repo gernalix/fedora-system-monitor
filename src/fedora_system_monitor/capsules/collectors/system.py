@@ -141,11 +141,46 @@ def collect_smart(
         result.errors.append(f"SMART device discovery: {error}")
         return result
     allow_wakeup = bool(config_value(config, ("collection", "smart_allow_wakeup"), default=False))
+    skip_model_patterns = [
+        str(pattern).strip().casefold()
+        for pattern in config_value(
+            config,
+            ("collection", "smart_periodic_skip_model_patterns"),
+            default=(),
+        )
+        if str(pattern).strip()
+    ]
     disks = [node for node in nodes if node.get("type") == "disk" and str(node.get("path") or "").startswith("/dev/") and not str(node.get("name") or "").startswith("zram")]
     smart_missing = False
     for node in disks:
         device = str(node.get("path"))
         device_id = _stable_block_id(node)
+        model = str(node.get("model") or "").strip()
+        transport = str(node.get("tran") or "").strip().casefold()
+        matched_skip_pattern = next(
+            (pattern for pattern in skip_model_patterns if pattern in model.casefold()),
+            "",
+        )
+        if transport == "usb" and matched_skip_pattern:
+            result.metrics.append(
+                record(
+                    cadence,
+                    "storage",
+                    "smart.periodic_probe_enabled",
+                    0,
+                    "boolean",
+                    source="policy",
+                    device_id=device_id,
+                    details={
+                        "model": model,
+                        "transport": transport,
+                        "reason": "usb_bridge_periodic_smart_passthrough_unsafe",
+                        "matched_pattern": matched_skip_pattern,
+                    },
+                    outcome="skipped",
+                )
+            )
+            continue
         command = ["smartctl", "-j"]
         if not allow_wakeup:
             command.extend(["-n", "standby"])

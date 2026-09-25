@@ -45,6 +45,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "internet_timeout_seconds": 2.0,
         "gateway_ping_timeout_seconds": 2,
         "journal_lookback_minutes": 20,
+        "smart_periodic_skip_model_patterns": ["T7 Shield"],
     },
     "services": {
         "auto_detect": True,
@@ -390,10 +391,11 @@ def validate_config(config: Mapping[str, Any] | object) -> list[str]:
 
     if not isinstance(config.get("collection"), Mapping):
         errors.append("collection must be a table")
-    for key in ("critical_filesystems", "ignore_filesystem_types"):
+    for key in ("critical_filesystems", "ignore_filesystem_types", "smart_periodic_skip_model_patterns"):
         _require_list(config, ("collection", key), errors)
     require_string_items(("collection", "critical_filesystems"), absolute=True)
     require_string_items(("collection", "ignore_filesystem_types"))
+    require_string_items(("collection", "smart_periodic_skip_model_patterns"))
     _require_bool(config, ("collection", "internet_check_enabled"), errors)
     _require_string(config, ("collection", "internet_host"), errors)
     for key in (

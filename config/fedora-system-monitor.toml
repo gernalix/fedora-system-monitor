@@ -20,6 +20,10 @@ internet_port = 443
 internet_timeout_seconds = 2.0
 gateway_ping_timeout_seconds = 2
 journal_lookback_minutes = 20
+# Some USB-to-NVMe bridges can wedge under unattended SMART passthrough. These
+# model substrings are skipped by periodic collectors; on-demand diagnostics
+# remain available when explicitly requested.
+smart_periodic_skip_model_patterns = ["T7 Shield"]
 
 [services]
 auto_detect = true
