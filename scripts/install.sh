@@ -51,11 +51,14 @@ while IFS= read -r -d '' source; do
     install -d -m 0755 "$STAGE/fedora_system_monitor/$(dirname "$relative")"
     install -m 0644 -o root -g root "$source" "$STAGE/fedora_system_monitor/$relative"
 done < <(find "$ROOT/src/fedora_system_monitor" -type f -name '*.py' -print0)
+install -d -m 0755 "$STAGE/scripts"
+install -m 0755 -o root -g root "$ROOT/scripts/systemd-journal-collector.sh" "$STAGE/scripts/systemd-journal-collector.sh"
 /usr/bin/python3 -m compileall -q "$STAGE/fedora_system_monitor"
 /usr/bin/python3 -c 'import telegram_notify'
 chown -R root:root "$STAGE"
 find "$STAGE" -type d -exec chmod 0755 '{}' +
 find "$STAGE" -type f -exec chmod 0644 '{}' +
+chmod 0755 "$STAGE/scripts/systemd-journal-collector.sh"
 if find "$STAGE" \( ! -user root -o -perm /022 \) -print -quit | grep -q .; then
     printf 'Unsafe ownership or mode in staged runtime.\n' >&2
     exit 1

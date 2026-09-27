@@ -25,7 +25,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from ..config import redact_text
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 DEFAULT_TIMEZONE = "Europe/Copenhagen"
 DEFAULT_METRIC_RETENTION_DAYS = {60: 14, 300: 60, 900: 180, 3600: 365, 86400: 3650}
 
@@ -59,6 +59,10 @@ _EXPECTED_INDEXES = {
     "idx_collector_runs_name_time",
     "idx_aggregates_name_bucket",
     "idx_summaries_period_time",
+    "idx_systemd_executions_unit_time",
+    "idx_systemd_entries_execution_time",
+    "idx_systemd_entries_unit_time",
+    "idx_systemd_imports_time",
 }
 
 
@@ -332,6 +336,120 @@ _MIGRATION_2_STATEMENTS = (
     "ALTER TABLE alerts ADD COLUMN last_notification_error TEXT",
 )
 
+_MIGRATION_3_STATEMENTS = (
+    """
+    CREATE TABLE IF NOT EXISTS systemd_executions (
+        id INTEGER PRIMARY KEY,
+        run_key TEXT NOT NULL UNIQUE,
+        hostname TEXT NOT NULL,
+        journal_scope TEXT NOT NULL CHECK(journal_scope IN ('system', 'user')),
+        unit TEXT NOT NULL,
+        timer_unit TEXT,
+        service_unit TEXT,
+        invocation_id TEXT,
+        boot_id TEXT,
+        started_at_utc TEXT NOT NULL,
+        ended_at_utc TEXT,
+        duration_seconds REAL,
+        pid INTEGER,
+        priority INTEGER,
+        severity TEXT NOT NULL DEFAULT 'info',
+        status TEXT NOT NULL DEFAULT 'running',
+        result TEXT,
+        exit_status TEXT,
+        message_count INTEGER NOT NULL DEFAULT 0,
+        error_count INTEGER NOT NULL DEFAULT 0,
+        error_message TEXT,
+        last_message TEXT
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_systemd_executions_unit_time ON systemd_executions(hostname, journal_scope, unit, started_at_utc)",
+    """
+    CREATE TABLE IF NOT EXISTS systemd_execution_entries (
+        id INTEGER PRIMARY KEY,
+        execution_id INTEGER NOT NULL REFERENCES systemd_executions(id) ON DELETE CASCADE,
+        entry_key TEXT NOT NULL UNIQUE,
+        journal_cursor TEXT,
+        realtime_usec INTEGER NOT NULL,
+        timestamp_utc TEXT NOT NULL,
+        hostname TEXT NOT NULL,
+        journal_scope TEXT NOT NULL CHECK(journal_scope IN ('system', 'user')),
+        unit TEXT NOT NULL,
+        timer_unit TEXT,
+        service_unit TEXT,
+        pid INTEGER,
+        priority INTEGER,
+        severity TEXT NOT NULL DEFAULT 'info',
+        message TEXT NOT NULL DEFAULT '',
+        invocation_id TEXT,
+        boot_id TEXT,
+        result TEXT,
+        exit_status TEXT
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_systemd_entries_execution_time ON systemd_execution_entries(execution_id, realtime_usec)",
+    "CREATE INDEX IF NOT EXISTS idx_systemd_entries_unit_time ON systemd_execution_entries(hostname, journal_scope, unit, realtime_usec)",
+    """
+    CREATE TABLE IF NOT EXISTS systemd_journal_checkpoints (
+        hostname TEXT NOT NULL,
+        journal_scope TEXT NOT NULL CHECK(journal_scope IN ('system', 'user')),
+        journal_cursor TEXT,
+        boot_id TEXT,
+        realtime_usec INTEGER,
+        updated_at_utc TEXT NOT NULL,
+        recovery_state TEXT NOT NULL,
+        recovery_warning TEXT,
+        fallback_since_utc TEXT,
+        last_entries_seen INTEGER NOT NULL DEFAULT 0,
+        last_entries_inserted INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY(hostname, journal_scope)
+    ) WITHOUT ROWID
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS systemd_journal_imports (
+        id INTEGER PRIMARY KEY,
+        started_at_utc TEXT NOT NULL,
+        finished_at_utc TEXT NOT NULL,
+        hostname TEXT NOT NULL,
+        journal_scope TEXT NOT NULL CHECK(journal_scope IN ('system', 'user')),
+        mode TEXT NOT NULL,
+        outcome TEXT NOT NULL,
+        recovery_state TEXT NOT NULL,
+        recovery_warning TEXT,
+        entries_seen INTEGER NOT NULL DEFAULT 0,
+        entries_inserted INTEGER NOT NULL DEFAULT 0,
+        runs_touched INTEGER NOT NULL DEFAULT 0,
+        cursor_before TEXT,
+        cursor_after TEXT,
+        boot_id_before TEXT,
+        boot_id_after TEXT
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_systemd_imports_time ON systemd_journal_imports(hostname, journal_scope, finished_at_utc)",
+    """
+    CREATE VIEW IF NOT EXISTS systemd_executions_summary AS
+    SELECT e.id, e.started_at_utc AS started, e.ended_at_utc AS ended,
+        ROUND(e.duration_seconds, 3) AS duration_seconds,
+        e.hostname AS host, e.journal_scope AS scope, e.unit,
+        e.timer_unit AS timer, e.service_unit AS service, e.invocation_id, e.pid, e.priority, e.severity,
+        e.status, e.result, e.exit_status, e.error_count, e.message_count,
+        e.error_message AS error,
+        e.last_message AS message
+    FROM systemd_executions e
+    """,
+    """
+    CREATE VIEW IF NOT EXISTS systemd_entries AS
+    SELECT x.id, x.execution_id, x.timestamp_utc AS timestamp,
+        x.hostname AS host, x.journal_scope AS scope, x.unit,
+        x.timer_unit AS timer, x.service_unit AS service, x.pid, x.priority, x.severity, x.message,
+        x.invocation_id, x.result, x.exit_status,
+        e.started_at_utc AS execution_started, e.ended_at_utc AS execution_ended,
+        ROUND(e.duration_seconds, 3) AS execution_duration_seconds
+    FROM systemd_execution_entries x
+    JOIN systemd_executions e ON e.id = x.execution_id
+    """,
+)
+
 
 def _sanitize(value: Any, key: str | None = None) -> Any:
     if key is not None and key.lower().replace("-", "_") in _SECRET_KEYS:
@@ -480,6 +598,15 @@ class Database:
                 connection.execute(
                     "INSERT INTO schema_versions(version, applied_at_utc, description) VALUES (?, ?, ?)",
                     (2, utc, "alert message and notification delivery state"),
+                )
+                current = 2
+            if current < 3:
+                for statement in _MIGRATION_3_STATEMENTS:
+                    connection.execute(statement)
+                utc, _ = self._timestamps()
+                connection.execute(
+                    "INSERT INTO schema_versions(version, applied_at_utc, description) VALUES (?, ?, ?)",
+                    (3, utc, "persistent systemd execution journal history"),
                 )
         if str(self.path) != ":memory:":
             try:

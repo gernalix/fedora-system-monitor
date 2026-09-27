@@ -40,6 +40,9 @@ class DatabaseTests(unittest.TestCase):
                 "dedup_state",
                 "metric_aggregates",
                 "summaries",
+                "systemd_executions",
+                "systemd_execution_entries",
+                "systemd_journal_checkpoints",
             }.issubset(tables)
         )
         self.assertTrue(self.db.check_indexes()["ok"])
@@ -52,7 +55,7 @@ class DatabaseTests(unittest.TestCase):
         try:
             for column in ("last_notification_error", "last_notification_status", "message"):
                 connection.execute(f"ALTER TABLE alerts DROP COLUMN {column}")
-            connection.execute("DELETE FROM schema_versions WHERE version = 2")
+            connection.execute("DELETE FROM schema_versions WHERE version >= 2")
             connection.commit()
         finally:
             connection.close()

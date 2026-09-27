@@ -1,5 +1,4 @@
 """CLI composition root for Fedora System Monitor."""
-
 from __future__ import annotations
 
 import argparse
@@ -11,9 +10,7 @@ from fedora_system_monitor.capsules.command import LockUnavailable
 from fedora_system_monitor.capsules.config import ConfigError, redact_text
 from fedora_system_monitor.capsules.database import StorageError
 from fedora_system_monitor.capsules.runtime.coordinator import (
-    PROJECT_CONFIG,
-    SYSTEM_CONFIG,
-    execute,
+    PROJECT_CONFIG, SYSTEM_CONFIG, add_cli_subcommand, execute,
 )
 def _default_config_path() -> Path:
     return SYSTEM_CONFIG if SYSTEM_CONFIG.exists() else PROJECT_CONFIG
@@ -50,6 +47,7 @@ def build_parser() -> argparse.ArgumentParser:
     context_incident.add_argument("--activitywatch-data", type=Path)
     context_latest = context_sub.add_parser("latest", help="show the latest indexed incident identity")
     context_latest.add_argument("--type", default="")
+    add_cli_subcommand(subparsers)
     prometheus = subparsers.add_parser("prometheus")
     prometheus.add_argument("--listen", default="127.0.0.1")
     prometheus.add_argument("--port", type=int, default=9109)

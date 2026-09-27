@@ -1,0 +1,1 @@
+{"__CURSOR":"user-cursor-1","__REALTIME_TIMESTAMP":"1770002000000000","__MONOTONIC_TIMESTAMP":"200000","_BOOT_ID":"boot-user","_HOSTNAME":"fixture-host","_SYSTEMD_INVOCATION_ID":"user-invocation-a","_SYSTEMD_USER_UNIT":"user-sync.service","_PID":"610","PRIORITY":"6","MESSAGE":"User sync finished","RESULT":"success","EXIT_STATUS":"0"}
