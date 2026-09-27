@@ -4,4 +4,4 @@ ACTION=="change", SUBSYSTEM=="block", TAG+="systemd", ENV{SYSTEMD_WANTS}+="fedor
 ACTION=="remove", SUBSYSTEM=="block", RUN+="/usr/bin/systemctl --no-block start fedora-system-monitor-device-remove@%k.service"
 ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", TAG+="systemd", ENV{SYSTEMD_WANTS}+="fedora-system-monitor-device-add@%k.service"
 ACTION=="remove", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", RUN+="/usr/bin/systemctl --no-block start fedora-system-monitor-device-remove@%k.service"
-
+ACTION=="add", SUBSYSTEM=="block", ENV{DEVTYPE}=="disk", ENV{ID_SERIAL}=="Samsung_PSSD_T7_Shield_*", TAG+="systemd", ENV{SYSTEMD_WANTS}+="fedora-system-monitor-smartd-t7-reload.service"

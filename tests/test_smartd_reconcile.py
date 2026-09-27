@@ -16,7 +16,7 @@ SPEC.loader.exec_module(reconcile_smartd)
 
 
 class SmartdReconcileTests(unittest.TestCase):
-    def test_t7_by_id_is_ignored_before_devicescan_and_reconcile_is_idempotent(self) -> None:
+    def test_t7_by_id_is_monitored_before_devicescan_and_reconcile_is_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             config = root / "smartd.conf"
@@ -41,7 +41,7 @@ class SmartdReconcileTests(unittest.TestCase):
             )
             text = config.read_text(encoding="utf-8")
             self.assertTrue(first["changed"])
-            self.assertIn(f"{link} -d ignore", text)
+            self.assertIn(f"{link} {reconcile_smartd.T7_DIRECTIVES}", text)
             self.assertLess(text.index(str(link)), text.index("DEVICESCAN"))
             self.assertTrue(Path(first["backup"]).exists())
 
@@ -54,7 +54,7 @@ class SmartdReconcileTests(unittest.TestCase):
             self.assertFalse(second["changed"])
             self.assertEqual(text, config.read_text(encoding="utf-8"))
 
-    def test_managed_ignore_is_retained_when_drive_is_temporarily_absent(self) -> None:
+    def test_managed_ignore_is_migrated_and_retained_when_drive_is_absent(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             config = root / "smartd.conf"
@@ -76,8 +76,30 @@ class SmartdReconcileTests(unittest.TestCase):
                 by_id,
                 reconcile_smartd.DEFAULT_GLOBS,
             )
-            self.assertFalse(result["changed"])
-            self.assertIn(f"{stored} -d ignore", config.read_text(encoding="utf-8"))
+            self.assertTrue(result["changed"])
+            self.assertIn(
+                f"{stored} {reconcile_smartd.T7_DIRECTIVES}",
+                config.read_text(encoding="utf-8"),
+            )
+            self.assertNotIn("-d ignore", config.read_text(encoding="utf-8"))
+
+    def test_t7_first_seen_after_install_is_added_on_reconnect(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            config = root / "smartd.conf"
+            by_id = root / "by-id"
+            by_id.mkdir()
+            config.write_text("DEVICESCAN -H\n", encoding="utf-8")
+            args = (config, root / "backups", by_id, reconcile_smartd.DEFAULT_GLOBS)
+
+            self.assertFalse(reconcile_smartd.apply(*args)["changed"])
+            disk = root / "new-device"
+            disk.touch()
+            link = by_id / "usb-Samsung_PSSD_T7_Shield_SERIAL-0:0"
+            link.symlink_to(disk)
+
+            self.assertTrue(reconcile_smartd.apply(*args)["changed"])
+            self.assertIn(f"{link} {reconcile_smartd.T7_DIRECTIVES}", config.read_text())
 
 
 if __name__ == "__main__":

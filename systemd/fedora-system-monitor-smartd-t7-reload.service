@@ -1,0 +1,9 @@
+[Unit]
+Description=Rebind smartd to a reconnected Samsung T7 Shield
+After=smartd.service
+ConditionPathExistsGlob=/dev/disk/by-id/usb-Samsung_PSSD_T7_Shield_*-0:0
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/libexec/fedora-system-monitor/scripts/reconcile_smartd.py --backup-dir /var/lib/fedora-system-monitor/install-backups
+ExecStart=/usr/bin/systemctl reload smartd.service
