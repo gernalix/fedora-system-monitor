@@ -1,0 +1,119 @@
+schema_version: c2.project-capsule.v1
+identity:
+  project_id: 15
+  slug: fedora-system-monitor
+  repository_id: R0015
+scope:
+  purpose: Monitor a Fedora host through bounded collectors, local SQLite history, event hooks, and alert integrations.
+  boundaries:
+    - MegaVault owns canonical cross-project identity and service inventory.
+    - C2 owns work-item lifecycle and adoption receipts.
+    - Shared Telegram transport and Uptime Kuma endpoints are external services.
+repository:
+  canonical_workdir: /home/daniele/projects/fedora-system-monitor
+  branch_policy: Canonical repository follows origin/main; make changes in isolated repo-task worktrees and integrate through the guarded single-writer lane.
+architecture:
+  summary: A Python CLI coordinates isolated collector scopes and read-only reporting over SQLite; systemd timers and native event sources drive collection and alert transitions.
+  entrypoints:
+    - src/fedora_system_monitor/app.py
+    - scripts/install.sh
+  important_paths:
+    - src/fedora_system_monitor/capsules
+    - config
+    - systemd
+    - hooks
+    - udev
+    - tests
+    - docs/ai
+    - docs/human
+dependencies:
+  - name: Python standard library
+    purpose: Runtime, SQLite persistence, CLI, and tests.
+  - name: systemd and native Fedora event interfaces
+    purpose: Schedule collectors and deliver host events.
+  - name: telegram_notify
+    purpose: Shared Telegram message transport; this repository does not implement Telegram HTTP calls.
+  - name: Uptime Kuma Push Monitor
+    purpose: Receive category health transitions and bounded heartbeats.
+data:
+  schema: Local SQLite schema v2 with WAL, UTC and Europe/Copenhagen timestamps, bounded event and metric retention, and transactional writes; canonical file is /var/lib/fedora-system-monitor/monitor.sqlite3.
+  migrations: Schema migration and initialization are implemented in src/fedora_system_monitor/capsules/database; do not edit or replace the live database during source validation.
+runtime:
+  services:
+    - fedora-system-monitor-lifecycle.service (enabled; active/exited)
+    - fedora-system-monitor-collect@.service (static template)
+    - fedora-system-monitor-prometheus.service (custom daemon; Restart=always)
+    - fedora-system-monitor-events.service
+  timers:
+    - fedora-system-monitor-fast.timer (enabled; active/waiting)
+    - fedora-system-monitor-hourly.timer (enabled; active/waiting)
+    - fedora-system-monitor-daily.timer (enabled; active/waiting)
+    - fedora-system-monitor-weekly.timer (enabled; active/waiting)
+    - fedora-system-monitor-context-index.timer (active/waiting)
+  containers: []
+devices:
+  - Fedora host sensors and storage are inspected by bounded collectors; never identify durable disks by /dev/sdX.
+commands:
+  setup:
+    not_applicable: Runtime dependencies and systemd integration are provisioned by the separately gated host installer.
+  build:
+    not_applicable: Python source is packaged directly; there is no compiled build artifact.
+  test_targeted:
+    argv: [python3, -B, -m, unittest, discover, -s, tests, -p, test_architecture.py, -q]
+    cwd: .
+  test_full:
+    argv: [python3, -B, -m, unittest, discover, -s, tests, -q]
+    cwd: .
+  lint:
+    argv: [git, diff, --check]
+    cwd: .
+  deploy_install:
+    argv: [sudo, ./scripts/install.sh]
+    cwd: .
+  smoke:
+    not_applicable: Live system smoke tests can query hardware, services, databases, and notification endpoints; run only as a separately authorized host operation.
+  verify:
+    fast:
+      argv: [python3, /home/daniele/projects/codex-roadmap/tools/project_capsule.py, --repo, ., --mode, FAST]
+      cwd: .
+    full:
+      argv: [python3, /home/daniele/projects/codex-roadmap/tools/project_capsule.py, --repo, ., --mode, FULL]
+      cwd: .
+safety:
+  invariants:
+    - Never commit credentials, endpoint values, live databases, backups, or logs.
+    - Notification tests use mocks; the shared Telegram transport remains the only Telegram implementation.
+    - Minute collection must not run SMART scans or wake standby rotational drives.
+    - Store no traffic content, arbitrary process arguments, visited URLs, or personal file content.
+  risky_operations:
+    - scripts/install.sh changes installed runtime and systemd units; use only for an explicitly authorized deployment.
+    - scripts/uninstall.sh --purge-data deletes configuration and monitoring data and requires explicit destructive intent.
+    - Live collectors can inspect hardware and send notifications; do not use them for source validation.
+  recovery:
+    - The installer creates an online SQLite backup and retains install backups before runtime replacement.
+    - Uninstall without --purge-data preserves configuration and monitoring data.
+acceptance:
+  - Capsule FAST and FULL validators pass against the reviewed integrated repository head.
+  - Targeted architecture tests pass without accessing installed services or the live database.
+references:
+  megavault: /home/daniele/MegaVault/megavault.sqlite
+  c2: /home/daniele/projects/codex-roadmap/roadmap.sqlite
+freshness:
+  reviewed_commit: 2cb57c1d883a4f586b6d7a3ff2a81c785a026e29
+  watch_paths:
+    - src
+    - tests
+    - systemd
+    - udev
+    - hooks
+    - config
+    - pyproject.toml
+    - scripts
+artifacts:
+  agents: AGENTS.md
+validation_hooks: []
+change_verification:
+  - paths: [src/**, tests/**, systemd/**, udev/**, hooks/**, config/**, pyproject.toml, scripts/**]
+    commands: [test_targeted]
+  - paths: [AGENTS.md, project-capsule.yaml]
+    commands: [test_targeted]
