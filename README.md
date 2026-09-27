@@ -17,7 +17,17 @@ fedora-system-monitor events --since-hours 24
 sudo fedora-system-monitor collect five_minute
 fedora-system-monitor context latest --type graphics
 fedora-system-monitor context incident <incident-id>
+scripts/systemd-journal-collector.sh --recent 6h --output systemd-journal.jsonl
 ```
+
+`scripts/systemd-journal-collector.sh` is a read-only JSONL export for custom
+systemd units only. It discovers `/etc/systemd/system`,
+`~/.config/systemd/user`, and (when readable) the canonical MegaVault
+`services`/periodic-service registry; it never scans vendor unit directories or
+unit environment files. Use `--unit name.service`, `--since`/`--until` or
+`--recent 6h`, `--limit 100`, and `--output file.jsonl` to bound an export.
+Each row identifies its system/user journal scope, invocation ID/group, and
+deterministic timer target when applicable.
 
 La configurazione operativa è `/etc/fedora-system-monitor/config.toml`.
 Per i servizi systemd il percorso preferito per i segreti è
