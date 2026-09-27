@@ -163,7 +163,7 @@ class NotificationTests(unittest.TestCase):
             helper = SimpleNamespace(
                 load_config_files=mock.Mock(side_effect=capture_config_path),
                 validate_config=mock.Mock(),
-                send_message=mock.Mock(),
+                send_alert=mock.Mock(return_value="sent"),
             )
             with patch.dict(
                 os.environ,
@@ -194,12 +194,13 @@ class NotificationTests(unittest.TestCase):
             helper = SimpleNamespace(
                 load_config_files=mock.Mock(),
                 validate_config=mock.Mock(),
-                send_message=mock.Mock(),
+                send_alert=mock.Mock(return_value="sent"),
             )
             with patch.dict(sys.modules, {"telegram_notify": helper}):
                 result = send_telegram_message(config, "test")
             self.assertTrue(result.delivered)
-            helper.send_message.assert_called_once_with("Fedora System Monitor", "test")
+            helper.send_alert.assert_called_once()
+            self.assertEqual(helper.send_alert.call_args.kwargs["severity"], "info")
             self.assertNotIn(token, repr(result))
             self.assertNotIn(chat_id, repr(result))
 
@@ -217,7 +218,7 @@ class NotificationTests(unittest.TestCase):
         notify_filesystem_free_changes([_filesystem_metric("fsuuid:one", "/data", 10 * gib - 1100 * 1024**2)], config, db)
         notify_filesystem_free_changes([_filesystem_metric("fsuuid:one", "/data", 10 * gib - 1100 * 1024**2)], config, db)
         self.assertEqual(sender.call_count, 1)
-        self.assertIn("variazione -1.07 GiB", sender.call_args.args[1])
+        self.assertIn("diminuito di 1.07 GiB", sender.call_args.args[1])
         self.assertEqual(config["notifications"]["filesystem_free_change_gib"], 1.0)
 
     @patch(
@@ -240,8 +241,8 @@ class NotificationTests(unittest.TestCase):
         notify_filesystem_free_changes(changed, config, db)
         self.assertEqual(sender.call_count, 2)
         messages = [call.args[1] for call in sender.call_args_list]
-        self.assertTrue(any("variazione +2.00 GiB" in message for message in messages))
-        self.assertTrue(any("variazione -2.00 GiB" in message for message in messages))
+        self.assertTrue(any("aumentato di 2.00 GiB" in message for message in messages))
+        self.assertTrue(any("diminuito di 2.00 GiB" in message for message in messages))
 
     @patch(
         "fedora_system_monitor.capsules.notifications.send_telegram_message",
@@ -255,7 +256,7 @@ class NotificationTests(unittest.TestCase):
         notify_filesystem_free_changes([], config, db)
         notify_filesystem_free_changes([_filesystem_metric("fsuuid:portable", "/media/new", 8 * gib)], config, db)
         self.assertEqual(sender.call_count, 1)
-        self.assertIn("💾 /media/new:", sender.call_args.args[1])
+        self.assertIn("su /media/new è diminuito", sender.call_args.args[1])
 
     @patch(
         "fedora_system_monitor.capsules.notifications.send_telegram_message",
