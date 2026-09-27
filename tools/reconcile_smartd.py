@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Keep fragile USB-NVMe bridges out of smartd's unattended poll loop."""
+"""Monitor the T7 through its stable by-id path and ASMedia bridge type."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ import tempfile
 BEGIN = "# BEGIN fedora-system-monitor managed SMART exclusions"
 END = "# END fedora-system-monitor managed SMART exclusions"
 DEFAULT_GLOBS = ("usb-Samsung_PSSD_T7_Shield_*-0:0",)
+T7_DIRECTIVES = "-d sntasmedia -d removable -H -m root -M exec /usr/libexec/smartmontools/smartdnotify"
 
 
 def discover_paths(by_id_root: Path, patterns: tuple[str, ...]) -> list[str]:
@@ -40,8 +41,8 @@ def _managed_paths(text: str) -> set[str]:
         if stripped == END:
             inside = False
             continue
-        if inside and stripped.endswith(" -d ignore"):
-            path = stripped[: -len(" -d ignore")].strip()
+        if inside:
+            path = stripped.split(" -d ", 1)[0].strip()
             if Path(path).is_absolute():
                 paths.add(path)
     return paths
@@ -67,7 +68,7 @@ def reconcile_text(text: str, discovered: list[str]) -> str:
     if not retained:
         return "\n".join(clean).rstrip() + "\n"
 
-    block = [BEGIN, *(f"{path} -d ignore" for path in sorted(retained)), END]
+    block = [BEGIN, *(f"{path} {T7_DIRECTIVES}" for path in sorted(retained)), END]
     insertion = next(
         (index for index, line in enumerate(clean) if line.strip().startswith("DEVICESCAN")),
         len(clean),

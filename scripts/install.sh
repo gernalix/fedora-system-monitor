@@ -53,6 +53,7 @@ while IFS= read -r -d '' source; do
 done < <(find "$ROOT/src/fedora_system_monitor" -type f -name '*.py' -print0)
 install -d -m 0755 "$STAGE/scripts"
 install -m 0755 -o root -g root "$ROOT/scripts/systemd-journal-collector.sh" "$STAGE/scripts/systemd-journal-collector.sh"
+install -m 0644 -o root -g root "$ROOT/tools/reconcile_smartd.py" "$STAGE/scripts/reconcile_smartd.py"
 /usr/bin/python3 -m compileall -q "$STAGE/fedora_system_monitor"
 /usr/bin/python3 -c 'import telegram_notify'
 chown -R root:root "$STAGE"
