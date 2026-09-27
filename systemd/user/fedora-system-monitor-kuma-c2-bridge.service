@@ -1,0 +1,20 @@
+[Unit]
+Description=Capture Uptime Kuma DOWN transitions in the C2 Inbox
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/usr/local/libexec/fedora-system-monitor/fedora_system_monitor/capsules/kuma_c2_bridge.py
+
+[Service]
+Type=oneshot
+Environment=PYTHONPATH=/usr/local/libexec/fedora-system-monitor
+Environment=KUMA_C2_BRIDGE_STATE=%h/.local/state/fedora-system-monitor-kuma-c2-bridge/state.sqlite3
+ExecStart=/usr/bin/python3 -m fedora_system_monitor.capsules.kuma_c2_bridge
+TimeoutStartSec=60
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/state/fedora-system-monitor-kuma-c2-bridge
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
