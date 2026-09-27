@@ -22,7 +22,7 @@ from fedora_system_monitor.capsules.runtime.coordinator import (
 )
 from fedora_system_monitor.capsules.alerting import AlertSignal
 from fedora_system_monitor.capsules.command import CommandResult
-from fedora_system_monitor.capsules.database import Database
+from fedora_system_monitor.capsules.database import Database, SCHEMA_VERSION
 from fedora_system_monitor.capsules.notifications import NotificationResult
 
 
@@ -74,7 +74,7 @@ class AppTests(unittest.TestCase):
             with redirect_stdout(output):
                 result = main(["--config", str(self.config), "--database", str(database), "status", "--json"])
             self.assertEqual(result, 0)
-            self.assertEqual(json.loads(output.getvalue())["schema_version"], 3)
+            self.assertEqual(json.loads(output.getvalue())["schema_version"], SCHEMA_VERSION)
 
     def test_collect_worker_persists_real_minute_metrics(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

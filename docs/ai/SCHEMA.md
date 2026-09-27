@@ -1,4 +1,4 @@
-META.schema_version=3
+META.schema_version=4
 META.engine=SQLite
 META.path=/var/lib/fedora-system-monitor/monitor.sqlite3
 DB.pragma=journal_mode WAL
@@ -27,6 +27,8 @@ TABLE.systemd_journal_checkpoints=Independent cursor, boot, recovery state, and 
 TABLE.systemd_journal_imports=Durable audit of one-shot import and recovery attempts
 VIEW.systemd_executions_summary=Datasette-ready execution status, duration, error, and latest-message readback
 VIEW.systemd_entries=Datasette-ready entry history with execution foreign key and service/timer identity
+VIEW.current_alerts=Up to 100 active alerts, selected by severity and latest observation; retains alert keys, details_json, and UTC/local timestamps
+VIEW.recent_events=At most 500 latest events; retains dedup keys, details_json, and UTC/local timestamps
 INDEX.metrics=timestamp,name plus timestamp,and cadence plus timestamp
 INDEX.events=timestamp,name plus timestamp,and device plus timestamp
 INDEX.alerts=status plus severity,key plus timestamp,and unique active alert key
