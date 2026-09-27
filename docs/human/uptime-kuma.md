@@ -66,6 +66,21 @@ Gli URL sono in `/home/daniele/.config/codex/secrets/fedora_system_monitor_uptim
 con modo `0600`. Non vanno mai stampati, copiati nei documenti o
 committati. Il runtime non usa cookie o credenziali Kuma.
 
+### Capture automatico delle transizioni DOWN in C2
+
+Il bridge locale legge in sola lettura i nuovi record `heartbeat` dal DB Kuma
+Oracle usando l'helper SSH canonico. Non usa la UI, cookie o API di
+amministrazione. Ogni record DOWN di un monitor attivo apre un solo incident
+nella C2 Inbox tramite `codex-roadmap/tools/c2_issue_capture.py`, conservando
+ID/nome monitor, timestamp e `heartbeat.msg`. Una chiave idempotente basata sul
+record Kuma rende sicuro il retry dopo errori o riavvii.
+
+Lo stato e il cursore dei record sono conservati in
+`~/.local/state/fedora-system-monitor-kuma-c2-bridge/state.sqlite3`. I DOWN
+ripetuti restano nello stesso incidente; solo un heartbeat UP chiude l'outage,
+dopo il quale un nuovo DOWN apre una nuova voce. PENDING non chiude un outage
+ancora attivo. Il timer utente controlla i nuovi heartbeat ogni 30 secondi.
+
 L'endpoint corrente è `https://kuma.danielegalati.com`. Cloudflare Tunnel porta
 il traffico al reverse proxy Caddy sulla VM Oracle; Kuma e il precedente proxy
 Nginx restano esposti solo su loopback. HTTP pubblico viene reindirizzato a

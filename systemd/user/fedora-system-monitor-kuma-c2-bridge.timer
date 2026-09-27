@@ -1,0 +1,12 @@
+[Unit]
+Description=Poll current Uptime Kuma heartbeat events for C2 Inbox capture
+
+[Timer]
+OnBootSec=15s
+OnUnitActiveSec=30s
+AccuracySec=3s
+Unit=fedora-system-monitor-kuma-c2-bridge.service
+
+[Install]
+WantedBy=timers.target
+
