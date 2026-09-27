@@ -130,6 +130,13 @@ class SystemdJournalCollectorTests(unittest.TestCase):
         self.assertEqual(result.stdout, "")
         self.assertFalse(self.calls.exists())
 
+    def test_discovery_mode_reuses_unit_and_timer_registry_without_journal(self) -> None:
+        self.install("backup.timer", "fixture-backup.service")
+        rows = [json.loads(line) for line in self.invoke("--discover").stdout.splitlines()]
+        timer = next(row for row in rows if row["unit"] == "backup.timer")
+        self.assertEqual(timer, {"unit": "backup.timer", "scope": "system", "timer_target": "fixture-backup.service"})
+        self.assertFalse(self.calls.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

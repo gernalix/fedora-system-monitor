@@ -12,6 +12,7 @@ LIMIT=200
 SINCE=""
 UNTIL=""
 OUTPUT="-"
+DISCOVER_ONLY=0
 declare -a REQUESTED_UNITS=()
 declare -A UNIT_SCOPE=()
 declare -A TIMER_TARGET=()
@@ -31,6 +32,7 @@ Options:
   --limit N         entries per unit and journal; 1..5000 (default: 200)
   --output FILE     JSONL destination, or - for stdout (default)
   --registry PATH   MegaVault SQLite registry path (optional when absent)
+  --discover        emit discovered unit/scope/timer mappings as JSONL
   --help            show this help
 EOF
 }
@@ -153,17 +155,32 @@ while (($#)); do
         --limit) (($# >= 2)) || fail '--limit requires a value'; LIMIT=$2; shift 2 ;;
         --output) (($# >= 2)) || fail '--output requires a value'; OUTPUT=$2; shift 2 ;;
         --registry) (($# >= 2)) || fail '--registry requires a value'; REGISTRY_PATH=$2; shift 2 ;;
+        --discover) DISCOVER_ONLY=1; shift ;;
         --help) usage; exit 0 ;;
         *) fail "unknown option: $1" ;;
     esac
 done
 [[ $LIMIT =~ ^[0-9]+$ ]] && ((LIMIT >= 1 && LIMIT <= 5000)) || fail '--limit must be between 1 and 5000'
-command -v "$JOURNALCTL_BIN" >/dev/null 2>&1 || fail 'journalctl is required'
-command -v "$JQ_BIN" >/dev/null 2>&1 || fail 'jq is required'
-
 discover_directory "$SYSTEM_UNIT_DIR" system
 discover_directory "$USER_UNIT_DIR" user
 discover_registry
+
+if ((DISCOVER_ONLY)); then
+    for unit in "${!UNIT_SCOPE[@]}"; do
+        if selected "$unit"; then
+            printf '{"unit":"%s","scope":"%s","timer_target":' "$unit" "${UNIT_SCOPE[$unit]}"
+            if [[ -n ${TIMER_TARGET[$unit]:-} ]]; then
+                printf '"%s"}\n' "${TIMER_TARGET[$unit]}"
+            else
+                printf 'null}\n'
+            fi
+        fi
+    done | sort
+    exit 0
+fi
+
+command -v "$JOURNALCTL_BIN" >/dev/null 2>&1 || fail 'journalctl is required'
+command -v "$JQ_BIN" >/dev/null 2>&1 || fail 'jq is required'
 
 if [[ $OUTPUT == - ]]; then
     for unit in "${!UNIT_SCOPE[@]}"; do

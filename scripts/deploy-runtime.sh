@@ -37,6 +37,8 @@ while IFS= read -r -d '' source; do
     install -d -m 0755 "$STAGE/fedora_system_monitor/$(dirname "$relative")"
     install -m 0644 -o root -g root "$source" "$STAGE/fedora_system_monitor/$relative"
 done < <(find "$ROOT/src/fedora_system_monitor" -type f -name '*.py' -print0)
+install -d -m 0755 "$STAGE/scripts"
+install -m 0755 -o root -g root "$ROOT/scripts/systemd-journal-collector.sh" "$STAGE/scripts/systemd-journal-collector.sh"
 printf '%s\n' "$REVISION" > "$STAGE/.source-revision"
 
 /usr/bin/python3 -m compileall -q "$STAGE/fedora_system_monitor"

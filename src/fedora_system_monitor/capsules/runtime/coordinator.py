@@ -74,6 +74,13 @@ from fedora_system_monitor.capsules.reporting import (
     trends_report,
 )
 from fedora_system_monitor.capsules.smart_action import maybe_notify_smart_alert, run_cli as run_smart_alert_cli, smart_alert_from_event
+from fedora_system_monitor.capsules.systemd_history import (
+    DEFAULT_COLLECTOR as SYSTEMD_HISTORY_COLLECTOR,
+    DEFAULT_REGISTRY as SYSTEMD_HISTORY_REGISTRY,
+    add_cli_subcommand,
+    history_status,
+    import_history,
+)
 
 
 LOGGER = logging.getLogger("fedora-system-monitor")
@@ -1310,6 +1317,8 @@ def execute(args: argparse.Namespace) -> int:
     }
     if args.command == "alerts" and not args.resolve:
         read_only_commands.add("alerts")
+    if args.command == "systemd-history" and args.systemd_history_command == "status":
+        read_only_commands.add("systemd-history")
     database_required = args.command not in {"config-check", "kuma-configure", "kuma-runtime", *read_only_commands}
     if args.command == "smart-alert" and (args.action in {"details", "disks"} or args.no_open):
         database_required = False
@@ -1333,6 +1342,10 @@ def execute(args: argparse.Namespace) -> int:
     if args.command == "context":
         _print(_context_command(args, config), args)
         return 0
+    if args.command == "systemd-history" and args.systemd_history_command == "status":
+        output = history_status(Path(config["monitor"]["database_path"]))
+        _print(output, args)
+        return 0 if output["ok"] else 1
     if args.command == "test":
         output = _self_test(config, system=args.system)
         _print(output, args)
@@ -1366,6 +1379,27 @@ def execute(args: argparse.Namespace) -> int:
     try:
         if args.command == "db-check":
             output = db.db_check()
+        elif args.command == "systemd-history":
+            if args.initial_lookback_hours < 1 or args.fallback_lookback_hours < 1:
+                raise ValueError("systemd history lookback hours must be positive")
+            environment = os.environ.copy()
+            if args.registry:
+                environment["MEGAVAULT_REGISTRY_PATH"] = str(args.registry)
+            if args.system_unit_dir:
+                environment["SYSTEM_UNIT_DIR"] = str(args.system_unit_dir)
+            if args.user_unit_dir:
+                environment["USER_UNIT_DIR"] = str(args.user_unit_dir)
+            output = import_history(
+                db,
+                journalctl=args.journalctl,
+                collector=args.collector or SYSTEMD_HISTORY_COLLECTOR,
+                registry=args.registry or SYSTEMD_HISTORY_REGISTRY,
+                system_unit_dir=args.system_unit_dir,
+                user_unit_dir=args.user_unit_dir,
+                initial_lookback_hours=args.initial_lookback_hours,
+                fallback_lookback_hours=args.fallback_lookback_hours,
+                environment=environment,
+            )
         elif args.command == "collect":
             output = _collect_command(args, config, db)
         elif args.command == "collect-worker":

@@ -18,6 +18,8 @@ sudo fedora-system-monitor collect five_minute
 fedora-system-monitor context latest --type graphics
 fedora-system-monitor context incident <incident-id>
 scripts/systemd-journal-collector.sh --recent 6h --output systemd-journal.jsonl
+sudo fedora-system-monitor systemd-history import
+fedora-system-monitor systemd-history status
 ```
 
 `scripts/systemd-journal-collector.sh` is a read-only JSONL export for custom
@@ -28,6 +30,14 @@ unit environment files. Use `--unit name.service`, `--since`/`--until` or
 `--recent 6h`, `--limit 100`, and `--output file.jsonl` to bound an export.
 Each row identifies its system/user journal scope, invocation ID/group, and
 deterministic timer target when applicable.
+
+`systemd-history import` is the one-shot persistent importer. It uses the same
+custom-unit discovery, reads system and user journals as structured JSON, and
+writes to the configured monitor database (normally
+`/var/lib/fedora-system-monitor/monitor.sqlite3`). Checkpoints are independent
+per host and journal scope. First import is bounded to 24 hours; an invalid or
+rotated cursor is recorded and retried from a bounded 168-hour fallback. No
+periodic unit is installed by this feature.
 
 La configurazione operativa è `/etc/fedora-system-monitor/config.toml`.
 Per i servizi systemd il percorso preferito per i segreti è

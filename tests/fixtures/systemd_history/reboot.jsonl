@@ -1,0 +1,1 @@
+{"__CURSOR":"cursor-boot-b","__REALTIME_TIMESTAMP":"1770001000000000","__MONOTONIC_TIMESTAMP":"100000","_BOOT_ID":"boot-b","_HOSTNAME":"fixture-host","_SYSTEMD_INVOCATION_ID":"invocation-c","_SYSTEMD_UNIT":"backup.service","_PID":"510","PRIORITY":"6","MESSAGE":"Started after reboot","RESULT":"success","EXIT_STATUS":"0"}
