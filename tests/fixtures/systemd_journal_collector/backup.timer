@@ -1,0 +1,6 @@
+[Unit]
+Description=Fixture backup timer
+
+[Timer]
+OnCalendar=daily
+Unit=fixture-backup.service
