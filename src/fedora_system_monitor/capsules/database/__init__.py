@@ -25,7 +25,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from ..config import redact_text
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 DEFAULT_TIMEZONE = "Europe/Copenhagen"
 DEFAULT_METRIC_RETENTION_DAYS = {60: 14, 300: 60, 900: 180, 3600: 365, 86400: 3650}
 
@@ -450,6 +450,44 @@ _MIGRATION_3_STATEMENTS = (
     """,
 )
 
+_MIGRATION_4_STATEMENTS = (
+    """
+    CREATE VIEW IF NOT EXISTS current_alerts AS
+    SELECT id, alert_key, timestamp_utc, timestamp_local, hostname, category,
+        name, severity, source, device_id, details_json, outcome, error_message,
+        status, first_seen_utc, last_seen_utc, recovered_at_utc,
+        occurrence_count, threshold_value, hysteresis, direction,
+        last_notified_utc, message, last_notification_status,
+        last_notification_error,
+        COALESCE(message, category || ': ' || name) AS display_summary
+    FROM alerts
+    WHERE status = 'active'
+      AND id IN (
+          SELECT id FROM alerts
+          WHERE status = 'active'
+          ORDER BY CASE severity
+              WHEN 'emergency' THEN 4 WHEN 'critical' THEN 3
+              WHEN 'warning' THEN 2 WHEN 'info' THEN 1 ELSE 0 END DESC,
+              last_seen_utc DESC, id DESC
+          LIMIT 100
+      )
+    """,
+    """
+    CREATE VIEW IF NOT EXISTS recent_events AS
+    SELECT id, timestamp_utc, timestamp_local, hostname, category, name,
+        value, unit, severity, source, device_id, details_json, outcome,
+        error_message, dedup_key, occurrence_count, first_seen_utc,
+        last_seen_utc, collector_run_id,
+        category || ': ' || name AS display_summary
+    FROM events
+    WHERE id IN (
+        SELECT id FROM events
+        ORDER BY timestamp_utc DESC, id DESC
+        LIMIT 500
+      )
+    """,
+)
+
 
 def _sanitize(value: Any, key: str | None = None) -> Any:
     if key is not None and key.lower().replace("-", "_") in _SECRET_KEYS:
@@ -607,6 +645,15 @@ class Database:
                 connection.execute(
                     "INSERT INTO schema_versions(version, applied_at_utc, description) VALUES (?, ?, ?)",
                     (3, utc, "persistent systemd execution journal history"),
+                )
+                current = 3
+            if current < 4:
+                for statement in _MIGRATION_4_STATEMENTS:
+                    connection.execute(statement)
+                utc, _ = self._timestamps()
+                connection.execute(
+                    "INSERT INTO schema_versions(version, applied_at_utc, description) VALUES (?, ?, ?)",
+                    (4, utc, "bounded Datasette current-alert and recent-event views"),
                 )
         if str(self.path) != ":memory:":
             try:

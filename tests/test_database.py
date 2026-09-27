@@ -53,6 +53,8 @@ class DatabaseTests(unittest.TestCase):
         legacy.close()
         connection = sqlite3.connect(legacy_path)
         try:
+            connection.execute("DROP VIEW IF EXISTS current_alerts")
+            connection.execute("DROP VIEW IF EXISTS recent_events")
             for column in ("last_notification_error", "last_notification_status", "message"):
                 connection.execute(f"ALTER TABLE alerts DROP COLUMN {column}")
             connection.execute("DELETE FROM schema_versions WHERE version >= 2")
@@ -68,6 +70,103 @@ class DatabaseTests(unittest.TestCase):
             )
         finally:
             migrated.close()
+
+    def test_schema_v3_migration_is_idempotent(self) -> None:
+        self.db.close()
+        connection = sqlite3.connect(self.database_path)
+        try:
+            connection.execute("DROP VIEW IF EXISTS current_alerts")
+            connection.execute("DROP VIEW IF EXISTS recent_events")
+            connection.execute("DELETE FROM schema_versions WHERE version = 4")
+            connection.commit()
+        finally:
+            connection.close()
+
+        migrated = Database(self.database_path)
+        try:
+            self.assertEqual(migrated.schema_version, 4)
+            self.assertEqual(migrated.initialize(), 4)
+            versions = migrated.query("SELECT version FROM schema_versions WHERE version = 4")
+            self.assertEqual(versions, [{"version": 4}])
+            views = {
+                row["name"]
+                for row in migrated.query("SELECT name FROM sqlite_master WHERE type = 'view'")
+            }
+            self.assertTrue({"current_alerts", "recent_events"}.issubset(views))
+            self.assertEqual(migrated.integrity_check(), ["ok"])
+            self.assertEqual(migrated.query("PRAGMA foreign_key_check"), [])
+        finally:
+            migrated.close()
+
+    def test_datasette_alert_and_event_views_are_bounded_and_preserve_raw_fields(self) -> None:
+        connection = sqlite3.connect(self.database_path)
+        try:
+            connection.executemany(
+                """INSERT INTO events
+                   (timestamp_utc, timestamp_local, hostname, category, name,
+                    severity, source, details_json, outcome, dedup_key,
+                    occurrence_count, first_seen_utc, last_seen_utc)
+                   VALUES (?, ?, 'test-host', 'storage', ?, 'warning', 'test',
+                           ?, 'ok', ?, 1, ?, ?)""",
+                [
+                    (
+                        f"2026-01-01T00:{index // 60:02d}:{index % 60:02d}Z",
+                        f"2026-01-01T01:{index // 60:02d}:{index % 60:02d}+01:00",
+                        f"event-{index}",
+                        json.dumps({"raw_index": index}),
+                        f"event-key-{index}",
+                        f"2026-01-01T00:{index // 60:02d}:{index % 60:02d}Z",
+                        f"2026-01-01T00:{index // 60:02d}:{index % 60:02d}Z",
+                    )
+                    for index in range(501)
+                ],
+            )
+            connection.executemany(
+                """INSERT INTO alerts
+                   (timestamp_utc, timestamp_local, hostname, category, name,
+                    severity, source, details_json, outcome, alert_key, status,
+                    first_seen_utc, last_seen_utc, message)
+                   VALUES (?, ?, 'test-host', 'disk', ?, ?, 'test', ?, 'open',
+                           ?, ?, ?, ?, ?)""",
+                [
+                    (
+                        f"2026-01-01T00:{index // 60:02d}:{index % 60:02d}Z",
+                        f"2026-01-01T01:{index // 60:02d}:{index % 60:02d}+01:00",
+                        f"alert-{index}",
+                        "critical" if index == 104 else "warning",
+                        json.dumps({"raw_index": index}),
+                        f"alert-key-{index}",
+                        "recovered" if index == 105 else "active",
+                        f"2026-01-01T00:{index // 60:02d}:{index % 60:02d}Z",
+                        f"2026-01-01T00:{index // 60:02d}:{index % 60:02d}Z",
+                        f"Readable alert {index}",
+                    )
+                    for index in range(106)
+                ],
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        current_alerts = self.db.query(
+            "SELECT * FROM current_alerts ORDER BY last_seen_utc DESC, id DESC"
+        )
+        recent_events = self.db.query(
+            "SELECT * FROM recent_events ORDER BY timestamp_utc DESC, id DESC"
+        )
+        self.assertEqual(len(current_alerts), 100)
+        self.assertEqual(len(recent_events), 500)
+        self.assertEqual(current_alerts[0]["alert_key"], "alert-key-104")
+        self.assertEqual(current_alerts[0]["details_json"], '{"raw_index": 104}')
+        self.assertEqual(current_alerts[0]["timestamp_local"], "2026-01-01T01:01:44+01:00")
+        self.assertEqual(current_alerts[0]["display_summary"], "Readable alert 104")
+        self.assertEqual(recent_events[-1]["dedup_key"], "event-key-1")
+        self.assertEqual(recent_events[-1]["details_json"], '{"raw_index": 1}')
+        self.assertEqual(recent_events[-1]["timestamp_utc"], "2026-01-01T00:00:01Z")
+        self.assertEqual(recent_events[-1]["timestamp_local"], "2026-01-01T01:00:01+01:00")
+        self.assertEqual(recent_events[-1]["display_summary"], "storage: event-1")
+        self.assertEqual(self.db.integrity_check(), ["ok"])
+        self.assertEqual(self.db.query("PRAGMA foreign_key_check"), [])
 
     def test_metric_batch_is_transactional(self) -> None:
         with self.assertRaises(StorageError):
