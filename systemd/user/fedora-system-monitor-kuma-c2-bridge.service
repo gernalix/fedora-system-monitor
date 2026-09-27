@@ -12,9 +12,8 @@ ExecStart=/usr/bin/python3 -m fedora_system_monitor.capsules.kuma_c2_bridge
 TimeoutStartSec=60
 UMask=0077
 NoNewPrivileges=yes
-PrivateTmp=yes
-ProtectSystem=strict
-ProtectHome=read-only
-ReadWritePaths=%h/.local/state/fedora-system-monitor-kuma-c2-bridge
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 
+# Namespace based filesystem isolation makes OpenSSH reject Fedora's
+# systemd-ssh-proxy config symlink. The bridge runs as the unprivileged user,
+# writes only its private state directory, and keeps network families bounded.
