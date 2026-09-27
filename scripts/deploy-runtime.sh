@@ -48,6 +48,7 @@ PYTHONPATH="$STAGE" /usr/bin/python3 -m fedora_system_monitor db-check >/dev/nul
 chown -R root:root "$STAGE"
 find "$STAGE" -type d -exec chmod 0755 '{}' +
 find "$STAGE" -type f -exec chmod 0644 '{}' +
+chmod 0755 "$STAGE/scripts/systemd-journal-collector.sh"
 if find "$STAGE" \( ! -user root -o -perm /022 \) -print -quit | grep -q .; then
     printf 'Unsafe ownership or mode in staged runtime.\n' >&2
     exit 1

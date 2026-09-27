@@ -58,6 +58,7 @@ install -m 0755 -o root -g root "$ROOT/scripts/systemd-journal-collector.sh" "$S
 chown -R root:root "$STAGE"
 find "$STAGE" -type d -exec chmod 0755 '{}' +
 find "$STAGE" -type f -exec chmod 0644 '{}' +
+chmod 0755 "$STAGE/scripts/systemd-journal-collector.sh"
 if find "$STAGE" \( ! -user root -o -perm /022 \) -print -quit | grep -q .; then
     printf 'Unsafe ownership or mode in staged runtime.\n' >&2
     exit 1
