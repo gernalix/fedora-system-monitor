@@ -43,21 +43,22 @@ class KumaC2BridgeTests(unittest.TestCase):
 
     def test_canonical_pending_and_promoted_work_define_incident_liveness(self):
         import tempfile,sqlite3
+        from contextlib import closing
         from pathlib import Path
         from unittest.mock import patch
         from fedora_system_monitor.capsules import kuma_c2_bridge as bridge
         with tempfile.TemporaryDirectory() as tmp:
             path=Path(tmp)/'c3.sqlite'
-            with sqlite3.connect(path) as db:
+            with closing(sqlite3.connect(path)) as db, db:
                 db.executescript("CREATE TABLE issue_inbox(issue_id,state,promoted_work_item_id,matched_work_item_id); CREATE TABLE work_items(work_item_id,status);")
                 db.execute("INSERT INTO issue_inbox VALUES('issue:test','pending',NULL,NULL)")
             with patch.object(bridge,'C3_DB',path):
                 self.assertTrue(bridge.incident_open('issue:test'))
-                with sqlite3.connect(path) as db:
+                with closing(sqlite3.connect(path)) as db, db:
                     db.execute("UPDATE issue_inbox SET state='promoted',promoted_work_item_id='wi:test'")
                     db.execute("INSERT INTO work_items VALUES('wi:test','running')")
                 self.assertTrue(bridge.incident_open('issue:test'))
-                with sqlite3.connect(path) as db:
+                with closing(sqlite3.connect(path)) as db, db:
                     db.execute("UPDATE work_items SET status='completed'")
                 self.assertFalse(bridge.incident_open('issue:test'))
                 self.assertTrue(bridge.incident_open('missing'))
