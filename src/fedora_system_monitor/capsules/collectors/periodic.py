@@ -575,7 +575,7 @@ def discover_services(config: Mapping[str, Any]) -> list[str]:
                     continue
                 if "@." not in unit_path.name and "/home/daniele/MegaVault" in unit_text and unit_path.name in installed:
                     candidates.add(unit_path.name)
-    return sorted(candidates)
+    return sorted(candidates - set(config_value(config, ("services", "retired"), default=[])))
 
 
 def _discover_user_services(config: Mapping[str, Any], patterns: set[str]) -> list[str]:
@@ -588,6 +588,9 @@ def _discover_user_services(config: Mapping[str, Any], patterns: set[str]) -> li
         for unit in essential | secondary | set(freshness)
         if unit.startswith("user:")
     }
+    retired = {str(unit).removeprefix('user:') for unit in
+               config_value(config, ('services', 'retired'), default=[]) if str(unit).startswith('user:')}
+    explicit -= retired
     listing = operator_external(config, ["systemctl", "--user", "list-unit-files", "--type=service", "--all", "--no-legend", "--no-pager"])
     if not listing.ok:
         return sorted(explicit)
@@ -597,7 +600,7 @@ def _discover_user_services(config: Mapping[str, Any], patterns: set[str]) -> li
     for unit in installed:
         if states.get(unit, "").startswith("enabled") and any(pattern.lower() in unit.lower() for pattern in patterns):
             candidates.add(unit)
-    return sorted(candidates)
+    return sorted(candidates - retired)
 
 
 def _parse_systemctl_show(output: str) -> list[dict[str, str]]:

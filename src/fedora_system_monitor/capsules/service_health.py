@@ -117,7 +117,7 @@ def send_service_heartbeats(
     results: list[NotificationResult] = []
     for row in rows:
         state_id = str(row.get("device_id") or "").strip()
-        if not state_id:
+        if not state_id or state_id in config.get("services", {}).get("retired", []):
             continue
         endpoint = service_monitor_key(state_id)
         if endpoint not in service_keys:

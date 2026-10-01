@@ -23,6 +23,16 @@ class _DB:
 
 
 class ServiceHealthTests(unittest.TestCase):
+    @mock.patch('fedora_system_monitor.capsules.service_health.configured_push_keys')
+    @mock.patch('fedora_system_monitor.capsules.service_health.send_named_heartbeat')
+    def test_retired_service_never_sends_from_historical_sample(self, sender, keys):
+        identity = 'user:workflowy-roadmap-sync.service'
+        keys.return_value = {service_monitor_key(identity)}
+        result = send_service_heartbeats({'services': {'retired': [identity]}},
+                                         _DB([{'device_id': identity}]))
+        self.assertEqual([], result)
+        sender.assert_not_called()
+
     def test_monitor_key_is_stable_and_toml_safe(self):
         key = service_monitor_key("user:chrome-codex-switcher.service")
         self.assertEqual(key, service_monitor_key("user:chrome-codex-switcher.service"))
