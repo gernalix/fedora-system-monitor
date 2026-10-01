@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import closing
 import fcntl
 import hashlib
 import json
@@ -16,6 +17,7 @@ from typing import Any, Callable, Iterable, Mapping
 
 SSH_HELPER = Path("/home/daniele/projects/vm_oracle/scripts/oracle_ssh.sh")
 CAPTURE_SCRIPT = Path("/home/daniele/projects/codex-roadmap/tools/c2_issue_capture.py")
+C3_DB = Path.home() / '.local/state/c3-control/roadmap.sqlite'
 REMOTE_QUERY = (
     "sudo -n sqlite3 -readonly -json /opt/uptime-kuma/data/kuma.db "
     "\"SELECT 'event' AS row_kind,h.id AS heartbeat_id,h.monitor_id,m.name AS monitor_name,"
@@ -167,9 +169,31 @@ def _load_states(connection: sqlite3.Connection) -> dict[int, dict[str, Any]]:
     }
 
 
+def incident_open(issue_id: str) -> bool:
+    """Keep one actionable observation per monitor until C3 resolves it.
+
+    Unknown/unavailable lifecycle is not permission to create duplicates.
+    This read-only lookup never triages, starts or finishes work.
+    """
+    try:
+        with closing(sqlite3.connect(C3_DB.resolve().as_uri() + '?mode=ro', uri=True)) as db:
+            row = db.execute('SELECT status,work_item_id FROM issue_inbox WHERE issue_id=?', (issue_id,)).fetchone()
+            if not row:
+                return True
+            if row[0] == 'pending':
+                return True
+            if row[0] == 'promoted' and row[1]:
+                item = db.execute('SELECT status FROM work_items WHERE work_item_id=?', (row[1],)).fetchone()
+                return not item or item[0] not in ('completed','cancelled','superseded')
+            return False
+    except (OSError, sqlite3.Error):
+        return True
+
+
 def _apply_event(
     event: Mapping[str, Any], states: dict[int, dict[str, Any]],
     capture_fn: Callable[[Mapping[str, Any], str], None],
+    incident_open_fn: Callable[[str], bool] = incident_open,
 ) -> str | None:
     monitor_id = int(event["monitor_id"])
     state = states.get(monitor_id, {
@@ -178,15 +202,18 @@ def _apply_event(
     })
     status = int(event["status"])
     if status == 0 and bool(event["active"]) and not state["is_down"]:
-        issue_id = issue_id_for(monitor_id, int(event["heartbeat_id"]))
-        capture_fn(event, issue_id)
+        retained = state.get('issue_id')
+        issue_id = retained if retained and incident_open_fn(retained) else issue_id_for(monitor_id, int(event["heartbeat_id"]))
+        if issue_id != retained:
+            capture_fn(event, issue_id)
         state["is_down"] = True
         state["issue_id"] = issue_id
-        outcome = "captured"
+        outcome = "deduplicated" if issue_id == retained else "captured"
     elif status == 1:
         was_down = state["is_down"]
         state["is_down"] = False
-        state["issue_id"] = None
+        # Recovery is observed, but does not resolve the C3 observation/work.
+        # Retain its identity across flaps until the owning lifecycle is closed.
         outcome = "recovered" if was_down else None
     else:
         outcome = None
