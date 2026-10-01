@@ -177,7 +177,7 @@ def incident_open(issue_id: str) -> bool:
     """
     try:
         with closing(sqlite3.connect(C3_DB.resolve().as_uri() + '?mode=ro', uri=True)) as db:
-            row = db.execute('SELECT status,work_item_id FROM issue_inbox WHERE issue_id=?', (issue_id,)).fetchone()
+            row = db.execute('SELECT state,COALESCE(promoted_work_item_id,matched_work_item_id) FROM issue_inbox WHERE issue_id=?', (issue_id,)).fetchone()
             if not row:
                 return True
             if row[0] == 'pending':
