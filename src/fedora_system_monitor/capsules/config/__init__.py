@@ -49,6 +49,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "services": {
         "auto_detect": True,
+        "retired": [],
         "essential": ["NetworkManager.service", "firewalld.service", "user:discord-exporter-crawl.service"],
         "secondary": [
             "bluetooth.service",
@@ -413,7 +414,7 @@ def validate_config(config: Mapping[str, Any] | object) -> list[str]:
     if not isinstance(config.get("services"), Mapping):
         errors.append("services must be a table")
     _require_bool(config, ("services", "auto_detect"), errors)
-    for key in ("essential", "secondary", "name_patterns"):
+    for key in ("essential", "secondary", "name_patterns", "retired"):
         _require_list(config, ("services", key), errors)
     for key in ("essential", "secondary"):
         value = _value(config, ("services", key))
@@ -429,6 +430,7 @@ def validate_config(config: Mapping[str, Any] | object) -> list[str]:
                 if not valid:
                     errors.append(f"services.{key}[{index}] must be a unit string or a name/essential table")
     require_string_items(("services", "name_patterns"))
+    require_string_items(("services", "retired"))
     freshness = _value(config, ("services", "freshness_seconds"))
     if not isinstance(freshness, Mapping):
         errors.append("services.freshness_seconds must be a table")
