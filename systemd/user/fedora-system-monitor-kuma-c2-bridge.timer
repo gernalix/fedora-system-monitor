@@ -1,4 +1,6 @@
 [Unit]
+# C3 retired; historical definition retained, never start/install as active.
+ConditionPathExists=/nonexistent/c3-permanently-retired
 Description=Poll current Uptime Kuma heartbeat events for C2 Inbox capture
 
 [Timer]
