@@ -1026,6 +1026,7 @@ async def reconcile(
     conn: sqlite3.Connection,
     media_root: Path,
     horizon_seconds: int,
+    ttl_seconds: int = 86400,
 ) -> dict[str, int]:
     now = utc_now()
     seen_at = iso_utc(now)
@@ -1055,7 +1056,9 @@ async def reconcile(
         status = store_snapshot(conn, peer_id, snapshot, seen_at, media_path, media_hash)
         counts[status] += 1
 
-    counts["deleted"] = mark_missing_deleted(conn, peer_id, cutoff_iso, seen_ids, seen_at)
+    counts["deleted"] = mark_missing_deleted(
+        conn, peer_id, cutoff_iso, seen_ids, seen_at, ttl_seconds
+    )
     conn.commit()
     return counts
 
@@ -1115,7 +1118,15 @@ async def run_sync(config: dict[str, str]) -> int:
         relationship_events = await observe_relationship_state(
             client, entity, peer_id, conn
         )
-        counts = await reconcile(client, entity, peer_id, conn, media_root, horizon_seconds)
+        counts = await reconcile(
+            client,
+            entity,
+            peer_id,
+            conn,
+            media_root,
+            horizon_seconds,
+            int(config.get("AUTO_DELETE_TTL_SECONDS", "86400")),
+        )
         print(
             "Telegram auto-delete archive sync complete; "
             + " ".join(f"{key}={value}" for key, value in counts.items())
