@@ -229,6 +229,7 @@ def run_once(
     capture_script: Path = CAPTURE_SCRIPT,
     dry_run: bool = False,
 ) -> list[dict[str, Any]]:
+    return []  # C3 retired: reject automatic capture before state/network I/O.
     path = state_path or default_state_path()
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     lock_path = path.with_suffix(path.suffix + ".lock")
