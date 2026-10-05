@@ -843,12 +843,66 @@ def store_snapshot(
     conn.execute(
         """
         UPDATE messages
-        SET last_seen_at_utc=?, deleted_at_utc=NULL, deletion_reason=NULL
+        SET last_seen_at_utc=?, deleted_at_utc=NULL, deletion_reason=NULL,
+            deletion_confidence=NULL, deletion_age_seconds=NULL, deletion_actor=NULL
         WHERE peer_id=? AND message_id=?
         """,
         (seen_at, peer_id, message_id),
     )
     return "unchanged"
+
+
+def classify_deletion(
+    message_date_utc: str,
+    deleted_at_utc: str,
+    ttl_seconds: int,
+) -> tuple[str, str, int, str]:
+    age_seconds = max(
+        0,
+        int((parse_iso(deleted_at_utc) - parse_iso(message_date_utc)).total_seconds()),
+    )
+    if age_seconds >= ttl_seconds:
+        return "auto_delete_timer", "timing_inference", age_seconds, "telegram_timer"
+    return "manual_before_ttl", "timing_inference", age_seconds, "unknown"
+
+
+def mark_message_deleted(
+    conn: sqlite3.Connection,
+    peer_id: int,
+    message_id: int,
+    deleted_at: str,
+    ttl_seconds: int,
+) -> bool:
+    row = conn.execute(
+        """
+        SELECT message_id,date_utc FROM messages
+        WHERE peer_id=? AND message_id=? AND deleted_at_utc IS NULL
+        """,
+        (peer_id, message_id),
+    ).fetchone()
+    if row is None:
+        return False
+    reason, confidence, age_seconds, actor = classify_deletion(
+        str(row["date_utc"]), deleted_at, ttl_seconds
+    )
+    conn.execute(
+        """
+        UPDATE messages
+        SET deleted_at_utc=?, deletion_reason=?, deletion_confidence=?,
+            deletion_age_seconds=?, deletion_actor=?
+        WHERE peer_id=? AND message_id=? AND deleted_at_utc IS NULL
+        """,
+        (
+            deleted_at,
+            reason,
+            confidence,
+            age_seconds,
+            actor,
+            peer_id,
+            message_id,
+        ),
+    )
+    return True
 
 
 def mark_missing_deleted(
@@ -857,6 +911,7 @@ def mark_missing_deleted(
     cutoff_utc: str,
     seen_ids: set[int],
     deleted_at: str,
+    ttl_seconds: int = 86400,
 ) -> int:
     candidates = conn.execute(
         """
@@ -865,17 +920,23 @@ def mark_missing_deleted(
         """,
         (peer_id, cutoff_utc),
     ).fetchall()
-    missing = [int(row["message_id"]) for row in candidates if int(row["message_id"]) not in seen_ids]
+    missing = [
+        int(row["message_id"])
+        for row in candidates
+        if int(row["message_id"]) not in seen_ids
+    ]
+    deleted = 0
     for message_id in missing:
-        conn.execute(
-            """
-            UPDATE messages
-            SET deleted_at_utc=?, deletion_reason='remote_missing'
-            WHERE peer_id=? AND message_id=? AND deleted_at_utc IS NULL
-            """,
-            (deleted_at, peer_id, message_id),
+        deleted += int(
+            mark_message_deleted(
+                conn,
+                peer_id,
+                message_id,
+                deleted_at,
+                ttl_seconds,
+            )
         )
-    return len(missing)
+    return deleted
 
 
 async def resolve_entity(client: Any, configured_peer: str | int) -> Any:
