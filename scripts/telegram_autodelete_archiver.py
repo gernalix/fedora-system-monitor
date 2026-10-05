@@ -135,6 +135,8 @@ def create_human_view(conn: sqlite3.Connection) -> None:
                 ELSE ''
             END AS media,
             CASE
+                WHEN deletion_reason = 'auto_delete_timer' THEN 'eliminato dal timer automatico 24h'
+                WHEN deletion_reason = 'manual_before_ttl' THEN 'eliminato manualmente prima di 24h (autore non esposto da Telegram)'
                 WHEN deleted_at_utc IS NOT NULL THEN 'eliminato da Telegram'
                 WHEN edit_date_utc IS NOT NULL THEN 'modificato'
                 ELSE ''
@@ -265,6 +267,9 @@ def open_archive(path: Path) -> sqlite3.Connection:
             "action_type": "TEXT",
             "action_text": "TEXT",
             "action_json": "TEXT",
+            "deletion_confidence": "TEXT",
+            "deletion_age_seconds": "INTEGER",
+            "deletion_actor": "TEXT",
         },
     )
     ensure_columns(
@@ -820,7 +825,8 @@ def store_snapshot(
                 reply_to_message_id=?, media_kind=?, media_remote_id=?,
                 media_path=?, media_sha256=?, action_type=?, action_text=?,
                 action_json=?, current_revision=?, last_seen_at_utc=?,
-                deleted_at_utc=NULL, deletion_reason=NULL
+                deleted_at_utc=NULL, deletion_reason=NULL,
+                deletion_confidence=NULL, deletion_age_seconds=NULL, deletion_actor=NULL
             WHERE peer_id=? AND message_id=?
             """,
             (
