@@ -1138,9 +1138,193 @@ async def run_sync(config: dict[str, str]) -> int:
         await client.disconnect()
 
 
+async def ingest_message(
+    client: Any,
+    conn: sqlite3.Connection,
+    media_root: Path,
+    peer_id: int,
+    message: Any,
+) -> str:
+    seen_at = iso_utc(utc_now())
+    sender_name = await sender_name_for_message(message, {})
+    snapshot = snapshot_from_message(message, sender_name=sender_name)
+    previous = conn.execute(
+        "SELECT * FROM messages WHERE peer_id=? AND message_id=?",
+        (peer_id, int(snapshot["message_id"])),
+    ).fetchone()
+    media_path, media_hash = await preserve_media(
+        client, message, media_root, peer_id, previous
+    )
+    status = store_snapshot(
+        conn, peer_id, snapshot, seen_at, media_path, media_hash
+    )
+    conn.commit()
+    return status
+
+
+async def run_watch(config: dict[str, str]) -> int:
+    from telethon import events
+
+    archive_db = Path(config.get(
+        "ARCHIVE_DB", "~/.local/share/fedora-telegram-autodelete/archive.sqlite3"
+    )).expanduser()
+    state_dir = Path(config.get(
+        "STATE_DIR", "~/.local/share/fedora-telegram-autodelete"
+    )).expanduser()
+    media_root = Path(config.get(
+        "MEDIA_DIR", "~/.local/share/fedora-telegram-autodelete/media"
+    )).expanduser()
+    horizon_seconds = int(config.get("RECONCILE_HORIZON_SECONDS", "108000"))
+    ttl_seconds = int(config.get("AUTO_DELETE_TTL_SECONDS", "86400"))
+    interval_seconds = max(
+        30, int(config.get("RECONCILE_INTERVAL_SECONDS", "60"))
+    )
+    if horizon_seconds < ttl_seconds:
+        raise ValueError("RECONCILE_HORIZON_SECONDS must cover the auto-delete TTL")
+
+    os.umask(0o077)
+    client = await telegram_client(config)
+    conn = open_archive(archive_db)
+    lock = asyncio.Lock()
+    entity, peer_id = await resolve_target(client, config, state_dir)
+
+    @client.on(events.NewMessage(chats=entity))
+    async def on_new_message(event: Any) -> None:
+        async with lock:
+            status = await ingest_message(
+                client, conn, media_root, peer_id, event.message
+            )
+        print(
+            f"telegram-watch new message_id={event.message.id} status={status}",
+            flush=True,
+        )
+
+    @client.on(events.MessageEdited(chats=entity))
+    async def on_message_edited(event: Any) -> None:
+        async with lock:
+            status = await ingest_message(
+                client, conn, media_root, peer_id, event.message
+            )
+        print(
+            f"telegram-watch edit message_id={event.message.id} status={status}",
+            flush=True,
+        )
+
+    @client.on(events.MessageDeleted())
+    async def on_message_deleted(event: Any) -> None:
+        candidate_ids = [
+            int(message_id)
+            for message_id in event.deleted_ids
+            if conn.execute(
+                """
+                SELECT 1 FROM messages
+                WHERE peer_id=? AND message_id=? AND deleted_at_utc IS NULL
+                """,
+                (peer_id, int(message_id)),
+            ).fetchone()
+        ]
+        if not candidate_ids:
+            return
+        changed = []
+        async with lock:
+            detected_at = iso_utc(utc_now())
+            for message_id in candidate_ids:
+                current = await client.get_messages(entity, ids=message_id)
+                if current is not None:
+                    continue
+                if mark_message_deleted(
+                    conn, peer_id, message_id, detected_at, ttl_seconds
+                ):
+                    row = conn.execute(
+                        """
+                        SELECT deletion_reason,deletion_age_seconds,deletion_actor
+                        FROM messages WHERE peer_id=? AND message_id=?
+                        """,
+                        (peer_id, message_id),
+                    ).fetchone()
+                    changed.append(
+                        (
+                            message_id,
+                            row["deletion_reason"],
+                            row["deletion_age_seconds"],
+                            row["deletion_actor"],
+                        )
+                    )
+            conn.commit()
+        for message_id, reason, age_seconds, actor in changed:
+            print(
+                "telegram-watch delete "
+                f"message_id={message_id} reason={reason} "
+                f"age_seconds={age_seconds} actor={actor}",
+                flush=True,
+            )
+
+    async def periodic_reconcile() -> None:
+        while True:
+            await asyncio.sleep(interval_seconds)
+            async with lock:
+                relationship_events = await observe_relationship_state(
+                    client, entity, peer_id, conn
+                )
+                counts = await reconcile(
+                    client,
+                    entity,
+                    peer_id,
+                    conn,
+                    media_root,
+                    horizon_seconds,
+                    ttl_seconds,
+                )
+            if relationship_events or any(
+                counts[key] for key in ("inserted", "updated", "deleted")
+            ):
+                print(
+                    "telegram-watch reconcile "
+                    + " ".join(f"{key}={value}" for key, value in counts.items())
+                    + f" relationship_events={relationship_events}",
+                    flush=True,
+                )
+
+    try:
+        async with lock:
+            relationship_events = await observe_relationship_state(
+                client, entity, peer_id, conn
+            )
+            counts = await reconcile(
+                client,
+                entity,
+                peer_id,
+                conn,
+                media_root,
+                horizon_seconds,
+                ttl_seconds,
+            )
+        print(
+            "Telegram auto-delete watcher ready; "
+            + " ".join(f"{key}={value}" for key, value in counts.items())
+            + f" relationship_events={relationship_events} "
+            + f"peer_id={peer_id} ttl_seconds={ttl_seconds} "
+            + f"reconcile_interval={interval_seconds}.",
+            flush=True,
+        )
+        reconcile_task = asyncio.create_task(periodic_reconcile())
+        try:
+            await client.run_until_disconnected()
+        finally:
+            reconcile_task.cancel()
+            try:
+                await reconcile_task
+            except asyncio.CancelledError:
+                pass
+        return 0
+    finally:
+        conn.close()
+        await client.disconnect()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=("discover", "sync"))
+    parser.add_argument("command", choices=("discover", "sync", "watch"))
     parser.add_argument(
         "--config",
         default="~/.config/fedora-telegram-autodelete/collector.env",
@@ -1157,6 +1341,8 @@ def main(argv: list[str] | None = None) -> int:
         config = load_env(config_path)
         if args.command == "discover":
             return asyncio.run(run_discover(config))
+        if args.command == "watch":
+            return asyncio.run(run_watch(config))
         return asyncio.run(run_sync(config))
     except Exception as exc:
         print(

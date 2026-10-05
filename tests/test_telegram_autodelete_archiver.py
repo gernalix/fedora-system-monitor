@@ -185,8 +185,37 @@ class TelegramAutodeleteArchiveTests(unittest.IsolatedAsyncioTestCase):
         row = self.row(21)
         self.assertEqual(row["text"], "must survive delete")
         self.assertIsNotNone(row["deleted_at_utc"])
-        self.assertEqual(row["deletion_reason"], "remote_missing")
+        self.assertEqual(row["deletion_reason"], "manual_before_ttl")
+        self.assertEqual(row["deletion_confidence"], "timing_inference")
+        self.assertEqual(row["deletion_actor"], "unknown")
         self.assertEqual(len(self.revisions(21)), 1)
+
+    def test_missing_after_ttl_is_classified_as_timer(self):
+        message_time = dt.datetime(2026, 10, 4, 12, 0, tzinfo=UTC)
+        deleted_time = message_time + dt.timedelta(hours=24, seconds=5)
+        message = Message(23, "expires by ttl", when=message_time)
+        snapshot = archiver.snapshot_from_message(message)
+        archiver.store_snapshot(
+            self.conn,
+            self.peer_id,
+            snapshot,
+            archiver.iso_utc(message_time),
+            None,
+            None,
+        )
+        self.conn.commit()
+        changed = archiver.mark_message_deleted(
+            self.conn,
+            self.peer_id,
+            23,
+            archiver.iso_utc(deleted_time),
+            86400,
+        )
+        self.assertTrue(changed)
+        row = self.row(23)
+        self.assertEqual(row["deletion_reason"], "auto_delete_timer")
+        self.assertEqual(row["deletion_actor"], "telegram_timer")
+        self.assertGreaterEqual(row["deletion_age_seconds"], 86400)
 
     async def test_reappearing_message_clears_tombstone(self):
         now = dt.datetime.now(tz=UTC)
