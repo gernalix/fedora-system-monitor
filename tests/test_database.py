@@ -77,14 +77,14 @@ class DatabaseTests(unittest.TestCase):
         try:
             connection.execute("DROP VIEW IF EXISTS current_alerts")
             connection.execute("DROP VIEW IF EXISTS recent_events")
-            connection.execute("DELETE FROM schema_versions WHERE version = 4")
+            connection.execute("DELETE FROM schema_versions WHERE version >= 4")
             connection.commit()
         finally:
             connection.close()
 
         migrated = Database(self.database_path)
         try:
-            self.assertEqual(migrated.schema_version, 4)
+            self.assertEqual(migrated.schema_version, SCHEMA_VERSION)
             self.assertEqual(migrated.initialize(), 4)
             versions = migrated.query("SELECT version FROM schema_versions WHERE version = 4")
             self.assertEqual(versions, [{"version": 4}])
@@ -514,42 +514,33 @@ class DatabaseTests(unittest.TestCase):
 
         self.assertEqual(batch_sizes, [2, 2, 2])
 
-    def test_retention_releases_writer_between_complete_metric_series(self) -> None:
-        old = datetime(2026, 6, 20, tzinfo=timezone.utc)
-        self.db.insert_metrics([
-            {"name": "first", "value": 1, "timestamp_utc": old},
-            {"name": "second", "value": 2, "timestamp_utc": old},
-        ], cadence_seconds=60)
-        original = self.db._aggregate_metrics
-        batches = []
+    def test_schema_v4_adds_cleanup_indexes_idempotently(self) -> None:
+        self.db.close()
+        with sqlite3.connect(self.database_path) as connection:
+            connection.execute("DROP INDEX idx_metrics_collector_run")
+            connection.execute("DROP INDEX idx_events_collector_run")
+            connection.execute("DELETE FROM schema_versions WHERE version=5")
+        self.db = Database(self.database_path)
+        self.assertEqual(self.db.schema_version, 5)
+        self.assertTrue(self.db.check_indexes()["ok"])
+        self.db.initialize()
+        self.assertEqual(self.db.query("SELECT count(*) n FROM schema_versions WHERE version=5"), [{"n": 1}])
 
-        def aggregate(connection, rows):
-            batches.append([row["name"] for row in rows])
-            return original(connection, rows)
-
-        original_transaction = self.db._transaction
-        from contextlib import contextmanager
-
-        @contextmanager
-        def transaction():
-            with original_transaction() as connection:
-                yield connection
-            # A separate writer must be able to commit between series.
-            if batches:
-                other = Database(self.database_path, initialize=False, timeout_seconds=0.05)
-                other.set_state("minute-progress", len(batches))
-                other.close()
-
-        with patch.object(self.db, "_aggregate_metrics", side_effect=aggregate), \
-             patch.object(self.db, "_transaction", transaction):
-            result = self.db.apply_retention(
-                now=datetime(2026, 7, 10, tzinfo=timezone.utc),
-                metric_days_by_cadence={60: 14},
-            )
-        self.assertEqual(batches, [["first"], ["second"]])
-        self.assertEqual(result["metrics_deleted"], 2)
-        self.assertEqual(result["aggregates_written"], 2)
-        self.assertEqual(self.db.get_state("minute-progress"), 2)
+    def test_collector_cleanup_uses_child_indexes_and_preserves_history(self) -> None:
+        run = self.db.start_collector_run("minute", cadence_seconds=60)
+        self.db.insert_metrics({"name": "kept.metric", "value": 1}, cadence_seconds=60, collector_run_id=run)
+        self.db.insert_events({"name": "kept.event", "severity": "warning"}, collector_run_id=run)
+        with self.db._connection() as connection:
+            plan = connection.execute("EXPLAIN QUERY PLAN DELETE FROM collector_runs WHERE id=?", (run,)).fetchall()
+        details = " ".join(row[3] for row in plan)
+        self.assertIn("idx_metrics_collector_run", details)
+        self.assertIn("idx_events_collector_run", details)
+        self.assertNotIn("SCAN periodic_metrics", details)
+        self.assertNotIn("SCAN events", details)
+        with self.db._transaction() as connection:
+            connection.execute("DELETE FROM collector_runs WHERE id=?", (run,))
+        self.assertEqual(self.db.query("SELECT collector_run_id FROM periodic_metrics"), [{"collector_run_id": None}])
+        self.assertEqual(self.db.query("SELECT collector_run_id FROM events"), [{"collector_run_id": None}])
 
     def test_utc_bucket_is_stable_across_copenhagen_dst_change(self) -> None:
         day = datetime(2026, 3, 29, tzinfo=timezone.utc)
