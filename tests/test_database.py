@@ -85,7 +85,7 @@ class DatabaseTests(unittest.TestCase):
         migrated = Database(self.database_path)
         try:
             self.assertEqual(migrated.schema_version, SCHEMA_VERSION)
-            self.assertEqual(migrated.initialize(), 4)
+            self.assertEqual(migrated.initialize(), SCHEMA_VERSION)
             versions = migrated.query("SELECT version FROM schema_versions WHERE version = 4")
             self.assertEqual(versions, [{"version": 4}])
             views = {
@@ -516,7 +516,8 @@ class DatabaseTests(unittest.TestCase):
 
     def test_schema_v4_adds_cleanup_indexes_idempotently(self) -> None:
         self.db.close()
-        with sqlite3.connect(self.database_path) as connection:
+        from contextlib import closing
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
             connection.execute("DROP INDEX idx_metrics_collector_run")
             connection.execute("DROP INDEX idx_events_collector_run")
             connection.execute("DELETE FROM schema_versions WHERE version=5")
