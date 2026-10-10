@@ -25,7 +25,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from ..config import redact_text
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 DEFAULT_TIMEZONE = "Europe/Copenhagen"
 DEFAULT_METRIC_RETENTION_DAYS = {60: 14, 300: 60, 900: 180, 3600: 365, 86400: 3650}
 
@@ -43,6 +43,8 @@ _SECRET_KEYS = {
 }
 
 _EXPECTED_INDEXES = {
+    "idx_metrics_collector_run",
+    "idx_events_collector_run",
     "idx_metrics_time",
     "idx_metrics_name_time",
     "idx_metrics_cadence_time",
@@ -530,6 +532,12 @@ def _percentile_95(values: Sequence[float]) -> float | None:
     return ordered[index]
 
 
+_MIGRATION_5_STATEMENTS = (
+    "CREATE INDEX IF NOT EXISTS idx_metrics_collector_run ON periodic_metrics(collector_run_id)",
+    "CREATE INDEX IF NOT EXISTS idx_events_collector_run ON events(collector_run_id)",
+)
+
+
 class Database:
     """Own and query a versioned Fedora System Monitor SQLite database."""
 
@@ -654,6 +662,14 @@ class Database:
                 connection.execute(
                     "INSERT INTO schema_versions(version, applied_at_utc, description) VALUES (?, ?, ?)",
                     (4, utc, "bounded Datasette current-alert and recent-event views"),
+                )
+            if current < 5:
+                for statement in _MIGRATION_5_STATEMENTS:
+                    connection.execute(statement)
+                utc, _ = self._timestamps()
+                connection.execute(
+                    "INSERT INTO schema_versions(version, applied_at_utc, description) VALUES (?, ?, ?)",
+                    (5, utc, "indexed collector history foreign-key cleanup"),
                 )
         if str(self.path) != ":memory:":
             try:
@@ -1980,10 +1996,7 @@ class Database:
                 bucket_start = self._coerce_datetime(f"{bucket_day}T00:00:00Z")
                 bucket_start_utc, _ = self._timestamps(bucket_start)
                 bucket_end_utc, _ = self._timestamps(bucket_start + timedelta(days=1))
-                # Read/group outside the write transaction. One UTC day can
-                # contain hundreds of thousands of samples; only each complete
-                # metric series needs an atomic aggregate-and-delete operation.
-                with self._connection() as connection:
+                with self._transaction() as connection:
                     expired = connection.execute(
                         """
                         SELECT * FROM periodic_metrics
@@ -1991,32 +2004,17 @@ class Database:
                         """,
                         (cadence, bucket_start_utc, bucket_end_utc),
                     ).fetchall()
-                series: dict[tuple[Any, ...], list[int]] = defaultdict(list)
-                for row in expired:
-                    key = tuple(row[column] for column in
-                                ("hostname", "category", "name", "unit", "source", "device_id"))
-                    series[key].append(int(row["id"]))
-                for ids in series.values():
-                    with self._transaction() as connection:
-                        # Re-read selected IDs under the writer lock so another
-                        # maintenance caller cannot aggregate deleted rows twice.
-                        samples = []
-                        for offset in range(0, len(ids), 500):
-                            batch = ids[offset:offset + 500]
-                            placeholders = ",".join("?" for _ in batch)
-                            samples.extend(connection.execute(
-                                f"SELECT * FROM periodic_metrics WHERE id IN ({placeholders})", batch
-                            ).fetchall())
-                        if not samples:
-                            continue
-                        result["aggregates_written"] += self._aggregate_metrics(connection, samples)
-                        for offset in range(0, len(ids), 500):
-                            batch = ids[offset:offset + 500]
-                            placeholders = ",".join("?" for _ in batch)
-                            cursor = connection.execute(
-                                f"DELETE FROM periodic_metrics WHERE id IN ({placeholders})", batch
-                            )
-                            result["metrics_deleted"] += cursor.rowcount
+                    if not expired:
+                        continue
+                    result["aggregates_written"] += self._aggregate_metrics(connection, expired)
+                    cursor = connection.execute(
+                        """
+                        DELETE FROM periodic_metrics
+                        WHERE cadence_seconds = ? AND timestamp_utc >= ? AND timestamp_utc < ?
+                        """,
+                        (cadence, bucket_start_utc, bucket_end_utc),
+                    )
+                    result["metrics_deleted"] += cursor.rowcount
 
         with self._transaction() as connection:
             event_cutoff, _ = self._timestamps(current - timedelta(days=float(event_days)))
