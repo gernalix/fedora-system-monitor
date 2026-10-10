@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import tempfile
+import threading
+from concurrent.futures import ThreadPoolExecutor
 import unittest
 from argparse import Namespace
 from pathlib import Path
@@ -65,6 +67,43 @@ class StorageHeartbeatPolicyTests(unittest.TestCase):
         self.assertEqual(len(storage), 1)
         self.assertTrue(storage[0][1])
         self.assertEqual(storage[0][2], "storage: collectors complete; active alerts=0")
+
+    def test_slow_daily_does_not_block_minute_but_serializes_daily(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            database = _FakeDatabase(root)
+            config = {"monitor": {"lock_path": str(root / "collector.lock")}}
+            daily_entered = threading.Event()
+            release_daily = threading.Event()
+            daily_calls = []
+
+            def collect(_, scope, *__):
+                if scope == "daily":
+                    daily_calls.append(scope)
+                    daily_entered.set()
+                    if not release_daily.wait(3):
+                        raise AssertionError("daily test was not released")
+                return {"outcome": "ok", "duration_ms": 25}
+
+            with (
+                patch("fedora_system_monitor.capsules.runtime.coordinator._run_isolated_scope", collect),
+                patch("fedora_system_monitor.capsules.runtime.coordinator.send_category_heartbeat",
+                      return_value=NotificationResult("uptime-kuma", "test", False, False, "test")),
+                ThreadPoolExecutor(max_workers=3) as pool,
+            ):
+                first = pool.submit(_collect_command, Namespace(scope="daily"), config, database)
+                try:
+                    self.assertTrue(daily_entered.wait(1))
+                    second = pool.submit(_collect_command, Namespace(scope="daily"), config, database)
+                    minute = pool.submit(_collect_command, Namespace(scope="minute"), config, database)
+                    self.assertEqual(minute.result(timeout=1)["results"][0]["outcome"], "ok")
+                    self.assertEqual(len(daily_calls), 1)
+                    self.assertFalse(second.done())
+                finally:
+                    release_daily.set()
+                first.result(timeout=2)
+                second.result(timeout=2)
+                self.assertEqual(len(daily_calls), 2)
 
     def test_system_alert_does_not_create_push_heartbeat_failure(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

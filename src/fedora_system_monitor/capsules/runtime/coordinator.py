@@ -810,8 +810,12 @@ def _collect_command(args: argparse.Namespace, config: dict[str, Any], db: Datab
     lock_path = Path(config["monitor"]["lock_path"])
     if os.geteuid() != 0 and not os.access(lock_path.parent, os.W_OK):
         lock_path = db.path.parent / "collector.lock"
-    with exclusive_lock(lock_path, timeout=55):
-        for scope in scopes:
+    for scope in scopes:
+        # Keep maintenance jobs serialized, but do not hold minute collection
+        # behind a slow daily run. SQLite still serializes each short write.
+        lock_group = "minute" if scope == "minute" else "slow"
+        scope_lock = lock_path.with_name(f"{lock_path.name}.{lock_group}")
+        with exclusive_lock(scope_lock, timeout=55):
             result = _run_isolated_scope(args, scope, config, db)
             results.append(result)
             if result["outcome"] in {"ok", "partial"}:

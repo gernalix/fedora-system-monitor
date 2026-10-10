@@ -514,6 +514,43 @@ class DatabaseTests(unittest.TestCase):
 
         self.assertEqual(batch_sizes, [2, 2, 2])
 
+    def test_retention_releases_writer_between_complete_metric_series(self) -> None:
+        old = datetime(2026, 6, 20, tzinfo=timezone.utc)
+        self.db.insert_metrics([
+            {"name": "first", "value": 1, "timestamp_utc": old},
+            {"name": "second", "value": 2, "timestamp_utc": old},
+        ], cadence_seconds=60)
+        original = self.db._aggregate_metrics
+        batches = []
+
+        def aggregate(connection, rows):
+            batches.append([row["name"] for row in rows])
+            return original(connection, rows)
+
+        original_transaction = self.db._transaction
+        from contextlib import contextmanager
+
+        @contextmanager
+        def transaction():
+            with original_transaction() as connection:
+                yield connection
+            # A separate writer must be able to commit between series.
+            if batches:
+                other = Database(self.database_path, initialize=False, timeout_seconds=0.05)
+                other.set_state("minute-progress", len(batches))
+                other.close()
+
+        with patch.object(self.db, "_aggregate_metrics", side_effect=aggregate), \
+             patch.object(self.db, "_transaction", transaction):
+            result = self.db.apply_retention(
+                now=datetime(2026, 7, 10, tzinfo=timezone.utc),
+                metric_days_by_cadence={60: 14},
+            )
+        self.assertEqual(batches, [["first"], ["second"]])
+        self.assertEqual(result["metrics_deleted"], 2)
+        self.assertEqual(result["aggregates_written"], 2)
+        self.assertEqual(self.db.get_state("minute-progress"), 2)
+
     def test_utc_bucket_is_stable_across_copenhagen_dst_change(self) -> None:
         day = datetime(2026, 3, 29, tzinfo=timezone.utc)
         self.db.insert_metrics(
