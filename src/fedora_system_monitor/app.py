@@ -15,12 +15,12 @@ from fedora_system_monitor.capsules.runtime.coordinator import (
 def _default_config_path() -> Path:
     return SYSTEM_CONFIG if SYSTEM_CONFIG.exists() else PROJECT_CONFIG
 
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="fedora-system-monitor", description="Fedora host monitoring administration")
     parser.add_argument("--config", type=Path, default=_default_config_path())
     parser.add_argument("--database", type=Path)
     subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers.add_parser("archive", help="private terminal execution archive (ea)")
     for name in ("status", "health", "disks", "network", "software", "services", "dashboard", "trends"):
         subparsers.add_parser(name)
     history = subparsers.add_parser("service-history")
@@ -106,6 +106,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments[:1] == ["archive"]:
+        from fedora_system_monitor.capsules.execution_archive.cli import main as archive_main
+        return archive_main(arguments[1:])
     json_output = "--json" in arguments
     args = build_parser().parse_args([item for item in arguments if item != "--json"])
     args.json = json_output
@@ -118,6 +121,5 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(f"ERROR: {message}", file=sys.stderr)
         return 1
-
 
 __all__ = ["build_parser", "main"]
