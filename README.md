@@ -67,6 +67,12 @@ After successful login, enable the timer with `systemctl --user enable --now tel
 
 ## Sviluppo
 
+L'archivio locale delle esecuzioni e gli hook Bash/Ptyxis sono descritti in
+[Archivio esecuzioni](docs/human/execution-archive.md). Comando breve: `ea search`;
+controlli: `ea disable` / `ea enable`. I comandi generici hanno soli metadati;
+solo diagnostiche fisse autorizzate hanno output riproducibile. Nessuna chat viene
+letta o indicizzata.
+
 ```bash
 PYTHONPATH=src PYTHONWARNINGS=error python3 -m unittest discover -s tests -q
 python3 -m compileall -q src
