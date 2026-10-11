@@ -22,11 +22,12 @@ from pathlib import Path
 SOURCES = {
     "bash", "manual", "diagnostic", "rdc", "codex",
     "systemd-system", "systemd-user", "cron", "udev", "podman",
-    "git-hook", "ide", "launcher",
+    "git-hook", "ide", "launcher", "ssh", "adb", "github-actions",
 }
 LABELS = {
     "shell", "process", "excluded", "date", "uname", "uptime", "true", "false", "demo",
     "service", "scheduled", "container", "hook", "ide", "launcher", "device-event",
+    "remote-process", "workflow-run",
 }
 KINDS = {"session", "command", "execution"}
 EXTERNAL_NAMESPACE = uuid.UUID("fc39f4a6-d989-4a37-952c-916425cc30fe")
@@ -249,7 +250,8 @@ class Archive:
                 parent_pid=parent_pid, owner_pid=os.getpid(),
                 owner_fingerprint=fingerprint(os.getpid()), started=float(started), ended=now,
                 exit_code=exit_code, state="complete", coverage=coverage, label=label,
-                input="never-recorded", streams="journal-combined" if output else "excluded",
+                input="never-recorded", streams={"journal-stream": "journal-combined",
+                                                   "runner-log": "github-actions-log"}.get(coverage, "excluded") if output else "excluded",
                 files={}, schema_version=4, bytes=0, policy_level="native-filtered",
                 consent={"explicit": True, "scope": "exact-native-source"} if output else None,
                 residual_risk=bool(output), content_gaps=bool(content_gap) or not bool(output),
@@ -258,12 +260,10 @@ class Archive:
                 external_identity_sha256=hashlib.sha256(identity.encode()).hexdigest(),
             )
             if output:
-                if coverage != "journal-stream" or len(output) > self.config["event_bytes"]:
+                if coverage not in {"journal-stream", "runner-log"} or len(output) > self.config["event_bytes"]:
                     raise ValueError("unapproved external content")
                 with private_file(path / "output.raw") as f:
                     f.write(output)
-                with private_file(path / "timing.raw") as f:
-                    f.write(f"0.000000 {len(output)}\n".encode())
                 m["bytes"] = len(output)
             elif coverage != "metadata-only":
                 raise ValueError("invalid metadata-only coverage")
@@ -277,7 +277,7 @@ class Archive:
                   "stdout": "stdout_timing", "stderr": "stderr_timing"}
         if stream not in clocks or (stream == "input" and not (m.get("consent") or {}).get("input")):
             raise ValueError("unapproved stream")
-        if m["coverage"] not in {"output-only", "visible-pty", "process-streams", "truncated"} or not data:
+        if m["coverage"] not in {"output-only", "visible-pty", "process-streams", "remote-streams", "truncated"} or not data:
             return
         with self.lock():
             if (m["bytes"] + len(data) > self.config["event_bytes"] or
@@ -356,6 +356,13 @@ class Archive:
     def _index(self, m: dict) -> None:
         text = " ".join((m["label"], m["kind"], m["source"], m["coverage"], m["host"],
                          *m.get("origins", [])))
+        metadata = m.get("metadata") if isinstance(m.get("metadata"), dict) else {}
+        for key in ("unit", "scope", "command", "result", "type", "status", "name", "image",
+                    "remote_host", "device_serial_sha256", "repo", "run_id", "workflow", "event",
+                    "conclusion", "head_sha", "reference"):
+            value = metadata.get(key)
+            if isinstance(value, (str, int, float)):
+                text += " " + str(value)
         for stream in (("output",) if "output" in m["files"] else ("stdout", "stderr")):
             if stream not in m["files"]:
                 continue
@@ -483,9 +490,9 @@ class Archive:
                      for p in self.events.glob("*/manifest.json"))
         return dict(enabled=self.enabled(), root=str(self.root), bytes=self.usage(), active=active,
                     limits=self.config, coverage=groups, input="full opt-in ordinary echo-on only", shell_content="safe excluded; full consent visible PTY",
-                    content_policy="safe fixed diagnostics; full explicit consent; exact-unit journal opt-in with exclusions",
-                    stdout_stderr="terminal PTY combined; RDC/Codex separated; journald combined and explicitly incomplete",
-                    chat_sources="never-imported", scheduler="shell startup / manual bounded source collection",
+                    content_policy="safe diagnostics; explicit terminal/native/remote output opt-in with exclusions",
+                    stdout_stderr="RDC/Codex/SSH/ADB separated; PTY/journald combined; Actions log-only",
+                    chat_sources="never-imported", scheduler="shell startup / explicit bounded local or remote collection",
                     capture_policy="safe default; full requires explicit consent",
                     live_capture=[json.loads(p.read_text()) for p in self.events.glob("*/capture-state.json")
                                   if fingerprint(json.loads(p.read_text()).get("owner_pid", 0)) ==

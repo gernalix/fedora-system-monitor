@@ -1,4 +1,5 @@
 """Execution archive gates use temporary storage and public synthetic canaries."""
+import hashlib
 import json
 import os
 import pty
@@ -23,6 +24,11 @@ from fedora_system_monitor.capsules.execution_archive.local_sources import (
     inventory,
     parse_podman_events,
     run_wrapped,
+)
+from fedora_system_monitor.capsules.execution_archive.remote_sources import (
+    _transport_argv,
+    ingest_github_run,
+    remote_inventory,
 )
 
 REPO = Path(__file__).resolve().parent.parent
@@ -308,6 +314,202 @@ class LocalSourcesTest(unittest.TestCase):
         with mock.patch.object(Archive, "record_external", side_effect=sqlite3.OperationalError("fixture")):
             self.assertEqual(run_wrapped(self.home / "sqlite-failure", "ide", "fixture",
                                          ["/usr/bin/true"]), 0)
+
+
+class RemoteSourcesTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = Path(self.tmp.name)
+        self.root = self.home / "archive"
+        self.bin = self.home / "bin"
+        self.bin.mkdir()
+        self.env = os.environ | {"PYTHONPATH": str(REPO / "src"),
+                                 "PATH": str(self.bin) + os.pathsep + os.environ["PATH"]}
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def executable(self, name, body):
+        path = self.bin / name
+        path.write_text("#!/bin/sh\n" + body)
+        path.chmod(0o700)
+        return path
+
+    def cli(self, *args, root=None):
+        return subprocess.run([sys.executable, "-m", MODULE, "--root", str(root or self.root),
+                               "--json", *args], env=self.env, cwd=self.home,
+                              capture_output=True, timeout=20)
+
+    def manifests(self):
+        return [json.loads(path.read_text()) for path in self.root.glob("events/*/manifest.json")]
+
+    def test_ssh_and_adb_authentic_streams_metadata_fts_replay_and_exit(self):
+        self.executable("ssh", "printf 'PUBLIC_P37_SSH_STDOUT\\n'; printf 'PUBLIC_P37_SSH_STDERR\\n' >&2; exit 7\n")
+        self.executable("adb", """
+if [ "$1" = devices ]; then
+  printf 'List of devices attached\\nPUBLIC-DEVICE-37\\tdevice\\n'
+  exit 0
+fi
+printf 'PUBLIC_P37_ADB_STDOUT\\n'; printf 'PUBLIC_P37_ADB_STDERR\\n' >&2
+""")
+        ssh = self.cli("remote", "ssh", "--target", "oracle-fixture", "--include-output",
+                       "--", "/usr/bin/printf", "public")
+        self.assertEqual(ssh.returncode, 7, ssh.stderr)
+        self.assertIn(b"PUBLIC_P37_SSH_STDOUT", ssh.stdout)
+        self.assertIn(b"PUBLIC_P37_SSH_STDERR", ssh.stderr)
+        adb = self.cli("remote", "adb", "--include-output", "--", "/system/bin/printf", "public")
+        self.assertEqual(adb.returncode, 0, adb.stderr)
+        manifests = self.manifests()
+        self.assertEqual({m["source"] for m in manifests}, {"ssh", "adb"})
+        archive = Archive(self.root)
+        for manifest in manifests:
+            self.assertEqual(manifest["coverage"], "remote-streams")
+            self.assertIn("stdout", manifest["files"])
+            self.assertIn("stderr", manifest["files"])
+            self.assertIn("timing", manifest["files"])
+            self.assertEqual(manifest["input"], "closed-not-recorded")
+            self.assertEqual(manifest["metadata"]["argv"], "filtered-to-executable-basename")
+            replay = self.cli("replay", manifest["id"], "--speed", "1000")
+            self.assertEqual(replay.returncode, 0, replay.stderr)
+            self.assertEqual(replay.stdout, archive.read(manifest, "output"))
+        ssh_manifest = next(m for m in manifests if m["source"] == "ssh")
+        adb_manifest = next(m for m in manifests if m["source"] == "adb")
+        self.assertEqual(ssh_manifest["exit_code"], 7)
+        self.assertEqual(ssh_manifest["metadata"]["remote_host"], "oracle-fixture")
+        self.assertEqual(adb_manifest["exit_code"], 0)
+        self.assertEqual(adb_manifest["metadata"]["device_serial_sha256"],
+                         hashlib.sha256(b"PUBLIC-DEVICE-37").hexdigest())
+        self.assertNotIn("PUBLIC-DEVICE-37", json.dumps(adb_manifest))
+        self.assertTrue(archive.query("PUBLIC_P37", source="ssh"))
+        self.assertTrue(archive.query("PUBLIC_P37", source="adb"))
+        self.assertTrue(archive.query('"oracle-fixture"', source="ssh"))
+
+    def test_ssh_remote_command_preserves_argv_boundaries(self):
+        command = ["/usr/bin/python3", "-c", "print('public value')"]
+        argv, _metadata = _transport_argv("ssh", command, target="oracle-fixture",
+                                          device_sha256=None)
+        self.assertEqual(argv[-1], shlex.join(command))
+        self.assertEqual(argv[-2], "oracle-fixture")
+        runner = lambda args, **_kwargs: subprocess.CompletedProcess(
+            args, 0, stdout="List of devices attached\nPUBLIC-DEVICE-37\tdevice\n", stderr="")
+        adb_argv, _metadata = _transport_argv("adb", command, target=None,
+                                              device_sha256=None, runner=runner)
+        self.assertEqual(adb_argv[-1], shlex.join(command))
+
+    def test_sensitive_stream_disabled_and_storage_failure_do_not_block_commands(self):
+        marker = "PUBLIC_P37_REDACTED_STREAM"
+        self.executable("ssh", f"printf 'token={marker}\\n'; exit 0\n")
+        result = self.cli("remote", "ssh", "--target", "safe-alias", "--include-output",
+                          "--", "/usr/bin/printf", "public")
+        self.assertEqual(result.returncode, 0)
+        manifest = self.manifests()[0]
+        self.assertEqual(manifest["coverage"], "metadata-only")
+        for path in self.root.rglob("*"):
+            if path.is_file():
+                self.assertNotIn(marker.encode(), path.read_bytes())
+        broken = self.home / "not-a-directory"
+        broken.write_text("fixture")
+        fail_open = self.cli("remote", "ssh", "--target", "safe-alias", "--",
+                             "/usr/bin/true", root=broken)
+        self.assertEqual(fail_open.returncode, 0)
+
+    def test_disable_runs_transport_without_new_event_then_enable_restores(self):
+        self.executable("ssh", "printf 'PUBLIC_DISABLED_REMOTE\\n'; exit 0\n")
+        self.assertEqual(self.cli("disable").returncode, 0)
+        result = self.cli("remote", "ssh", "--target", "safe-alias", "--include-output",
+                          "--", "/usr/bin/printf", "public")
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(self.manifests(), [])
+        self.assertEqual(self.cli("enable").returncode, 0)
+        self.assertEqual(self.cli("remote", "ssh", "--target", "safe-alias", "--",
+                                  "/usr/bin/true").returncode, 0)
+        self.assertEqual(len(self.manifests()), 1)
+
+    def test_github_run_log_metadata_digest_dedup_and_no_fake_replay(self):
+        metadata = {"id": 37001, "run_attempt": 1, "name": "CI", "event": "push",
+                    "status": "completed", "conclusion": "success", "head_sha": "a" * 40,
+                    "created_at": "2026-10-12T00:00:00Z", "updated_at": "2026-10-12T00:01:00Z",
+                    "run_started_at": "2026-10-12T00:00:01Z"}
+        log = b"build\tverify\t2026-10-12T00:00:02Z PUBLIC_P37_GITHUB_LOG\n"
+
+        def runner(argv, **_kwargs):
+            if argv[1] == "api":
+                return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(metadata), stderr="")
+            return subprocess.CompletedProcess(argv, 0, stdout=log, stderr=b"")
+
+        archive = Archive(self.root)
+        first = ingest_github_run(archive, repo="owner/repo", run_id=37001,
+                                  include_logs=True, runner=runner)
+        second = ingest_github_run(archive, repo="owner/repo", run_id=37001,
+                                   include_logs=True, runner=runner)
+        self.assertEqual((first["inserted"], second["duplicates"]), (1, 1))
+        self.assertEqual(first["log_sha256"], hashlib.sha256(log).hexdigest())
+        manifest = self.manifests()[0]
+        self.assertEqual(manifest["coverage"], "runner-log")
+        self.assertIn("output", manifest["files"])
+        self.assertNotIn("timing", manifest["files"])
+        self.assertTrue(archive.query("PUBLIC_P37_GITHUB_LOG", source="github-actions"))
+        self.assertTrue(archive.query("37001", source="github-actions"))
+        replay = self.cli("replay", manifest["id"])
+        self.assertNotEqual(replay.returncode, 0)
+
+    def test_github_masked_or_sensitive_log_is_metadata_only(self):
+        metadata = {"id": 37002, "run_attempt": 1, "name": "CI", "event": "push",
+                    "status": "completed", "conclusion": "success", "head_sha": "b" * 40,
+                    "created_at": "2026-10-12T00:00:00Z", "updated_at": "2026-10-12T00:02:00Z"}
+        marker = b"PUBLIC_P37_MASKED_MATERIAL"
+
+        def runner(argv, **_kwargs):
+            if argv[1] == "api":
+                return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(metadata), stderr="")
+            return subprocess.CompletedProcess(argv, 0, stdout=b"value=*** " + marker, stderr=b"")
+
+        result = ingest_github_run(Archive(self.root), repo="owner/repo", run_id=37002,
+                                   include_logs=True, runner=runner)
+        self.assertEqual(result["coverage"], "metadata-only")
+        for path in self.root.rglob("*"):
+            if path.is_file():
+                self.assertNotIn(marker, path.read_bytes())
+
+    def test_remote_crash_recovers_durable_stream_once(self):
+        self.executable("ssh", "printf 'PUBLIC_P37_CRASH_FRAME\\n'; head -c 9000 /dev/zero | tr '\\000' x; exec sleep 10\n")
+        argv = [sys.executable, "-m", MODULE, "--root", str(self.root), "--json",
+                "remote", "ssh", "--target", "safe-alias", "--include-output",
+                "--", "/usr/bin/printf", "public"]
+        proc = subprocess.Popen(argv, env=self.env, cwd=self.home,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        deadline = time.monotonic() + 5
+        manifest = None
+        try:
+            while time.monotonic() < deadline:
+                paths = list(self.root.glob("events/*/manifest.json"))
+                if paths and list(self.root.glob("events/*/output.raw")):
+                    manifest = json.loads(paths[0].read_text())
+                    break
+                time.sleep(.02)
+            self.assertIsNotNone(manifest)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait(timeout=5)
+            if manifest:
+                try:
+                    os.kill(manifest["transport_pid"], signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+        archive = Archive(self.root)
+        self.assertEqual(archive.recover(), 1)
+        self.assertEqual(archive.recover(), 0)
+        recovered = json.loads(next(self.root.glob("events/*/manifest.json")).read_text())
+        self.assertEqual(recovered["state"], "interrupted")
+        self.assertIsNone(recovered["exit_code"])
+        self.assertIn(b"PUBLIC_P37_CRASH_FRAME", archive.read(recovered, "output"))
+
+    def test_remote_inventory_is_complete_and_explicit(self):
+        sources = {item["source"]: item for item in remote_inventory()["sources"]}
+        self.assertEqual(set(sources), {"ssh", "github-actions", "adb"})
+        self.assertIn("remote PID NOT COVERED", sources["ssh"]["coverage"])
+        self.assertIn("replay NOT COVERED", sources["github-actions"]["coverage"])
 
 
 class ProcessAdapterTest(unittest.TestCase):
