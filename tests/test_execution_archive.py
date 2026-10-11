@@ -14,6 +14,7 @@ from pathlib import Path
 
 from fedora_system_monitor.capsules.execution_archive import Archive, Zstd, atomic_json
 from fedora_system_monitor.capsules.execution_archive.capture import request
+from fedora_system_monitor.capsules.execution_archive.process_adapter import _command_name
 
 REPO = Path(__file__).resolve().parent.parent
 MODULE = "fedora_system_monitor.capsules.execution_archive.cli"
@@ -160,6 +161,11 @@ class ProcessAdapterTest(unittest.TestCase):
     def manifests(self):
         return [json.loads(p.read_text()) for p in self.root.glob("events/*/manifest.json")]
 
+    def test_command_name_skips_assignments_and_prefixes(self):
+        self.assertEqual(_command_name("TOKEN=synthetic-canary printf safe"), "printf")
+        self.assertEqual(_command_name("env TOKEN=synthetic-canary printf safe"), "printf")
+        self.assertEqual(_command_name("command nohup COLOR=blue /usr/bin/printf safe"), "printf")
+
     def test_rdc_separated_streams_over_4k_child_fts_and_replay(self):
         program = ("import os,subprocess;"
                    "os.write(1,b'PUBLIC_STDOUT_START\\n'+b'o'*5000+b'\\n');"
@@ -219,21 +225,36 @@ class ProcessAdapterTest(unittest.TestCase):
         self.assertEqual(manifests[0]["correlation"], manifests[0]["id"])
 
     def test_sensitive_command_and_output_fail_closed_to_metadata(self):
-        secret_command = self.command("rdc", "printf 'PUBLIC_TOKEN_COMMAND' # token",
+        command_canary = "PUBLIC_SYNTHETIC_METADATA_CANARY_64"
+        output_canary = "PUBLIC_SYNTHETIC_STREAM_CANARY_64"
+        secret_command = self.command(
+            "rdc", f"TOKEN={command_canary} printf PUBLIC_EXCLUDED_COMMAND",
+            capture_output=True)
+        self.assertEqual(secret_command.stdout, b"PUBLIC_EXCLUDED_COMMAND")
+        program = ("import os;"
+                   "label=bytes((116,111,107,101,110,61));"
+                   f"value={output_canary!r}.encode();"
+                   "os.write(1,label+value+b'\\n');"
+                   "os.write(2,label+value+b'\\n')")
+        secret_output = self.command(
+            "rdc", f"{shlex.quote(sys.executable)} -c {shlex.quote(program)}",
                                       capture_output=True)
-        self.assertEqual(secret_command.stdout, b"PUBLIC_TOKEN_COMMAND")
-        secret_output = self.command("rdc", "printf 'token=PUBLIC_SYNTHETIC_VALUE'",
-                                     capture_output=True)
-        self.assertEqual(secret_output.stdout, b"token=PUBLIC_SYNTHETIC_VALUE")
+        expected = b"token=" + output_canary.encode() + b"\n"
+        self.assertEqual(secret_output.stdout, expected)
+        self.assertEqual(secret_output.stderr, expected)
         manifests = self.manifests()
         self.assertEqual(len(manifests), 2)
         self.assertTrue(all(m["coverage"] == "metadata-only" for m in manifests))
+        self.assertEqual({m["command_name"] for m in manifests}, {"excluded", "python3"})
         for m in manifests:
             self.assertEqual(m["files"], {})
+        self.assertEqual(self.a.query(command_canary), [])
+        self.assertEqual(self.a.query(output_canary), [])
         for path in self.root.rglob("*"):
             if path.is_file():
                 data = path.read_bytes()
-                self.assertNotIn(b"PUBLIC_SYNTHETIC_VALUE", data)
+                self.assertNotIn(command_canary.encode(), data)
+                self.assertNotIn(output_canary.encode(), data)
 
     def test_codex_hook_rewrites_only_bash_without_transcript_access(self):
         hook = REPO / "hooks/execution-archive-codex.py"

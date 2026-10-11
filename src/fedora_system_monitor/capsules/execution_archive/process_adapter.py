@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import selectors
 import shlex
 import signal
@@ -34,11 +35,14 @@ def _command_name(command: str) -> str:
         return "shell"
     if not words:
         return "shell"
-    word = words[0]
-    while word in {"exec", "command", "env", "nohup"} and len(words) > 1:
-        words.pop(0)
-        word = words[0]
-    return Path(word).name[:80] or "shell"
+    while words:
+        word = words.pop(0)
+        if word in {"exec", "command", "env", "nohup"}:
+            continue
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", word):
+            continue
+        return Path(word).name[:80] or "shell"
+    return "shell"
 
 
 def _effective_command(source: str, command: str) -> str:
@@ -100,7 +104,8 @@ def run(source: str, args: list[str], root: Path | None = None) -> int:
         }
         m = archive.begin(kind="command", source=source, label="process", pid=os.getpid(),
                           capture=reason is None, consent=consent)
-        m.update(parent_pid=os.getppid(), command_name=_command_name(effective_command),
+        m.update(parent_pid=os.getppid(),
+                 command_name="excluded" if reason else _command_name(effective_command),
                  origins=[source], input="forwarded-not-recorded",
                  streams="stdout-stderr-separated-and-combined" if consent else "excluded",
                  coverage="process-streams" if consent else "metadata-only",
