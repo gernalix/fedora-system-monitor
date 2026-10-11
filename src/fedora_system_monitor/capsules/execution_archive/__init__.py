@@ -19,8 +19,17 @@ import time
 import uuid
 from pathlib import Path
 
-SOURCES = {"bash", "manual", "diagnostic", "rdc", "codex"}
-LABELS = {"shell", "process", "excluded", "date", "uname", "uptime", "true", "false", "demo"}
+SOURCES = {
+    "bash", "manual", "diagnostic", "rdc", "codex",
+    "systemd-system", "systemd-user", "cron", "udev", "podman",
+    "git-hook", "ide", "launcher",
+}
+LABELS = {
+    "shell", "process", "excluded", "date", "uname", "uptime", "true", "false", "demo",
+    "service", "scheduled", "container", "hook", "ide", "launcher", "device-event",
+}
+KINDS = {"session", "command", "execution"}
+EXTERNAL_NAMESPACE = uuid.UUID("fc39f4a6-d989-4a37-952c-916425cc30fe")
 SAFE = {
     ("date",): ("/usr/bin/date",),
     ("date", "-u"): ("/usr/bin/date", "-u"),
@@ -174,7 +183,7 @@ class Archive:
 
     def begin(self, *, kind: str, source: str, label: str, pid: int,
               parent: str | None = None, capture: bool = False, consent: dict | None = None) -> dict:
-        if kind not in {"session", "command"} or source not in SOURCES or label not in LABELS:
+        if kind not in KINDS or source not in SOURCES or label not in LABELS:
             raise ValueError("unapproved provenance")
         if parent is not None:
             parent = str(uuid.UUID(parent))
@@ -201,6 +210,67 @@ class Archive:
                 m.update(policy_level="safe", consent=None, residual_risk=False)
             atomic_json(path / "manifest.json", m)
             return m
+
+    def record_external(self, *, source: str, label: str, identity: str,
+                        started: float, pid: int = 0, parent_pid: int | None = None,
+                        exit_code: int | None = None, correlation_key: str = "",
+                        metadata: dict | None = None, output: bytes | None = None,
+                        coverage: str = "metadata-only", content_gap: str = "") -> tuple[dict, bool]:
+        """Atomically add one bounded native event, idempotent by source identity.
+
+        Callers must pass only filtered metadata.  Content is accepted only from an
+        explicitly selected native source and is stored as a combined stream; it is
+        never labelled stdout/stderr unless the source proves that distinction.
+        """
+        if source not in SOURCES - {"bash", "manual", "diagnostic", "rdc", "codex"}:
+            raise ValueError("unapproved external source")
+        if label not in LABELS or not identity or len(identity) > 4096:
+            raise ValueError("invalid external identity")
+        event_id = str(uuid.uuid5(EXTERNAL_NAMESPACE, source + "\0" + identity))
+        correlation = str(uuid.uuid5(EXTERNAL_NAMESPACE, source + "\0corr\0" +
+                                     (correlation_key or identity)))
+        path = self.events / event_id
+        with self.lock():
+            manifest = path / "manifest.json"
+            if manifest.exists():
+                existing = json.loads(manifest.read_text())
+                if existing.get("id") != event_id or existing.get("source") != source:
+                    raise ValueError("external identity collision")
+                # A crash may leave the durable original committed just before
+                # its rebuildable index transaction.  Retry repairs that gap.
+                self._index(existing)
+                return existing, False
+            self._maintain()
+            private_dir(path)
+            now = time.time()
+            m = dict(
+                id=event_id, kind="execution", source=source, host=os.uname().nodename,
+                parent=None, correlation=correlation, pid=max(0, int(pid)),
+                parent_pid=parent_pid, owner_pid=os.getpid(),
+                owner_fingerprint=fingerprint(os.getpid()), started=float(started), ended=now,
+                exit_code=exit_code, state="complete", coverage=coverage, label=label,
+                input="never-recorded", streams="journal-combined" if output else "excluded",
+                files={}, schema_version=4, bytes=0, policy_level="native-filtered",
+                consent={"explicit": True, "scope": "exact-native-source"} if output else None,
+                residual_risk=bool(output), content_gaps=bool(content_gap) or not bool(output),
+                content_gap=content_gap or ("native-content-not-selected" if not output else ""),
+                metadata=dict(metadata or {}),
+                external_identity_sha256=hashlib.sha256(identity.encode()).hexdigest(),
+            )
+            if output:
+                if coverage != "journal-stream" or len(output) > self.config["event_bytes"]:
+                    raise ValueError("unapproved external content")
+                with private_file(path / "output.raw") as f:
+                    f.write(output)
+                with private_file(path / "timing.raw") as f:
+                    f.write(f"0.000000 {len(output)}\n".encode())
+                m["bytes"] = len(output)
+            elif coverage != "metadata-only":
+                raise ValueError("invalid metadata-only coverage")
+            self._seal(m)
+            self._index(m)
+            self._maintain()
+            return m, True
 
     def append(self, m: dict, data: bytes, delay: float, *, stream: str = "output") -> None:
         clocks = {"output": "timing", "input": "input_timing",
@@ -413,9 +483,9 @@ class Archive:
                      for p in self.events.glob("*/manifest.json"))
         return dict(enabled=self.enabled(), root=str(self.root), bytes=self.usage(), active=active,
                     limits=self.config, coverage=groups, input="full opt-in ordinary echo-on only", shell_content="safe excluded; full consent visible PTY",
-                    content_policy="safe fixed diagnostics; full explicit consent with exclusions",
-                    stdout_stderr="terminal PTY combined; RDC/Codex process streams separated plus ordered replay",
-                    chat_sources="never-imported", scheduler="shell startup / manual maintenance",
+                    content_policy="safe fixed diagnostics; full explicit consent; exact-unit journal opt-in with exclusions",
+                    stdout_stderr="terminal PTY combined; RDC/Codex separated; journald combined and explicitly incomplete",
+                    chat_sources="never-imported", scheduler="shell startup / manual bounded source collection",
                     capture_policy="safe default; full requires explicit consent",
                     live_capture=[json.loads(p.read_text()) for p in self.events.glob("*/capture-state.json")
                                   if fingerprint(json.loads(p.read_text()).get("owner_pid", 0)) ==

@@ -1,7 +1,7 @@
-# Archivio esecuzioni — P35, fase 2 RDC e Codex
+# Archivio esecuzioni — P36, fasi 1–3
 
-Fedora System Monitor, project_id 15, NV 4. Riutilizza archivio, CLI, hook,
-SQLite/FTS e replay P34/P48. Non legge né importa chat, transcript Codex,
+Fedora System Monitor, project_id 15, NV 6. Riutilizza archivio, CLI, hook,
+SQLite/FTS e replay P34/P48/P35. Non legge né importa chat, transcript Codex,
 sessioni browser, cronologie Bash o backup. Nessun nuovo database, daemon,
 monitor, timer o tmux.
 
@@ -18,6 +18,9 @@ ea resume
 ea capture off
 ea search testo
 ea replay UUID --speed 2
+ea sources inventory
+ea sources collect-journal --scope user --unit nome.service
+ea sources collect-podman
 ```
 
 Lo stesso installer imposta la `defaultShell` supportata di Remote Desktop
@@ -189,6 +192,66 @@ limiti. Non attribuisce contenuti esclusi a cattura completa. Le invocazioni
 amministrative interattive mostrano `NV`; `--json`, pipe, replay, run e servizi
 mantengono il contratto macchina/stream senza banner.
 
+## Fase 3: esecuzioni locali non interattive
+
+P36 aggiunge adapter **opportunistici** all'archivio esistente. Non installa un
+secondo daemon, timer, watcher di processi, regola auditd/eBPF o listener. Ogni
+passaggio è esplicito e limitato a una unità esatta oppure agli eventi nativi
+Podman; i cursori privati avanzano soltanto dopo la persistenza riuscita. Una
+seconda lettura dello stesso cursore è idempotente e il guasto dell'archivio non
+blocca un comando avviato tramite wrapper.
+
+Esempi:
+
+```bash
+# Metadati lifecycle; nessun MESSAGE viene conservato.
+ea sources collect-journal --scope system --unit esempio.service
+
+# Solo per una unità esatta e conosciuta sicura: MESSAGE reale del processo.
+# Journald non dimostra la separazione stdout/stderr, quindi resta stream combinato.
+ea sources collect-journal --scope user --unit esempio.service --include-output
+
+# Eventi lifecycle Podman filtrati; attributi arbitrari e log non vengono salvati.
+ea sources collect-podman
+
+# Boundary opt-in: I/O ereditato e non registrato, argv ridotto al basename.
+ea sources run --source git-hook --name pre-commit -- /percorso/hook
+ea sources run --source ide --name gradle -- /percorso/gradle task
+ea sources run --source launcher --name locale -- /percorso/launcher
+```
+
+Il collector journal conserva solo unità/scope, basename eseguibile, PID quando
+presente, timestamp, risultato/exit status quando forniti nativamente, boot ID e
+correlazione dell'invocation. Non legge `_CMDLINE`, environment o stdin. Journald
+non fornisce il parent PID storico: il campo resta esplicitamente non coperto.
+`--include-output` accetta soltanto `MESSAGE` dell'esatto processo della unità,
+applica il filtro conservativo già usato dall'archivio e non denomina mai quello
+stream “stdout completo”. Timing di replay e separazione stdout/stderr non sono
+disponibili dalla sorgente journal.
+
+### Matrice verificata fonte per fonte
+
+| Fonte | Presenza P36 | Copertura effettiva | Output/limiti |
+| --- | --- | --- | --- |
+| systemd system | presente | comando filtrato al basename; PID+timestamp; exit code quando journal lo espone; correlazione invocation | stream journald combinato solo opt-in unità esatta; parent PID, stdin e stdout/stderr separati NOT COVERED |
+| systemd user | presente | come system; cursore indipendente per unità | stessi limiti; nessuna scansione globale |
+| timer system/user | presenti | esecuzione del service correlato tramite journal; trigger timer metadata-only | output del timer stesso non esiste; output service segue la riga systemd |
+| cron/anacron | presenti | `crond.service` metadata-only su passaggio esplicito | stdout/stderr del job e mail cron NOT COVERED |
+| udev | presente | eventi device già posseduti da Fedora System Monitor; journal udev metadata-only | argv/output dei `RUN` NOT COVERED; nessuna regola audit aggiunta |
+| autostart | presente | inventario di presenza/count metadata-only | esecuzioni, argv e output NOT COVERED |
+| Git hook | hook reali presenti, non riscritti | PID+parent+timestamp+exit solo con wrapper opt-in | I/O e argv completo NOT COVERED; hook esistenti preservati |
+| Podman | installato, zero container al preflight | parser/eventi lifecycle nativi metadata-only | log/output NOT COVERED perché nessun container reale sicuro presente; attributi arbitrari esclusi |
+| Docker | non installato | NOT COVERED | nessun connettore inventato |
+| Android Studio/Gradle e IDE | presenti | PID+parent+timestamp+exit solo con wrapper opt-in | log IDE/daemon, file prodotti e output non mediato NOT COVERED |
+| Chrome native messaging | manifest presenti | sola presenza/count metadata-only | contenuto pagine/messaggi/processi NOT COVERED e vietato |
+| launcher/script | presenti | PID+parent+timestamp+exit solo con wrapper opt-in | I/O/argv completo NOT COVERED; nessuna riscrittura automatica |
+| auditd/eBPF | auditctl presente | NOT ENABLED | intercettazione exec globale giudicata non necessaria e invasiva |
+
+Un file scritto direttamente da un processo non è stdout e non viene importato.
+Gli eventi P36 non generano un alert per processo: `ea status` e la health già
+esistente restano le superfici operative. Retention, quota, rotazione e permessi
+dell'archivio unico restano invariati.
+
 ## Verifica riproducibile
 
 ```bash
@@ -205,6 +268,10 @@ I test P34 verificano anche hash/Zstd, indice ricostruibile/deduplica, retention
 quota, permessi e compatibilità Bash. I test P35 aggiungono stream oltre 4 KiB,
 stdin inoltrato, processo figlio, deduplica RDC/Codex, FTS/replay, fail-closed e
 install/upgrade/rollback in HOME temporanea. Nessun test termina processi utente.
+I test P36 aggiungono matrice completa, journal system/user sintetico, cursore,
+duplicato/ripresa, output consentito e sensibile, exit/correlazione, evento Podman,
+wrapper Git/IDE/launcher e guasto archiver fail-open. Le prove live usano solo
+unità transitorie P36 non critiche e fixture pubbliche.
 
 Verifica live P48, 2026-10-11: due schede Ptyxis reali, indipendenti e simultanee,
 con driver pubblico su PTY e Bash normale che carica gli hook installati.
@@ -253,3 +320,32 @@ lo steer P57 vieta una nuova chat e input simulato, quindi non è stata inventat
 una prova end-to-end di un tool Bash prodotto dal modello. Fino alla review in
 una futura sessione visibile, la copertura Codex effettiva resta PARTIAL; RDC e
 il boundary/hook contract sono verificati.
+
+## Verifica P36, 2026-10-12
+
+Preflight: archivio fase 1/2 abilitato e utilizzabile; listener Fedora System
+Monitor `active/running`, `Result=success`, `NRestarts=0`. L'inventario reale ha
+confermato systemd system/user, timer, cron/anacron, udev, 15 Git hook nel common
+Git dir, Podman senza container, Android Studio/Gradle, manifest native messaging
+e launcher. Docker e bpftrace sono assenti; auditctl è presente ma non è stato
+abilitato.
+
+Tre unità transitorie pubbliche e non critiche hanno verificato un user oneshot,
+un system oneshot e un job user pianificato. Nell'archivio installato: 9 eventi
+inseriti, 5 stream journal reali (stdout e stderr combinati), correlazione stabile
+per invocation e system exit code 0. Il journal user non ha esposto exit code o
+parent PID: non vengono inventati. Un secondo passaggio sul cursore system ha
+letto/inserito 0 eventi. Podman reale ha restituito 0 eventi perché non esistono
+container; il parser lifecycle è coperto da fixture filtrata.
+
+Overhead dei passaggi isolati: user 0,09 s / 35.036 KiB RSS e system 0,39 s /
+34.136 KiB RSS; nessun polling permanente. 261 test repository, diff-check,
+readback dei moduli installati/NV e ricerca FTS dei canary sono PASS. Il deploy
+ha usato il backup/rollback dell'installer senza riavviare servizi; listener e
+timer preesistenti sono rimasti sani.
+
+Risultato di copertura P36: **PARTIAL intenzionale**. Output completo, parent PID
+journal, exit code user non esposto, cron stdout/stderr, `RUN` udev, autostart,
+log container assenti, IDE non mediati, native messaging e launcher non adottati
+restano NOT COVERED secondo la matrice; nessuna sorgente viene promossa oltre
+l'evidenza realmente osservata.
