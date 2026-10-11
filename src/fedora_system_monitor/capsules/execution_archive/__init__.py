@@ -1,7 +1,7 @@
 """Private execution archive. Manifests own originals; SQLite is a rebuildable index.
 
 No arbitrary file importer, argv/env serializer, browser or conversation source.
-Content capture is restricted to fixed, environment-independent diagnostics.
+Safe capture uses fixed diagnostics; full visible PTY capture requires explicit consent.
 """
 from __future__ import annotations
 
@@ -173,12 +173,12 @@ class Archive:
         return not (self.root / "disabled").exists()
 
     def begin(self, *, kind: str, source: str, label: str, pid: int,
-              parent: str | None = None, capture: bool = False) -> dict:
+              parent: str | None = None, capture: bool = False, consent: dict | None = None) -> dict:
         if kind not in {"session", "command"} or source not in SOURCES or label not in LABELS:
             raise ValueError("unapproved provenance")
         if parent is not None:
             parent = str(uuid.UUID(parent))
-        if capture and (label not in LABELS - {"shell", "excluded"} or kind != "command"):
+        if capture and not (consent and consent.get("explicit") is True) and (label not in LABELS - {"shell", "excluded"} or kind != "command"):
             raise ValueError("unapproved capture")
         with self.lock():
             self._maintain()
@@ -192,11 +192,20 @@ class Archive:
                      coverage="output-only" if capture else "metadata-only", label=label,
                      input="never-recorded", streams="pty-combined" if capture else "excluded",
                      files={}, schema_version=1, bytes=0)
+            if consent:
+                m.update(policy_level="full", consent=consent, coverage="visible-pty",
+                         input="ordinary-echo-on-only" if consent.get("input") else "visible-echo-only",
+                         streams="pty-output-and-echo-inseparable", residual_risk=True,
+                         content_gaps=True, schema_version=2)
+            else:
+                m.update(policy_level="safe", consent=None, residual_risk=False)
             atomic_json(path / "manifest.json", m)
             return m
 
-    def append(self, m: dict, data: bytes, delay: float) -> None:
-        if m["coverage"] not in {"output-only", "truncated"} or not data:
+    def append(self, m: dict, data: bytes, delay: float, *, stream: str = "output") -> None:
+        if stream not in {"output", "input"} or (stream == "input" and not (m.get("consent") or {}).get("input")):
+            raise ValueError("unapproved stream")
+        if m["coverage"] not in {"output-only", "visible-pty", "truncated"} or not data:
             return
         with self.lock():
             if (m["bytes"] + len(data) > self.config["event_bytes"] or
@@ -208,10 +217,10 @@ class Archive:
             if m["coverage"] == "truncated":
                 return
             path = self.events / m["id"]
-            with private_file(path / "output.raw", "ab") as f:
+            with private_file(path / f"{stream}.raw", "ab") as f:
                 f.write(data)
                 f.flush()
-            with private_file(path / "timing.raw", "ab") as f:
+            with private_file(path / ("timing.raw" if stream == "output" else "input_timing.raw"), "ab") as f:
                 f.write(f"{max(0, delay):.6f} {len(data)}\n".encode())
                 f.flush()
             m["bytes"] += len(data)
@@ -228,7 +237,7 @@ class Archive:
     def _seal(self, m: dict) -> None:
         path = self.events / m["id"]
         # Preserve raw until every compressed frame and manifest is durable.
-        for name in ("output", "timing"):
+        for name in ("output", "timing", "input", "input_timing"):
             raw = path / f"{name}.raw"
             if not raw.exists():
                 continue
@@ -244,7 +253,7 @@ class Archive:
                                      sha256=hashlib.sha256(data).hexdigest(),
                                      compressed_sha256=hashlib.sha256(compressed).hexdigest())
         atomic_json(path / "manifest.json", m)
-        for name in ("output", "timing"):
+        for name in ("output", "timing", "input", "input_timing"):
             (path / f"{name}.raw").unlink(missing_ok=True)
 
     def read(self, m: dict, name: str) -> bytes:
@@ -296,9 +305,12 @@ class Archive:
                 if m["state"] == "active":
                     if fingerprint(m["owner_pid"]) == m["owner_fingerprint"]:
                         continue
-                    # A crash between data and timing can leave an unpaired tail.
-                    raw, timing = path / "output.raw", path / "timing.raw"
-                    if raw.exists():
+                    # Pair each stream with its own timing; never confuse input and echo.
+                    m["bytes"] = 0
+                    for stream, clock in (("output", "timing"), ("input", "input_timing")):
+                        raw, timing = path / f"{stream}.raw", path / f"{clock}.raw"
+                        if not raw.exists():
+                            continue
                         lines = timing.read_text().splitlines() if timing.exists() else []
                         valid, size = [], 0
                         for line in lines:
@@ -316,7 +328,7 @@ class Archive:
                             f.write(recovered)
                         with private_file(timing) as f:
                             f.write(("\n".join(valid) + ("\n" if valid else "")).encode())
-                        m["bytes"] = size
+                        m["bytes"] += size
                     m.update(state="interrupted", ended=time.time(), exit_code=None)
                     self._seal(m)
                     count += 1
@@ -381,6 +393,10 @@ class Archive:
         active = sum(json.loads(p.read_text())["state"] == "active"
                      for p in self.events.glob("*/manifest.json"))
         return dict(enabled=self.enabled(), root=str(self.root), bytes=self.usage(), active=active,
-                    limits=self.config, coverage=groups, input="excluded", shell_content="excluded",
-                    content_policy="fixed-diagnostics-only", stdout_stderr="combined PTY",
-                    chat_sources="never-imported", scheduler="shell startup / manual maintenance")
+                    limits=self.config, coverage=groups, input="full opt-in ordinary echo-on only", shell_content="safe excluded; full consent visible PTY",
+                    content_policy="safe fixed diagnostics; full explicit consent with exclusions", stdout_stderr="combined PTY",
+                    chat_sources="never-imported", scheduler="shell startup / manual maintenance",
+                    capture_policy="safe default; full requires explicit consent",
+                    live_capture=[json.loads(p.read_text()) for p in self.events.glob("*/capture-state.json")
+                                  if fingerprint(json.loads(p.read_text()).get("owner_pid", 0)) ==
+                                     json.loads(p.read_text()).get("owner_fingerprint", "missing")])

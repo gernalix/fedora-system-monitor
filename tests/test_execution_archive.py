@@ -12,6 +12,7 @@ import unittest
 from pathlib import Path
 
 from fedora_system_monitor.capsules.execution_archive import Archive, Zstd, atomic_json
+from fedora_system_monitor.capsules.execution_archive.capture import request
 
 REPO = Path(__file__).resolve().parent.parent
 MODULE = "fedora_system_monitor.capsules.execution_archive.cli"
@@ -151,7 +152,7 @@ class BashPTYTest(unittest.TestCase):
         (self.home / ".bashrc").write_text(
             f'source {REPO}/hooks/execution-archive-entry.bash\n'
             'PS1="FSM_TEST_READY> "\n'
-            f'source {REPO}/hooks/execution-archive-metadata.bash\n')
+            f'source {REPO}/hooks/execution-archive-metadata.bash "$(trap -p DEBUG)"\n')
         self.env = os.environ | {"HOME": str(self.home), "PYTHONPATH": str(REPO / "src")}
         self.children = []
 
@@ -166,7 +167,7 @@ class BashPTYTest(unittest.TestCase):
     def tab(self):
         master, slave = pty.openpty()
         proc = subprocess.Popen(["/bin/bash", "--noprofile", "-i"], env=self.env,
-                                stdin=slave, stdout=slave, stderr=slave, start_new_session=True)
+                                stdin=slave, stdout=slave, stderr=slave, start_new_session=True, cwd=self.home)
         os.close(slave)
         self.children.append((proc, master))
         self.until(master, b"FSM_TEST_READY> ")
@@ -183,6 +184,187 @@ class BashPTYTest(unittest.TestCase):
                     break
         self.assertIn(marker, data)
         return data
+
+    def session(self, proc):
+        for p in self.root.glob("events/*/manifest.json"):
+            m = json.loads(p.read_text())
+            if m["kind"] == "session" and m["parent"] is None and m["owner_pid"] == proc.pid:
+                return m["id"]
+        self.fail("missing shell session")
+
+    def control(self, proc, action, **kwargs):
+        result = request(self.a, self.session(proc), {"action": action} | kwargs)
+        self.assertTrue(result["ok"], result)
+        return result
+
+    def originals(self):
+        result = []
+        for p in self.root.glob("events/*/manifest.json"):
+            m = json.loads(p.read_text())
+            for name in m["files"]:
+                result.append((m, name, self.a.read(m, name)))
+        return result
+
+    def command(self, fd, text):
+        os.write(fd, text.encode() + b"\n")
+        return self.until(fd, b"FSM_TEST_READY> ")
+
+    def test_full_generic_output_input_multiline_ansi_replay_and_runtime_levels(self):
+        proc, fd = self.tab()
+        self.command(fd, "printf 'SAFE_OMITTED_ORDINARY\\n'")
+        state = self.control(proc, "on", input=True)
+        self.assertEqual(state["level"], "full")
+        shown = self.command(fd, "echo PUBLIC_ECHO_FULL; printf 'PUBLIC_PRINTF_FULL\\n'")
+        self.assertIn(b"PUBLIC_PRINTF_FULL", shown)
+        shown = self.command(fd, "python3 -c 'import sys; print(\"\\033[2J\\033[Hframe-public\"); [print(\"public-line-%04d\"%i) for i in range(400)]; print(\"public-stderr-line\",file=sys.stderr)'")
+        self.assertGreater(len(shown), 4096)
+        self.assertIn(b"public-stderr-line", shown)
+        os.write(fd, b"python3 -c 'v=input(\"APP_\"+\"READY\"); print(\"PUBLIC_ACK:\"+v)'\n")
+        self.until(fd, b"APP_READY")
+        os.write(fd, b"PUBLIC_ORDINARY_INPUT\n")
+        self.until(fd, b"FSM_TEST_READY> ")
+        self.control(proc, "pause")
+        self.command(fd, "printf 'PAUSED_NOT_SAVED\\n'")
+        self.control(proc, "resume")
+        self.command(fd, "printf 'RESUMED_SAVED\\n'")
+        self.control(proc, "off")
+        self.command(fd, "printf 'SAFE_AGAIN_NOT_SAVED\\n'")
+        self.command(fd, "false; printf 'STATUS:%s PIPE:%s\\n' $? 0")
+        os.write(fd, b"exit 0\n")
+        self.assertEqual(proc.wait(timeout=10), 0)
+        originals = self.originals()
+        output = b"".join(raw for _m, name, raw in originals if name == "output")
+        self.assertIn(b"PUBLIC_ECHO_FULL", output)
+        self.assertIn(b"PUBLIC_PRINTF_FULL", output)
+        self.assertIn(b"\x1b[2J\x1b[Hframe-public", output)
+        self.assertIn(b"public-line-0399", output)
+        self.assertIn(b"public-stderr-line", output)
+        self.assertIn(b"RESUMED_SAVED", output)
+        for canary in (b"SAFE_OMITTED_ORDINARY", b"PAUSED_NOT_SAVED", b"SAFE_AGAIN_NOT_SAVED"):
+            self.assertNotIn(canary, output)
+        self.assertTrue(self.a.query("PUBLIC_PRINTF_FULL"))
+        self.assertTrue(self.a.query('"public-line-0399"'))
+        inputs = b"".join(raw for _m, name, raw in originals if name == "input")
+        self.assertIn(b"PUBLIC_ORDINARY_INPUT\n", inputs)
+        for m, name, raw in originals:
+            if name != "output":
+                continue
+            replay = subprocess.check_output([sys.executable, "-m", MODULE, "--root", str(self.root),
+                                              "replay", m["id"], "--speed", "1000"], env=self.env)
+            self.assertEqual(replay, raw)
+            self.assertEqual(m["streams"], "pty-output-and-echo-inseparable")
+            self.assertTrue(m["consent"]["explicit"])
+
+    def test_full_hidden_sensitive_paths_and_output_canaries_excluded(self):
+        proc, fd = self.tab()
+        self.control(proc, "on", input=True)
+        self.command(fd, "echo public_before_guard")
+        os.write(fd, b"read -s -p 'HIDDEN_READY' value; printf '\\n'; unset value\n")
+        self.until(fd, b"HIDDEN_READY")
+        os.write(fd, b"PUBLIC_SYNTHETIC_HIDDEN_48\n")
+        self.until(fd, b"FSM_TEST_READY> ")
+        self.command(fd, "printf 'token=PUBLIC_SYNTHETIC_TOKEN_48\\n'")
+        # A generic executable toggles ECHO, without a recognizable command name.
+        reader = self.home / "public-reader.py"
+        reader.write_text('import sys,termios\nt=termios.tcgetattr(0); t[3]&=~termios.ECHO; termios.tcsetattr(0,termios.TCSANOW,t)\nprint("DYNAMIC_HIDDEN_READY",flush=True)\nv=sys.stdin.readline();t[3]|=termios.ECHO;termios.tcsetattr(0,termios.TCSANOW,t)\nprint(v,flush=True)\n')
+        os.write(fd, f"python3 {reader}\n".encode())
+        self.until(fd, b"DYNAMIC_HIDDEN_READY")
+        os.write(fd, b"PUBLIC_SYNTHETIC_DYNAMIC_48\n")
+        self.until(fd, b"FSM_TEST_READY> ")
+        sensitive = self.home / "private-path"
+        sensitive.mkdir()
+        atomic_json(self.root / "capture-policy.json", {"sensitive_paths": [str(sensitive)]})
+        self.command(fd, f"cd {sensitive}")
+        self.command(fd, "printf 'PUBLIC_PATH_EXCLUDED_48\\n'")
+        self.command(fd, f"cd {self.home}")
+        self.command(fd, "echo public_after_guard")
+        self.control(proc, "off")
+        os.write(fd, b"exit 0\n")
+        proc.wait(timeout=10)
+        canaries = (b"PUBLIC_SYNTHETIC_HIDDEN_48", b"PUBLIC_SYNTHETIC_TOKEN_48",
+                    b"PUBLIC_SYNTHETIC_DYNAMIC_48", b"PUBLIC_PATH_EXCLUDED_48")
+        for _m, _name, raw in self.originals():
+            for marker in canaries:
+                self.assertNotIn(marker, raw)
+        for marker in canaries:
+            self.assertEqual(self.a.query(marker.decode()), [])
+            for path in self.root.rglob("*"):
+                if path.is_file():
+                    self.assertNotIn(marker, path.read_bytes())
+        self.assertTrue(self.a.query("public_after_guard"))
+
+    def test_new_session_defaults_persistent_consent_scope_and_crash(self):
+        proc, fd = self.tab()
+        self.assertEqual(self.control(proc, "status")["level"], "safe")
+        # Persistent consent is tested ONLY inside this disposable HOME/root.
+        command = [sys.executable, "-m", MODULE, "--root", str(self.root), "capture", "on", "--new-sessions"]
+        self.assertNotEqual(subprocess.run(command, env=self.env, capture_output=True).returncode, 0)
+        self.assertEqual(subprocess.run(command + ["--consent"], env=self.env, capture_output=True).returncode, 0)
+        self.assertEqual(self.control(proc, "status")["level"], "safe")
+        full, ffd = self.tab()
+        self.assertEqual(self.control(full, "status")["level"], "full")
+        self.command(ffd, "echo PUBLIC_NEW_SESSION_FULL")
+        # Crash while a content segment is open. Recover both session and stream.
+        os.write(ffd, b"python3 -c 'import time; print(\"CRASH_\"+\"PUBLIC_FRAME\",flush=True); time.sleep(10)'\n")
+        self.until(ffd, b"CRASH_PUBLIC_FRAME")
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            if any(b"CRASH_PUBLIC_FRAME" in p.read_bytes() for p in self.root.glob("events/*/output.raw")):
+                break
+            time.sleep(.005)
+        else:
+            self.fail("crash fixture did not reach durable spool")
+        full.kill(); full.wait(timeout=5)
+        for path in self.root.glob("events/*/manifest.json"):
+            m = json.loads(path.read_text())
+            if m["parent"] is None and m["owner_pid"] == full.pid:
+                try:
+                    os.killpg(m["pid"], signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+        self.assertGreaterEqual(self.a.recover(), 1)
+        self.assertEqual(self.a.recover(), 0)
+        self.assertTrue(self.a.query("PUBLIC_NEW_SESSION_FULL"))
+        self.assertTrue(self.a.query("CRASH_PUBLIC_FRAME"))
+        revoke = command[:-2] + ["off", "--new-sessions"]
+        self.assertEqual(subprocess.run(revoke, env=self.env, capture_output=True).returncode, 0)
+        safe, sfd = self.tab()
+        self.assertEqual(self.control(safe, "status")["level"], "safe")
+        for p, tab in ((proc, fd), (safe, sfd)):
+            os.write(tab, b"exit\n"); p.wait(timeout=10)
+
+    def test_full_storage_failure_preserves_terminal(self):
+        proc, fd = self.tab()
+        self.control(proc, "on")
+        self.command(fd, "echo BEFORE_STORAGE_FAILURE_PUBLIC")
+        (self.root / "capture-policy.json").write_text("invalid-json")
+        shown = self.command(fd, "printf 'AFTER_STORAGE_FAILURE_PUBLIC\\n'")
+        self.assertIn(b"AFTER_STORAGE_FAILURE_PUBLIC", shown)
+        os.write(fd, b"exit 0\n")
+        self.assertEqual(proc.wait(timeout=10), 0)
+        self.assertTrue(self.a.query("BEFORE_STORAGE_FAILURE_PUBLIC"))
+        self.assertFalse(self.a.query("AFTER_STORAGE_FAILURE_PUBLIC"))
+
+    def test_profile_consent_and_guard_refusal(self):
+        cmd = [sys.executable, "-m", MODULE, "--root", str(self.root),
+               "capture", "on", "--new-sessions", "--consent", "--profile", "qa"]
+        self.assertEqual(subprocess.run(cmd, env=self.env, capture_output=True).returncode, 0)
+        safe, fd = self.tab()
+        self.assertEqual(self.control(safe, "status")["level"], "safe")
+        self.env["FSM_EA_PROFILE"] = "qa"
+        full, ffd = self.tab()
+        self.assertEqual(self.control(full, "status")["level"], "full")
+        self.command(ffd, "echo PROFILE_PUBLIC_FULL")
+        for p, f in ((safe, fd), (full, ffd)):
+            os.write(f, b"exit\n"); p.wait(timeout=10)
+        rc = self.home / ".bashrc"
+        rc.write_text(rc.read_text().replace('PS1="FSM_TEST_READY> "',
+                                            'PS1="FSM_TEST_READY> "\ntrap ":" DEBUG'))
+        unavailable, ufd = self.tab()
+        result = request(self.a, self.session(unavailable), {"action": "on"})
+        self.assertFalse(result["ok"])
+        self.assertIn(b"GUARD_PUBLIC_CONTINUES", self.command(ufd, "echo GUARD_PUBLIC_CONTINUES"))
+        os.write(ufd, b"exit\n"); unavailable.wait(timeout=10)
 
     def test_two_concurrent_tabs_normal_input_hidden_input_and_safe_capture(self):
         p1, t1 = self.tab()
