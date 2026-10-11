@@ -3,6 +3,7 @@ import json
 import os
 import pty
 import select
+import shlex
 import signal
 import subprocess
 import sys
@@ -16,6 +17,7 @@ from fedora_system_monitor.capsules.execution_archive.capture import request
 
 REPO = Path(__file__).resolve().parent.parent
 MODULE = "fedora_system_monitor.capsules.execution_archive.cli"
+PROCESS_MODULE = "fedora_system_monitor.capsules.execution_archive.process_adapter"
 
 
 class ArchiveTest(unittest.TestCase):
@@ -138,6 +140,147 @@ class ArchiveTest(unittest.TestCase):
         self.assertEqual(len(self.a.query()), 1)
 
 
+class ProcessAdapterTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = Path(self.tmp.name)
+        self.root = self.home / "archive"
+        self.a = Archive(self.root)
+        self.env = {k: v for k, v in os.environ.items() if not k.startswith("FSM_EA_")} | {
+            "PYTHONPATH": str(REPO / "src"), "HOME": str(self.home)}
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def command(self, source, command, **kwargs):
+        argv = [sys.executable, "-m", PROCESS_MODULE, "--source", source,
+                "--root", str(self.root), "--", "-l", "-c", command]
+        return subprocess.run(argv, cwd=self.home, env=self.env, timeout=20, **kwargs)
+
+    def manifests(self):
+        return [json.loads(p.read_text()) for p in self.root.glob("events/*/manifest.json")]
+
+    def test_rdc_separated_streams_over_4k_child_fts_and_replay(self):
+        program = ("import os,subprocess;"
+                   "os.write(1,b'PUBLIC_STDOUT_START\\n'+b'o'*5000+b'\\n');"
+                   "os.write(2,b'PUBLIC_STDERR_START\\n'+b'e'*5000+b'\\n');"
+                   "subprocess.run(['/usr/bin/printf','PUBLIC_CHILD_FRAME\\n'])")
+        result = self.command("rdc", f"{shlex.quote(sys.executable)} -c {shlex.quote(program)}",
+                              capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertGreater(len(result.stdout) + len(result.stderr), 10_000)
+        manifests = self.manifests()
+        self.assertEqual(len(manifests), 1)
+        m = manifests[0]
+        self.assertEqual(m["source"], "rdc")
+        self.assertEqual(m["parent_pid"], os.getpid())
+        self.assertNotEqual(m["child_pid"], m["pid"])
+        self.assertEqual(self.a.read(m, "stdout"), result.stdout)
+        self.assertEqual(self.a.read(m, "stderr"), result.stderr)
+        combined = self.a.read(m, "output")
+        self.assertIn(b"PUBLIC_CHILD_FRAME", combined)
+        self.assertTrue(self.a.query('"PUBLIC_CHILD_FRAME"', source="rdc"))
+        filtered = subprocess.run([sys.executable, "-m", MODULE, "--root", str(self.root),
+                                   "search", '"PUBLIC_CHILD_FRAME"', "--source", "rdc"],
+                                  env=self.env, capture_output=True, text=True, check=True)
+        self.assertEqual(json.loads(filtered.stdout)[0]["id"], m["id"])
+        replay = subprocess.check_output([sys.executable, "-m", MODULE, "--root", str(self.root),
+                                          "replay", m["id"], "--speed", "1000"], env=self.env)
+        self.assertEqual(replay, combined)
+
+    def test_long_running_input_is_forwarded_but_never_archived(self):
+        program = "import sys; print('PUBLIC_READY',flush=True); print('PUBLIC_ACK:'+sys.stdin.readline().strip())"
+        argv = [sys.executable, "-m", PROCESS_MODULE, "--source", "rdc",
+                "--root", str(self.root), "--", "-l", "-c",
+                f"{shlex.quote(sys.executable)} -c {shlex.quote(program)}"]
+        proc = subprocess.Popen(argv, cwd=self.home, env=self.env, stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        assert proc.stdin is not None and proc.stdout is not None
+        self.assertEqual(proc.stdout.readline(), b"PUBLIC_READY\n")
+        proc.stdin.write(b"PUBLIC_INNOCUOUS_INPUT\n"); proc.stdin.flush()
+        out, err = proc.communicate(timeout=10)
+        self.assertEqual(proc.returncode, 0, err)
+        self.assertIn(b"PUBLIC_ACK:PUBLIC_INNOCUOUS_INPUT", out)
+        m = self.manifests()[0]
+        self.assertEqual(m["input"], "forwarded-not-recorded")
+        self.assertNotIn("input", m["files"])
+
+    def test_nested_codex_adapter_is_one_correlated_event(self):
+        inner = self.home / "fsm-ea-codex-bash"
+        inner.write_text(f"#!/bin/sh\nexec {shlex.quote(sys.executable)} -m {PROCESS_MODULE} --source codex --root {shlex.quote(str(self.root))} -- \"$@\"\n")
+        inner.chmod(0o700)
+        result = self.command("rdc", f"{shlex.quote(str(inner))} -lc 'printf PUBLIC_NESTED_ONCE'",
+                              capture_output=True)
+        self.assertEqual(result.stdout, b"PUBLIC_NESTED_ONCE")
+        manifests = self.manifests()
+        self.assertEqual(len(manifests), 1)
+        self.assertEqual(manifests[0]["source"], "codex")
+        self.assertEqual(manifests[0]["origins"], ["codex", "rdc"])
+        self.assertEqual(manifests[0]["correlation"], manifests[0]["id"])
+
+    def test_sensitive_command_and_output_fail_closed_to_metadata(self):
+        secret_command = self.command("rdc", "printf 'PUBLIC_TOKEN_COMMAND' # token",
+                                      capture_output=True)
+        self.assertEqual(secret_command.stdout, b"PUBLIC_TOKEN_COMMAND")
+        secret_output = self.command("rdc", "printf 'token=PUBLIC_SYNTHETIC_VALUE'",
+                                     capture_output=True)
+        self.assertEqual(secret_output.stdout, b"token=PUBLIC_SYNTHETIC_VALUE")
+        manifests = self.manifests()
+        self.assertEqual(len(manifests), 2)
+        self.assertTrue(all(m["coverage"] == "metadata-only" for m in manifests))
+        for m in manifests:
+            self.assertEqual(m["files"], {})
+        for path in self.root.rglob("*"):
+            if path.is_file():
+                data = path.read_bytes()
+                self.assertNotIn(b"PUBLIC_SYNTHETIC_VALUE", data)
+
+    def test_codex_hook_rewrites_only_bash_without_transcript_access(self):
+        hook = REPO / "hooks/execution-archive-codex.py"
+        event = {"hook_event_name": "PreToolUse", "tool_name": "Bash",
+                 "tool_input": {"command": "printf PUBLIC_HOOK"},
+                 "transcript_path": "/private/never-read.jsonl"}
+        result = subprocess.run([sys.executable, "-I", str(hook)], input=json.dumps(event),
+                                text=True, capture_output=True, cwd=self.home, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        updated = json.loads(result.stdout)["hookSpecificOutput"]["updatedInput"]["command"]
+        self.assertIn("fsm-ea-codex-bash", updated)
+        self.assertNotIn("transcript", updated)
+
+
+class InstallerTest(unittest.TestCase):
+    def test_process_integrations_upgrade_and_rollback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            (home / ".bashrc").write_text("# user customization\n")
+            rdc_dir = home / ".claude-server-commander"
+            rdc_dir.mkdir()
+            rdc_config = rdc_dir / "config.json"
+            rdc_config.write_text(json.dumps({"defaultShell": "/bin/bash", "preserved": True}))
+            env = os.environ | {"HOME": str(home)}
+            command = [sys.executable, str(REPO / "scripts/install-execution-archive.py")]
+            for _ in range(2):
+                result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, 0, result.stderr)
+            rdc = json.loads(rdc_config.read_text())
+            self.assertEqual(rdc["defaultShell"], str(home / ".local/bin/fsm-ea-rdc-bash"))
+            self.assertTrue(rdc["preserved"])
+            hooks = json.loads((home / ".codex/hooks.json").read_text())
+            handlers = [h for g in hooks["hooks"]["PreToolUse"] for h in g["hooks"]]
+            self.assertEqual(sum("codex-hook.py" in h["command"] for h in handlers), 1)
+            self.assertTrue((home / ".local/bin/fsm-ea-codex-bash").is_file())
+            receipt = json.loads((home / ".local/state/fedora-system-monitor/executions/install-receipt.json").read_text())
+            self.assertEqual(receipt["rdc_default_shell_original"], "/bin/bash")
+            result = subprocess.run(command + ["--rollback"], env=env, capture_output=True,
+                                    text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(rdc_config.read_text())["defaultShell"], "/bin/bash")
+            rolled = json.loads((home / ".codex/hooks.json").read_text())
+            self.assertFalse(rolled.get("hooks", {}).get("PreToolUse"))
+            self.assertEqual((home / ".bashrc").read_text(), "# user customization\n")
+            self.assertTrue((home / ".local/state/fedora-system-monitor/executions/disabled").exists())
+
+
 class BashPTYTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -153,7 +296,8 @@ class BashPTYTest(unittest.TestCase):
             f'source {REPO}/hooks/execution-archive-entry.bash\n'
             'PS1="FSM_TEST_READY> "\n'
             f'source {REPO}/hooks/execution-archive-metadata.bash "$(trap -p DEBUG)"\n')
-        self.env = os.environ | {"HOME": str(self.home), "PYTHONPATH": str(REPO / "src")}
+        self.env = {k: v for k, v in os.environ.items() if not k.startswith("FSM_EA_")} | {
+            "HOME": str(self.home), "PYTHONPATH": str(REPO / "src")}
         self.children = []
 
     def tearDown(self):

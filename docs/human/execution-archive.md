@@ -1,8 +1,9 @@
-# Archivio esecuzioni — P48, correzione della fase 1 P34
+# Archivio esecuzioni — P35, fase 2 RDC e Codex
 
-Fedora System Monitor, project_id 15, NV 3. Riutilizza archivio, CLI, hook,
-SQLite/FTS e replay P34. Non legge né importa chat, sessioni browser, cronologie
-Bash o backup. Nessun nuovo daemon, monitor, timer o tmux. P35 resta non avviato.
+Fedora System Monitor, project_id 15, NV 4. Riutilizza archivio, CLI, hook,
+SQLite/FTS e replay P34/P48. Non legge né importa chat, transcript Codex,
+sessioni browser, cronologie Bash o backup. Nessun nuovo database, daemon,
+monitor, timer o tmux.
 
 ## Installazione e controllo
 
@@ -18,6 +19,46 @@ ea capture off
 ea search testo
 ea replay UUID --speed 2
 ```
+
+Lo stesso installer imposta la `defaultShell` supportata di Remote Desktop
+Commander su `~/.local/bin/fsm-ea-rdc-bash` e registra in
+`~/.codex/hooks.json` un hook ufficiale Codex `PreToolUse`, matcher `Bash`, che
+riscrive la chiamata verso `fsm-ea-codex-bash`. Codex richiede la propria review
+di trust per hook utente nuovi o modificati; verificarla con `/hooks` in una
+sessione visibile. L'installer non legge né modifica il trust store. RDC ricarica
+la configurazione osservata senza una patch al pacchetto e senza riavvio del
+servizio. Upgrade ripetuti sono idempotenti; il rollback ripristina la shell RDC
+precedente e rimuove soltanto l'handler Codex esatto.
+
+## Processi RDC e Codex
+
+L'unico boundary di contenuto è l'adapter che avvia `/bin/bash` mantenendo stdin,
+stdout, stderr ed exit status dell'operazione. Per comandi non esclusi conserva:
+
+- PID adapter restituito dall'API, PID figlio, parent PID, host e timestamp;
+- correlation UUID, source/origins e un solo evento anche nel percorso
+  Codex → RDC → adapter;
+- stdout e stderr originali separati, più lo stream combinato ordinato e timing
+  incrementale per replay e recovery;
+- output dei subprocessi che ereditano le pipe del comando padre.
+
+Il comando completo e l'environment restano solo in memoria; il manifest salva
+al massimo il basename dell'eseguibile. stdin di `interact_with_process` viene
+inoltrato senza copie: RDC/Codex non segnalano in modo affidabile input segreto,
+quindi archiviarlo non sarebbe sicuro. Comandi sensibili riconoscibili sono
+metadata-only. Se un pattern di credenziale appare nell'output, tutti i contenuti
+dell'evento vengono eliminati e resta solo il gap metadata-only. Output arbitrario
+non etichettato mantiene un rischio residuo dichiarato: nessun filtro può provare
+che sia privo di segreti.
+
+`PostToolUse` Codex e `tool-history.jsonl` non sono fonti canoniche: il primo può
+ricevere output già adattato al modello e il secondo tronca/ruota. L'hook non usa
+mai `transcript_path`, prompt, messaggi o ragionamento. Gli hook coprono le
+chiamate Bash supportate da Codex CLI/Desktop; tool non-Bash e processi avviati
+fuori da quel boundary restano fuori copertura. I subprocessi sono correlati allo
+stream padre, ma quelli brevi non hanno necessariamente un record PID autonomo.
+Il contratto dell'hook è quello documentato in
+[OpenAI Codex Hooks](https://developers.openai.com/codex/hooks/).
 
 Le nuove shell Bash interattive TTY partono **safe**. Le sessioni già aperte
 restano intatte; per i nuovi controlli occorre una nuova sessione con hook P48.
@@ -110,7 +151,9 @@ a repository o sorgenti sensibili.
 
 Ogni evento possiede `events/UUID/manifest.json`; i contenuti autorizzati hanno
 `output.raw` e `timing.raw` durante l'esecuzione, poi `output.zst` e
-`timing.zst`. Il consenso `--input` aggiunge stream separati `input` e
+`timing.zst`. Gli adapter di processo aggiungono `stdout`/`stderr` e i relativi
+timing, mentre `output` conserva l'ordine combinato. Il consenso terminale
+`--input` aggiunge stream separati `input` e
 `input_timing` con lo stesso formato, hash, recupero e budget condiviso. Manifest e file compressi vengono sincronizzati e sostituiti
 atomicamente prima di eliminare il raw. Il manifest contiene SHA256 di originali
 e frame compressi, provenienza, copertura e riferimenti relativi. Replay verifica
@@ -159,11 +202,9 @@ input applicativo, pause/resume/off, safe automatico, consenso persistente in
 HOME temporanea, ECHO dinamico, percorsi sensibili, canary assenti in file,
 originali decompressi e FTS, replay fedele e recupero di un segmento full aperto.
 I test P34 verificano anche hash/Zstd, indice ricostruibile/deduplica, retention,
-quota, permessi e compatibilità Bash. Nessun test termina processi utente.
-
-P35 richiede fase 1 verificata: i futuri adapter devono mantenere consenso,
-esclusioni e confine input/non-echo. Il risultato P48 non autorizza importazione
-di chat né cattura globale dei processi Codex/RDC.
+quota, permessi e compatibilità Bash. I test P35 aggiungono stream oltre 4 KiB,
+stdin inoltrato, processo figlio, deduplica RDC/Codex, FTS/replay, fail-closed e
+install/upgrade/rollback in HOME temporanea. Nessun test termina processi utente.
 
 Verifica live P48, 2026-10-11: due schede Ptyxis reali, indipendenti e simultanee,
 con driver pubblico su PTY e Bash normale che carica gli hook installati.
@@ -179,8 +220,36 @@ non viene quindi rivendicata una misura di focus invariato durante il setup.
 Il runtime non presenta finestre. I due servizi monitor verificati sono rimasti
 active, NRestarts=0; runtime installato uguale al sorgente del task.
 
-Validazione finale: 247 test PASS, inclusi 15 test dell'archivio; syntax Bash,
+Validazione P48: 247 test PASS, inclusi 15 test dell'archivio; syntax Bash,
 compilazione Python e diff-check PASS. Le prove di crash e consenso persistente
 usano esclusivamente HOME temporanee, senza uccidere shell utente o applicare
-retention all'archivio desktop. P35 è avviabile dopo integrazione e receipt NV 3,
-con i vincoli di consenso e rischio residuo sopra descritti.
+retention all'archivio desktop.
+
+## Verifica P35, 2026-10-12
+
+Prerequisito fase 1: P34/P48 sono in `origin/main` `6a1c180`; runtime installato
+uguale al sorgente e receipt MegaVault NV 3 presenti prima delle modifiche.
+
+RDC 0.2.51 reale, servizio invariato sul PID 2510 con `NRestarts=0`: prova
+headless tramite `start_process`, `interact_with_process` e
+`read_process_output`, evento `3ec429a3-1fc3-4664-b517-642048b232bf`.
+Conservati integralmente 6.072 byte stdout e 6.000 byte stderr, oltre 4 KiB,
+figlio e risposta dopo input; exit 0, FTS unico e replay con SHA256
+`b838fba283a621d7eff4c2bad3beeb9dec854770fe3d64ec74bc2bee69e163d4`.
+stdin innocuo è stato inoltrato ma non archiviato. Il canary di output sensibile
+ha prodotto l'evento metadata-only `eba8e079-df79-4f24-98ca-1b7b3fce8e73`,
+senza file contenuto né match FTS.
+
+Il contratto Codex installato è stato esercitato senza modello/quota: il hook
+ha riscritto una chiamata Bash sintetica e l'adapter ha creato un solo evento
+Codex `7cf110e6-dffc-43c6-9e76-bc2ebb93cb2f`. Il passaggio annidato RDC → Codex
+ha prodotto un solo evento correlato `d294ecae-788e-484e-80be-bef95d460972`,
+con `origins=[codex, rdc]`. `codex doctor --json` e `--strict-config` accettano
+la configurazione; 253 test repository PASS, inclusi 21 test archivio.
+
+Gap verificato: il client Codex richiede review/trust con `/hooks` e carica gli
+hook nel contesto della sessione. La sessione corrente precede l'installazione;
+lo steer P57 vieta una nuova chat e input simulato, quindi non è stata inventata
+una prova end-to-end di un tool Bash prodotto dal modello. Fino alla review in
+una futura sessione visibile, la copertura Codex effettiva resta PARTIAL; RDC e
+il boundary/hook contract sono verificati.

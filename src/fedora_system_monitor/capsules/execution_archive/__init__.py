@@ -19,8 +19,8 @@ import time
 import uuid
 from pathlib import Path
 
-SOURCES = {"bash", "manual", "diagnostic"}
-LABELS = {"shell", "excluded", "date", "uname", "uptime", "true", "false", "demo"}
+SOURCES = {"bash", "manual", "diagnostic", "rdc", "codex"}
+LABELS = {"shell", "process", "excluded", "date", "uname", "uptime", "true", "false", "demo"}
 SAFE = {
     ("date",): ("/usr/bin/date",),
     ("date", "-u"): ("/usr/bin/date", "-u"),
@@ -203,9 +203,11 @@ class Archive:
             return m
 
     def append(self, m: dict, data: bytes, delay: float, *, stream: str = "output") -> None:
-        if stream not in {"output", "input"} or (stream == "input" and not (m.get("consent") or {}).get("input")):
+        clocks = {"output": "timing", "input": "input_timing",
+                  "stdout": "stdout_timing", "stderr": "stderr_timing"}
+        if stream not in clocks or (stream == "input" and not (m.get("consent") or {}).get("input")):
             raise ValueError("unapproved stream")
-        if m["coverage"] not in {"output-only", "visible-pty", "truncated"} or not data:
+        if m["coverage"] not in {"output-only", "visible-pty", "process-streams", "truncated"} or not data:
             return
         with self.lock():
             if (m["bytes"] + len(data) > self.config["event_bytes"] or
@@ -220,7 +222,7 @@ class Archive:
             with private_file(path / f"{stream}.raw", "ab") as f:
                 f.write(data)
                 f.flush()
-            with private_file(path / ("timing.raw" if stream == "output" else "input_timing.raw"), "ab") as f:
+            with private_file(path / f"{clocks[stream]}.raw", "ab") as f:
                 f.write(f"{max(0, delay):.6f} {len(data)}\n".encode())
                 f.flush()
             m["bytes"] += len(data)
@@ -237,7 +239,9 @@ class Archive:
     def _seal(self, m: dict) -> None:
         path = self.events / m["id"]
         # Preserve raw until every compressed frame and manifest is durable.
-        for name in ("output", "timing", "input", "input_timing"):
+        names = ("output", "timing", "input", "input_timing", "stdout", "stdout_timing",
+                 "stderr", "stderr_timing")
+        for name in names:
             raw = path / f"{name}.raw"
             if not raw.exists():
                 continue
@@ -253,8 +257,19 @@ class Archive:
                                      sha256=hashlib.sha256(data).hexdigest(),
                                      compressed_sha256=hashlib.sha256(compressed).hexdigest())
         atomic_json(path / "manifest.json", m)
-        for name in ("output", "timing", "input", "input_timing"):
+        for name in names:
             (path / f"{name}.raw").unlink(missing_ok=True)
+
+    def drop_content(self, m: dict, reason: str) -> None:
+        """Fail closed when a stream becomes sensitive; keep provenance only."""
+        with self.lock():
+            path = self.events / m["id"]
+            for name in ("output", "timing", "input", "input_timing", "stdout", "stdout_timing",
+                         "stderr", "stderr_timing"):
+                (path / f"{name}.raw").unlink(missing_ok=True)
+                (path / f"{name}.zst").unlink(missing_ok=True)
+            m.update(files={}, bytes=0, coverage="metadata-only", content_gap=reason)
+            atomic_json(path / "manifest.json", m)
 
     def read(self, m: dict, name: str) -> bytes:
         item = m["files"][name]
@@ -269,9 +284,12 @@ class Archive:
         return raw
 
     def _index(self, m: dict) -> None:
-        text = " ".join((m["label"], m["kind"], m["source"], m["coverage"], m["host"]))
-        if "output" in m["files"]:
-            readable = ANSI.sub("", self.read(m, "output").decode("utf-8", "replace"))
+        text = " ".join((m["label"], m["kind"], m["source"], m["coverage"], m["host"],
+                         *m.get("origins", [])))
+        for stream in (("output",) if "output" in m["files"] else ("stdout", "stderr")):
+            if stream not in m["files"]:
+                continue
+            readable = ANSI.sub("", self.read(m, stream).decode("utf-8", "replace"))
             text += " " + "".join(c for c in readable if c.isprintable() or c in "\n\t")
         conn = self.connect()
         try:
@@ -307,7 +325,8 @@ class Archive:
                         continue
                     # Pair each stream with its own timing; never confuse input and echo.
                     m["bytes"] = 0
-                    for stream, clock in (("output", "timing"), ("input", "input_timing")):
+                    for stream, clock in (("output", "timing"), ("input", "input_timing"),
+                                          ("stdout", "stdout_timing"), ("stderr", "stderr_timing")):
                         raw, timing = path / f"{stream}.raw", path / f"{clock}.raw"
                         if not raw.exists():
                             continue
@@ -394,7 +413,8 @@ class Archive:
                      for p in self.events.glob("*/manifest.json"))
         return dict(enabled=self.enabled(), root=str(self.root), bytes=self.usage(), active=active,
                     limits=self.config, coverage=groups, input="full opt-in ordinary echo-on only", shell_content="safe excluded; full consent visible PTY",
-                    content_policy="safe fixed diagnostics; full explicit consent with exclusions", stdout_stderr="combined PTY",
+                    content_policy="safe fixed diagnostics; full explicit consent with exclusions",
+                    stdout_stderr="terminal PTY combined; RDC/Codex process streams separated plus ordered replay",
                     chat_sources="never-imported", scheduler="shell startup / manual maintenance",
                     capture_policy="safe default; full requires explicit consent",
                     live_capture=[json.loads(p.read_text()) for p in self.events.glob("*/capture-state.json")

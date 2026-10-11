@@ -91,7 +91,7 @@ def build_parser() -> argparse.ArgumentParser:
     policy.add_argument("--sensitive-path", action="append", default=[])
     search = sub.add_parser("search")
     search.add_argument("query", nargs="?", default="")
-    search.add_argument("--source", choices=("bash", "manual", "diagnostic"))
+    search.add_argument("--source", choices=("bash", "manual", "diagnostic", "rdc", "codex"))
     search.add_argument("--since-hours", type=float, default=0)
     search.add_argument("--limit", type=int, default=20)
     for name in ("show", "replay"):
