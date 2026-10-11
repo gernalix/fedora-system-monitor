@@ -1,78 +1,104 @@
-# Archivio esecuzioni — P34, fase 1
+# Archivio esecuzioni — P48, correzione della fase 1 P34
 
-L'archivio appartiene a Fedora System Monitor, project_id 15. Non legge journal,
-archivi browser, chat ChatGPT/Codex, backup o cronologie Bash. Non è un secondo
-monitor, collector o servizio. Le integrazioni non interattive saranno fasi
-successive e **non sono operative** in questa versione.
+Fedora System Monitor, project_id 15, NV 3. Riutilizza archivio, CLI, hook,
+SQLite/FTS e replay P34. Non legge né importa chat, sessioni browser, cronologie
+Bash o backup. Nessun nuovo daemon, monitor, timer o tmux. P35 resta non avviato.
 
 ## Installazione e controllo
-
-Sul desktop Fedora verificato (Ptyxis, profilo con comando personalizzato
-disabilitato, shell `/bin/bash`), come utente normale:
 
 ```bash
 python3 scripts/install-execution-archive.py
 ea status
-ea search date --source diagnostic --since-hours 24
-ea run demo
+ea capture status
+ea capture on                 # consenso esplicito per questa sessione
+ea capture on --input         # include input ordinario applicativo con ECHO attivo
+ea pause
+ea resume
+ea capture off
+ea search testo
 ea replay UUID --speed 2
+```
+
+Le nuove shell Bash interattive TTY partono **safe**. Le sessioni già aperte
+restano intatte; per i nuovi controlli occorre una nuova sessione con hook P48.
+`bash -c`, `bash -ic COMANDO`, pipe, servizi e shell annidate non creano wrapper
+ricorsivi. Alias, funzioni e DEBUG trap utente sono preservati; se DEBUG trap,
+functrace o extdebug impediscono il guard, full viene rifiutato.
+
+Il runtime è `~/.local/libexec/fsm-execution-archive`, CLI `~/.local/bin/ea`.
+L'installer preserva il runtime precedente in `.previous`; ulteriori upgrade
+usano un suffisso univoco senza sovrascrivere i backup. Non riavvia i servizi
+system del monitor. Il rollback rimuove solo i due blocchi esatti di `.bashrc`,
+preservando personalizzazioni, runtime e originali:
+
+```bash
 ea disable
 ea enable
 python3 scripts/install-execution-archive.py --rollback
 ```
 
-Gli hook si applicano solo alle nuove shell Bash interattive con stdin/stdout
-TTY. Non aprono finestre, non usano tmux, non inviano notifiche e non chiamano
-API di focus. Le sessioni già aperte restano intatte. `bash -c`, `bash -ic` con
-comando esplicito, pipe e servizi non vengono convertiti in sessioni visibili.
-Un Bash annidato riusa la sessione invece di creare acquisizioni ricorsive.
-Altre shell non sono supportate. Disabilitare evita nuove sessioni e nuovi
-contenuti, compresi i diagnostici nelle sessioni esistenti; i metadati della
-sessione già avviata possono continuare fino all'uscita. Il rollback rimuove solo
-i due blocchi esatti aggiunti a `.bashrc`, preservando altre personalizzazioni,
-runtime e dati. L'installer non copia il contenuto di `.bashrc` nell'archivio:
-conserva solo hash e receipt; il rollback dei blocchi è reversibile.
+Disabilitare blocca nuove registrazioni, mentre i metadati di una sessione già
+attiva possono continuare fino all'uscita. Il runtime non chiama API di focus o
+finestra e non invia notifiche.
 
-Il runtime utente è `~/.local/libexec/fsm-execution-archive`, il comando breve
-è `~/.local/bin/ea`. Il sorgente offre anche
-`fedora-system-monitor archive ...`; il CLI system installato in precedenza non
-viene sostituito né vengono riavviati i servizi del monitor. L'installer preserva
-un runtime precedente in `.previous` e rifiuta di sovrascriverne un altro.
+Consenso persistente facoltativo, applicato solo a sessioni future:
 
-## Copertura e confine sui segreti
+```bash
+ea capture on --new-sessions --consent --profile PROFILO
+ea capture off --new-sessions --profile PROFILO
+```
 
-La PTY della shell viene **solo inoltrata**, mai salvata, compressa, sottoposta
-a hash o indicizzata. I tasti, input nascosto, prompt, variabili d'ambiente,
-history, nomi/argomenti dei comandi generici e output arbitrario non vengono
-serializzati. Il canale Bash privato comunica solo inizio/fine, PID e status.
-Ogni comando semplice osservato ha UUID, parent/correlation di sessione,
-source, host, PID, timestamp, esito e manifest; il suo nome è `excluded`.
-Il DEBUG hook è limitato al livello principale: job asincroni, funzioni,
-subshell e Bash annidati non garantiscono metadati individuali né status
-per-processo. Lo status di una pipeline è quello osservato da Bash.
+Il profilo usa `FSM_EA_PROFILE`, poi `PTYXIS_PROFILE`, poi `default`. Omettere
+`--profile` autorizza tutte le nuove sessioni: richiede comunque `--consent`.
+`--input` è un consenso aggiuntivo. La configurazione è locale in
+`capture-policy.json`; nessun consenso globale è stato attivato durante il rollout.
+Una modifica persistente non cambia le sessioni esistenti.
 
-Solo diagnostiche con argv esatto e implementazione di sistema fissa producono
-contenuto: `date`, `date -u`, `uname`, `uname -a`, `uptime`, `true`, `false`.
-Il comando `ea run demo` produce esclusivamente frame pubblici fissi per QA.
-I processi autorizzati ricevono un ambiente minimo fisso (PATH, LANG e TERM),
-mai l'ambiente utente. Non leggono file arbitrari, stdin, chat o secret provider.
-L'echo della loro PTY è disabilitato; non esiste un logger di input. Output e
-stderr si fondono nella PTY: la separazione non è tecnicamente disponibile.
-L'input ordinario rimane osservabile nella shell, ma **non viene archiviato**.
+## Copertura, consenso e limiti
 
-Bash avvolge automaticamente `date`, `uname`, `uptime` soltanto quando non
-esistono già alias/funzioni utente. Argomenti diversi dalla lista esatta passano
-al comando normale con soli metadati. `command date`, path assoluti e wrapper
-personalizzati bypassano la cattura automatica. `ea run COMANDO ...` esegue i
-comandi non riconosciuti senza intercettarne I/O o registrare argv. Non autorizza
-uno script arbitrario alla cattura. Anche `echo`, `printf`, `env`, `cat`, `bw`,
-shell, SSH, editor, `top` e CLI ChatGPT/Codex sono esclusi dal contenuto.
+| Caso | Safe | Full con consenso |
+| --- | --- | --- |
+| echo, printf, Python e output generico | solo metadati | byte visibili PTY, timing e FTS |
+| multilinea oltre 4 KiB, ANSI, stderr | solo metadati | originali fedeli, stdout/stderr/echo inseparabili |
+| diagnostiche fisse date/uname/uptime | contenuto autorizzato | diagnostica e stream visibile della sessione |
+| normale input applicativo | escluso | stream input separato solo con `--input` ed ECHO attivo |
+| prompt e input di readline | esclusi | echo visibile differito finché il comando è classificato |
+| input nascosto/non-echo | escluso | sospensione conservativa fino al comando successivo |
+| comando o percorso sensibile riconosciuto | escluso | contenuto escluso, operazione normale |
+| pausa/off | safe / metadati | nessun nuovo contenuto full |
+| guard mancante, timeout o errore storage | metadati quando possibile | registrazione disabilitata, terminale continua |
 
-Non si usa redazione euristica e non si promette cattura del 100% o redazione
-infallibile. Questo limite è intenzionale: l'output di un terminale arbitrario
-può contenere credenziali o conversazioni anche senza input nascosto.
-Personalizzazioni con DEBUG trap, functrace o extdebug conservano il loro
-comportamento; per quelle shell resta solo il record di sessione.
+Ogni shell ha un UUID principale; i segmenti full per comando hanno UUID e parent
+proprio, consenso esplicito, scope/timestamp/input, `policy_level=full`,
+`coverage=visible-pty`, `residual_risk=true` e `content_gaps=true`.
+Il canale Bash privato passa comando e cwd solo in memoria per la classificazione;
+non serializza argv, cwd sensibili, environment o history. I metadati dei comandi
+mantengono label `excluded`. L'echo della riga può apparire nello stream full
+quando il comando è autorizzato: non è una registrazione separata della history.
+
+Le esclusioni obbligatorie riconoscono sorgenti chat/Codex, credential manager,
+comandi di environment/segreti, login/SSH e percorsi sensibili. Sono estendibili:
+
+```bash
+ea policy --exclude-command '*mio-comando*' --sensitive-path /percorso/privato
+```
+
+Il guard verifica ECHO sulla PTY prima di acquisire output o input, attende la
+classificazione prima di scrivere l'echo pendente e sospende anche per pattern
+sensibili identificabili nell'output. Buffer e attese sono limitati; il contenuto
+incerto viene scartato. Questi controlli **non garantiscono output arbitrario
+privo di segreti**: un programma autorizzato può stampare credenziali non
+riconoscibili, cambiare ECHO tra campioni o accedere indirettamente a dati privati.
+Il consenso full accetta questo rischio residuo. Non promettiamo registrazione
+universale, redazione infallibile o input nascosto archiviato. Le funzioni,
+subshell, job asincroni e shell annidate non hanno sempre confini individuali;
+quando non riconoscibili possono appartenere al comando full autorizzato.
+
+Safe conserva le diagnostiche a argv esatto `date`, `date -u`, `uname`, `uname -a`,
+`uptime`, `true`, `false` e `ea run demo` pubblico; ambiente minimo fisso, nessuno
+stdin o file arbitrario. Wrapper automatici solo senza alias/funzioni esistenti.
+`ea run` per altri comandi continua normalmente con soli metadati; l'eventuale
+sessione full circostante può acquisirne output visibile.
 
 ## Dati, recupero e spazio
 
@@ -84,7 +110,8 @@ a repository o sorgenti sensibili.
 
 Ogni evento possiede `events/UUID/manifest.json`; i contenuti autorizzati hanno
 `output.raw` e `timing.raw` durante l'esecuzione, poi `output.zst` e
-`timing.zst`. Manifest e file compressi vengono sincronizzati e sostituiti
+`timing.zst`. Il consenso `--input` aggiunge stream separati `input` e
+`input_timing` con lo stesso formato, hash, recupero e budget condiviso. Manifest e file compressi vengono sincronizzati e sostituiti
 atomicamente prima di eliminare il raw. Il manifest contiene SHA256 di originali
 e frame compressi, provenienza, copertura e riferimenti relativi. Replay verifica
 entrambi gli hash e applica il timing originale, diviso per la velocità richiesta.
@@ -127,19 +154,33 @@ PYTHONPATH=src PYTHONWARNINGS=error python3 -m unittest discover -s tests -q
 bash -n hooks/execution-archive-entry.bash hooks/execution-archive-metadata.bash
 ```
 
-I test creano due PTY simultanee con gli stessi hook Bash: normale input,
-stderr, input nascosto con canary sintetico pubblico, status/TTY, shell annidata,
-personalizzazioni, shell non interattiva e comando `-ic`. Verificano output
-screen/stderr fissi, Zstandard/hash, FTS filtrata, replay, crash/tail recovery,
-deduplica, ricostruzione senza SQLite, permessi, disabilita/ripristina e quota/
-retention. Nessun fixture contiene credenziali reali.
+Fixture solo pubblici sintetici: due PTY, output generico/multilinea/ANSI,
+input applicativo, pause/resume/off, safe automatico, consenso persistente in
+HOME temporanea, ECHO dinamico, percorsi sensibili, canary assenti in file,
+originali decompressi e FTS, replay fedele e recupero di un segmento full aperto.
+I test P34 verificano anche hash/Zstd, indice ricostruibile/deduplica, retention,
+quota, permessi e compatibilità Bash. Nessun test termina processi utente.
 
-Verifica live del 2026-10-11: installer utente applicato; due schede **Ptyxis
-reali** avviate contemporaneamente con Bash interattivo e prompt di QA pubblico,
-due UUID distinti osservati `active`, poi entrambe `complete` con exit 0.
-In ciascuna: diagnostica `date`, demo con frame/stderr, normale stdout/stderr e
-input silenzioso sintetico. Il canary è assente anche dai contenuti decompressi.
-Le schede di QA si chiudono tramite normale `exit`; le schede utente esistenti
-non vengono terminate. La compatibilità di focus deriva dall'assenza di API di
-finestra/focus nel runtime; non è una misura automatica di tutte le applicazioni
-desktop. La prova di crash rimane su PTY isolata, senza uccidere terminali utente.
+P35 richiede fase 1 verificata: i futuri adapter devono mantenere consenso,
+esclusioni e confine input/non-echo. Il risultato P48 non autorizza importazione
+di chat né cattura globale dei processi Codex/RDC.
+
+Verifica live P48, 2026-10-11: due schede Ptyxis reali, indipendenti e simultanee,
+con driver pubblico su PTY e Bash normale che carica gli hook installati.
+UUID `905390e9-7ff2-41b5-8cd6-64f8a98a6665` e
+`8af94696-437b-4c25-8b41-4f8237471936`: entrambe osservate active insieme,
+poi complete con exit 0. Safe iniziale; full autorizzato solo nelle due sessioni;
+echo/printf/Python multilinea oltre 4 KiB, stderr/ANSI, input applicativo,
+non-echo dinamico, pattern token sintetico, pausa/resume/off, FTS e replay PASS.
+I canary esclusi sono assenti negli originali decompressi e nelle query FTS.
+Nessuna scheda utente terminata, nessun consenso persistente sul desktop.
+L'apertura delle schede ha presentato Ptyxis con autorizzazione esplicita utente;
+non viene quindi rivendicata una misura di focus invariato durante il setup.
+Il runtime non presenta finestre. I due servizi monitor verificati sono rimasti
+active, NRestarts=0; runtime installato uguale al sorgente del task.
+
+Validazione finale: 247 test PASS, inclusi 15 test dell'archivio; syntax Bash,
+compilazione Python e diff-check PASS. Le prove di crash e consenso persistente
+usano esclusivamente HOME temporanee, senza uccidere shell utente o applicare
+retention all'archivio desktop. P35 è avviabile dopo integrazione e receipt NV 3,
+con i vincoli di consenso e rischio residuo sopra descritti.

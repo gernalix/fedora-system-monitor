@@ -1,153 +1,20 @@
-"""Execution archive CLI and terminal PTY boundary. Never record the shell PTY."""
+"""Execution archive CLI and terminal PTY boundary. Safe defaults and explicitly consented visible PTY capture."""
 from __future__ import annotations
 
 import argparse
-import errno
-import fcntl
 import json
 import os
-import pty
-import select
-import signal
 import sqlite3
 import subprocess
 import sys
-import termios
 import time
-import tty
 from pathlib import Path
 
-from . import Archive, SAFE, atomic_json, private_file, root_path
+from . import Archive, SAFE, atomic_json, private_file
 
 
-def _copy_size(fd: int) -> None:
-    if sys.stdin.isatty():
-        size = fcntl.ioctl(0, termios.TIOCGWINSZ, b"\0" * 8)
-        fcntl.ioctl(fd, termios.TIOCSWINSZ, size)
-
-
-def relay(argv: list[str], archive: Archive | None, m: dict | None,
-          *, shell: bool = False, login: bool = False) -> int:
-    """Forward input without storing it; only approved child output reaches disk.
-
-    Bash sessions have an entirely unrecorded PTY. Command metadata arrives on
-    a separate bounded pipe containing ONLY event, PID, exit code and fixed label.
-    """
-    rfd, wfd = os.pipe2(os.O_NONBLOCK)
-    os.set_inheritable(wfd, True)
-    attrs = termios.tcgetattr(0) if sys.stdin.isatty() else None
-    pid, master = pty.fork()
-    if pid == 0:
-        os.close(rfd)
-        if attrs is not None:
-            termios.tcsetattr(0, termios.TCSANOW, attrs)
-        if shell:
-            os.environ["FSM_EA_ACTIVE"] = "1"
-            os.environ["FSM_EA_FD"] = str(wfd)
-            if m:
-                os.environ["FSM_EA_SESSION"] = m["id"]
-            else:
-                os.environ.pop("FSM_EA_SESSION", None)
-            os.execv("/bin/bash", ["bash"] + (["-l"] if login else []) + ["-i"])
-        os.close(wfd)
-        # Disable kernel echo: even input at an unexpected prompt stays off disk.
-        child_attrs = termios.tcgetattr(0)
-        child_attrs[3] &= ~(termios.ECHO | termios.ECHONL)
-        termios.tcsetattr(0, termios.TCSANOW, child_attrs)
-        env = {"PATH": "/usr/bin:/bin", "LANG": "C", "TERM": "xterm-256color"}
-        os.execve(argv[0], argv, env)
-    os.close(wfd)
-    if m and archive:
-        m["pid"] = pid
-        atomic_json(archive.events / m["id"] / "manifest.json", m)
-    _copy_size(master)
-    previous_winch = signal.signal(signal.SIGWINCH, lambda *_: _copy_size(master))
-    old_signals = {}
-    for sig in (signal.SIGTERM, signal.SIGHUP):
-        old_signals[sig] = signal.signal(sig, lambda s, _f: os.killpg(pid, s))
-    if attrs is not None:
-        tty.setraw(0)
-    active_command = None
-    metadata_buffer = b""
-    previous = time.monotonic()
-    watched = {master, rfd, 0}
-    storage_failed = False
-
-    def finish_command(code):
-        nonlocal active_command
-        if active_command and archive:
-            archive.finish(active_command, code)
-        active_command = None
-
-    try:
-        while master in watched:
-            ready, _, _ = select.select(list(watched), [], [], 0.5)
-            for fd in ready:
-                try:
-                    data = os.read(fd, 65536)
-                except OSError as exc:
-                    if exc.errno == errno.EIO and fd == master:
-                        data = b""
-                    elif exc.errno == errno.EAGAIN:
-                        continue
-                    else:
-                        raise
-                if not data:
-                    watched.discard(fd)
-                    continue
-                if fd == 0:
-                    os.write(master, data)  # no input logger, buffer or index
-                elif fd == master:
-                    view = memoryview(data)
-                    while view:
-                        view = view[os.write(1, view):]
-                    now = time.monotonic()
-                    if not shell and archive and m and not storage_failed:
-                        try:
-                            archive.append(m, data, now - previous)
-                        except (OSError, ValueError, RuntimeError, sqlite3.Error):
-                            storage_failed = True
-                            m["coverage"] = "truncated"
-                    previous = now
-                else:
-                    metadata_buffer += data
-                    if len(metadata_buffer) > 65536:
-                        metadata_buffer = b""  # fail closed on malformed protocol
-                    while b"\n" in metadata_buffer:
-                        line, metadata_buffer = metadata_buffer.split(b"\n", 1)
-                        fields = line.split(b"\t")
-                        if (not shell or not archive or not m or storage_failed or
-                                len(fields) != 3 or fields[0] not in (b"B", b"E")):
-                            continue
-                        try:
-                            shell_pid, code = map(int, fields[1:])
-                            if shell_pid != pid or not 0 <= code <= 255:
-                                continue
-                            finish_command(code)
-                            if fields[0] == b"B":
-                                active_command = archive.begin(kind="command", source="bash",
-                                                               label="excluded", pid=pid, parent=m["id"])
-                        except (OSError, ValueError, RuntimeError, sqlite3.Error):
-                            storage_failed = True
-    finally:
-        if attrs is not None:
-            termios.tcsetattr(0, termios.TCSADRAIN, attrs)
-        signal.signal(signal.SIGWINCH, previous_winch)
-        for sig, handler in old_signals.items():
-            signal.signal(sig, handler)
-        os.close(master)
-        os.close(rfd)
-    _, status = os.waitpid(pid, 0)
-    code = os.waitstatus_to_exitcode(status)
-    code = code if code >= 0 else 128 - code
-    if archive and m:
-        try:
-            finish_command(code)
-            archive.finish(m, code)
-        except (OSError, ValueError, RuntimeError, sqlite3.Error):
-            pass  # durable manifest/spool recovered on the next successful run
-    return code
-
+from .terminal import relay
+from .capture import request, preferences
 
 def demo_argv() -> list[str]:
     # Fixed program, no external script/input/env reads. Tests replay screen updates
@@ -209,6 +76,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--json", action="store_true", help="machine output without an interactive NV banner")
     sub = p.add_subparsers(dest="operation", required=True)
     sub.add_parser("status")
+    capture = sub.add_parser("capture", help="explicit opt-in to potentially sensitive visible output")
+    capture.add_argument("action", choices=("on", "off", "status"))
+    capture.add_argument("--session")
+    capture.add_argument("--input", action="store_true", help="also allow ordinary ECHO-on application input")
+    capture.add_argument("--new-sessions", action="store_true")
+    capture.add_argument("--profile", help="named startup profile; omit for all future sessions")
+    capture.add_argument("--consent", action="store_true", help="required for persistent future-session consent")
+    for name in ("pause", "resume"):
+        control = sub.add_parser(name)
+        control.add_argument("--session")
+    policy = sub.add_parser("policy")
+    policy.add_argument("--exclude-command", action="append", default=[])
+    policy.add_argument("--sensitive-path", action="append", default=[])
     search = sub.add_parser("search")
     search.add_argument("query", nargs="?", default="")
     search.add_argument("--source", choices=("bash", "manual", "diagnostic"))
@@ -231,6 +111,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("argv", nargs=argparse.REMAINDER)
     shell = sub.add_parser("shell", help=argparse.SUPPRESS)
     shell.add_argument("--login", action="store_true")
+    shell.add_argument("--profile", default=os.environ.get("FSM_EA_PROFILE", os.environ.get("PTYXIS_PROFILE", "default")))
     return p
 
 
@@ -256,7 +137,7 @@ def main(argv: list[str] | None = None) -> int:
         if m is None:
             os.environ["FSM_EA_ACTIVE"] = "1"
             os.execv("/bin/bash", ["bash"] + (["-l"] if args.login else []) + ["-i"])
-        return relay([], archive, m, shell=True, login=args.login)
+        return relay([], archive, m, shell=True, login=args.login, profile=args.profile)
     try:
         try:
             a = Archive(args.root)
@@ -267,9 +148,55 @@ def main(argv: list[str] | None = None) -> int:
                 return subprocess.call(list(safe or argv))
             raise
         op = args.operation
-        if op == "run":
+        if op in {"capture", "pause", "resume"}:
+            action = args.action if op == "capture" else op
+            if op == "capture" and args.new_sessions:
+                if action not in {"on", "off"} or (action == "on" and not args.consent):
+                    raise ValueError("persistent full needs explicit --consent")
+                with a.lock():
+                    prefs = preferences(a)
+                    if action == "on":
+                        consent = dict(explicit=True, scope="profile" if args.profile else "new-sessions",
+                                       at=time.time(), input=args.input, action="ea capture on --new-sessions --consent")
+                    else:
+                        consent = None
+                    if args.profile:
+                        if not args.profile.replace("-", "").replace("_", "").isalnum():
+                            raise ValueError("invalid profile")
+                        profiles = prefs.setdefault("profiles", {})
+                        if consent:
+                            profiles[args.profile] = consent
+                        else:
+                            profiles.pop(args.profile, None)
+                    elif consent:
+                        prefs["global_consent"] = consent
+                    else:
+                        prefs.pop("global_consent", None)
+                    atomic_json(a.root / "capture-policy.json", prefs)
+                result = {"new_sessions": action, "profile": args.profile,
+                          "existing_sessions_unchanged": True, "risk": "arbitrary output may contain private content"}
+            else:
+                session = args.session or os.environ.get("FSM_EA_SESSION")
+                if not session:
+                    raise ValueError("run inside a newly instrumented terminal or use --session")
+                result = request(a, session, {"action": action, "input": getattr(args, "input", False)})
+                if not result.get("ok"):
+                    raise ValueError("control refused")
+        elif op == "policy":
+            with a.lock():
+                prefs = preferences(a)
+                for key, additions in (("exclude_commands", args.exclude_command), ("sensitive_paths", args.sensitive_path)):
+                    existing = prefs.setdefault(key, [])
+                    for item in additions:
+                        if not item or "\0" in item or len(item) > 4096:
+                            raise ValueError("invalid exclusion")
+                        if item not in existing:
+                            existing.append(item)
+                atomic_json(a.root / "capture-policy.json", prefs)
+            result = prefs
+        elif op == "run":
             return run_command(args, a)
-        if op == "status":
+        elif op == "status":
             result = a.status()
         elif op == "search":
             since = time.time() - args.since_hours * 3600 if args.since_hours else 0
