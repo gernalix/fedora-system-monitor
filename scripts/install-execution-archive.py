@@ -122,7 +122,7 @@ def main():
     try:
         package = stage / "execution_archive"
         package.mkdir(mode=0o700)
-        for name in ("__init__.py", "cli.py", "capture.py", "terminal.py", "process_adapter.py"):
+        for name in ("__init__.py", "cli.py", "capture.py", "terminal.py", "process_adapter.py", "local_sources.py"):
             write(package / name, (REPO / "src/fedora_system_monitor/capsules/execution_archive" / name).read_bytes())
         for source, target in (("entry", "entry"), ("metadata", "metadata")):
             write(stage / f"{target}.bash", (REPO / f"hooks/execution-archive-{source}.bash").read_bytes())

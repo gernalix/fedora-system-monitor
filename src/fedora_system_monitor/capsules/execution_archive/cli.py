@@ -10,11 +10,12 @@ import sys
 import time
 from pathlib import Path
 
-from . import Archive, SAFE, atomic_json, private_file
+from . import Archive, SAFE, SOURCES, atomic_json, private_file
 
 
 from .terminal import relay
 from .capture import request, preferences
+from .local_sources import collect_journal, collect_podman, inventory, run_wrapped
 
 def demo_argv() -> list[str]:
     # Fixed program, no external script/input/env reads. Tests replay screen updates
@@ -91,7 +92,7 @@ def build_parser() -> argparse.ArgumentParser:
     policy.add_argument("--sensitive-path", action="append", default=[])
     search = sub.add_parser("search")
     search.add_argument("query", nargs="?", default="")
-    search.add_argument("--source", choices=("bash", "manual", "diagnostic", "rdc", "codex"))
+    search.add_argument("--source", choices=sorted(SOURCES))
     search.add_argument("--since-hours", type=float, default=0)
     search.add_argument("--limit", type=int, default=20)
     for name in ("show", "replay"):
@@ -109,6 +110,21 @@ def build_parser() -> argparse.ArgumentParser:
         configure.add_argument("--" + k, type=int)
     run = sub.add_parser("run")
     run.add_argument("argv", nargs=argparse.REMAINDER)
+    sources = sub.add_parser("sources", help="bounded native local execution sources")
+    source_sub = sources.add_subparsers(dest="source_operation", required=True)
+    source_sub.add_parser("inventory", help="read-only presence and coverage matrix")
+    journal = source_sub.add_parser("collect-journal", help="consume one exact unit with a private cursor")
+    journal.add_argument("--scope", choices=("system", "user"), required=True)
+    journal.add_argument("--unit", required=True)
+    journal.add_argument("--since", default="-15min")
+    journal.add_argument("--include-output", action="store_true",
+                         help="exact-unit journal stream; stdout/stderr remain combined")
+    podman = source_sub.add_parser("collect-podman", help="consume native Podman lifecycle metadata")
+    podman.add_argument("--since", default="-15m")
+    wrapped = source_sub.add_parser("run", help="explicit metadata-only lifecycle wrapper")
+    wrapped.add_argument("--source", choices=("git-hook", "ide", "launcher"), required=True)
+    wrapped.add_argument("--name", required=True)
+    wrapped.add_argument("argv", nargs=argparse.REMAINDER)
     shell = sub.add_parser("shell", help=argparse.SUPPRESS)
     shell.add_argument("--login", action="store_true")
     shell.add_argument("--profile", default=os.environ.get("FSM_EA_PROFILE", os.environ.get("PTYXIS_PROFILE", "default")))
@@ -123,6 +139,16 @@ def main(argv: list[str] | None = None) -> int:
             if candidate.is_file():
                 print("NV " + candidate.read_text().strip())
                 break
+    if args.operation == "sources" and args.source_operation == "inventory":
+        print(json.dumps(inventory(), sort_keys=True))
+        return 0
+    if args.operation == "sources" and args.source_operation == "run":
+        wrapped_argv = args.argv[1:] if args.argv[:1] == ["--"] else args.argv
+        try:
+            return run_wrapped(args.root, args.source, args.name, wrapped_argv)
+        except ValueError:
+            print(json.dumps({"ok": False, "error_type": "ValueError"}), file=sys.stderr)
+            return 1
     # Shell fail-open means ordinary terminal usage survives unavailable storage.
     if args.operation == "shell":
         archive, m = None, None
@@ -196,6 +222,14 @@ def main(argv: list[str] | None = None) -> int:
             result = prefs
         elif op == "run":
             return run_command(args, a)
+        elif op == "sources":
+            if args.source_operation == "collect-journal":
+                result = collect_journal(a, scope=args.scope, unit=args.unit,
+                                         include_output=args.include_output, since=args.since)
+            elif args.source_operation == "collect-podman":
+                result = collect_podman(a, since=args.since)
+            else:
+                raise ValueError("unsupported source operation")
         elif op == "status":
             result = a.status()
         elif op == "search":

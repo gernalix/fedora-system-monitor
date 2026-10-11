@@ -5,16 +5,25 @@ import pty
 import select
 import shlex
 import signal
+import sqlite3
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from fedora_system_monitor.capsules.execution_archive import Archive, Zstd, atomic_json
 from fedora_system_monitor.capsules.execution_archive.capture import request
 from fedora_system_monitor.capsules.execution_archive.process_adapter import _command_name
+from fedora_system_monitor.capsules.execution_archive.local_sources import (
+    collect_journal,
+    collect_podman,
+    inventory,
+    parse_podman_events,
+    run_wrapped,
+)
 
 REPO = Path(__file__).resolve().parent.parent
 MODULE = "fedora_system_monitor.capsules.execution_archive.cli"
@@ -139,6 +148,166 @@ class ArchiveTest(unittest.TestCase):
         self.assertEqual(self.cli("enable").returncode, 0)
         self.assertEqual(self.cli("run", "date").returncode, 0)
         self.assertEqual(len(self.a.query()), 1)
+
+
+class LocalSourcesTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = Path(self.tmp.name)
+        self.root = self.home / "archive"
+        self.a = Archive(self.root)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    @staticmethod
+    def completed(argv, stdout="", returncode=0, **_kwargs):
+        return subprocess.CompletedProcess(argv, returncode, stdout=stdout, stderr="")
+
+    def test_journal_cursor_duplicate_resume_output_and_classification(self):
+        public = "PUBLIC_SYSTEMD_STREAM_P36"
+        entries = [
+            {"__CURSOR": "cursor-a", "__REALTIME_TIMESTAMP": "1000000", "_BOOT_ID": "boot",
+             "_PID": "41", "_SYSTEMD_UNIT": "fsm-p36.service",
+             "_SYSTEMD_INVOCATION_ID": "invocation-1", "_COMM": "printf", "MESSAGE": public},
+            {"__CURSOR": "cursor-b", "__REALTIME_TIMESTAMP": "2000000", "_BOOT_ID": "boot",
+             "_PID": "1", "UNIT": "fsm-p36.service", "INVOCATION_ID": "invocation-1",
+             "_COMM": "systemd", "MESSAGE": "process exited code=0/SUCCESS", "EXIT_STATUS": "0"},
+        ]
+        calls = []
+
+        def first(argv, **kwargs):
+            calls.append(argv)
+            return self.completed(argv, "\n".join(json.dumps(item) for item in entries), **kwargs)
+
+        result = collect_journal(self.a, scope="system", unit="fsm-p36.service",
+                                 include_output=True, runner=first)
+        self.assertEqual((result["inserted"], result["content_events"]), (2, 1))
+        self.assertIn("--since", calls[0])
+        manifests = [json.loads(p.read_text()) for p in self.root.glob("events/*/manifest.json")]
+        stream = next(m for m in manifests if m["coverage"] == "journal-stream")
+        self.assertEqual(self.a.read(stream, "output"), (public + "\n").encode())
+        self.assertEqual(stream["metadata"]["argv"], "filtered-to-executable-basename")
+        self.assertTrue(stream["consent"]["explicit"])
+        self.assertTrue(stream["residual_risk"])
+        self.assertTrue(stream["content_gaps"])
+        self.assertIsNone(stream["parent_pid"])
+        exited = next(m for m in manifests if m["exit_code"] == 0)
+        self.assertEqual(stream["correlation"], exited["correlation"])
+
+        def resumed(argv, **kwargs):
+            self.assertIn("--after-cursor", argv)
+            self.assertEqual(argv[argv.index("--after-cursor") + 1], "cursor-b")
+            return self.completed(argv, "", **kwargs)
+
+        resumed_result = collect_journal(self.a, scope="system", unit="fsm-p36.service",
+                                         include_output=True, runner=resumed)
+        self.assertEqual(resumed_result["inserted"], 0)
+        state_path = self.root / "local-source-cursors.json"
+        state = json.loads(state_path.read_text())
+        state["journals"].clear()
+        state_path.write_text(json.dumps(state))
+        duplicate = collect_journal(self.a, scope="system", unit="fsm-p36.service",
+                                    include_output=True, runner=first)
+        self.assertEqual((duplicate["inserted"], duplicate["duplicates"]), (0, 2))
+        self.assertEqual(len(list(self.root.glob("events/*/manifest.json"))), 2)
+
+    def test_user_unit_field_precedes_system_user_manager_scope(self):
+        entry = {"__CURSOR": "user-a", "__REALTIME_TIMESTAMP": "4000000", "_PID": "62",
+                 "_SYSTEMD_UNIT": "user@1000.service", "_SYSTEMD_USER_UNIT": "fixture.service",
+                 "_SYSTEMD_INVOCATION_ID": "user-invocation", "_COMM": "printf",
+                 "MESSAGE": "PUBLIC_USER_STREAM_P36"}
+        runner = lambda argv, **kwargs: self.completed(argv, json.dumps(entry), **kwargs)
+        result = collect_journal(self.a, scope="user", unit="fixture.service",
+                                 include_output=True, runner=runner)
+        self.assertEqual(result["content_events"], 1)
+        manifest = json.loads(next(self.root.glob("events/*/manifest.json")).read_text())
+        self.assertEqual(manifest["coverage"], "journal-stream")
+
+    def test_journal_sensitive_output_and_cron_are_metadata_only(self):
+        entry = {"__CURSOR": "cron-a", "__REALTIME_TIMESTAMP": "3000000", "_PID": "52",
+                 "_SYSTEMD_UNIT": "crond.service", "_COMM": "crond",
+                 "MESSAGE": "token=PUBLIC_SYNTHETIC_REDACTED_P36"}
+        runner = lambda argv, **kwargs: self.completed(argv, json.dumps(entry), **kwargs)
+        result = collect_journal(self.a, scope="system", unit="crond.service",
+                                 include_output=True, runner=runner)
+        self.assertEqual(result["source"], "cron")
+        manifest = json.loads(next(self.root.glob("events/*/manifest.json")).read_text())
+        self.assertEqual(manifest["coverage"], "metadata-only")
+        self.assertEqual(manifest["content_gap"], "recognizable-sensitive-output")
+        for path in self.root.rglob("*"):
+            if path.is_file():
+                self.assertNotIn(b"PUBLIC_SYNTHETIC_REDACTED_P36", path.read_bytes())
+
+    def test_podman_native_metadata_parser_and_dedup(self):
+        line = json.dumps({"Type": "container", "Status": "start", "ID": "public-container-id",
+                           "TimeNano": 4_000_000_000, "Actor": {"Attributes": {
+                               "name": "fixture", "image": "localhost/public-fixture:latest",
+                               "private-label": "never-persist"}}})
+        parsed = parse_podman_events(line)
+        self.assertEqual(parsed[0]["metadata"]["name"], "fixture")
+        self.assertNotIn("private-label", parsed[0]["metadata"])
+        runner = lambda argv, **kwargs: self.completed(argv, line, **kwargs)
+        first = collect_podman(self.a, runner=runner)
+        second = collect_podman(self.a, runner=runner)
+        self.assertEqual((first["inserted"], second["duplicates"]), (1, 1))
+        manifest = json.loads(next(self.root.glob("events/*/manifest.json")).read_text())
+        self.assertEqual(manifest["coverage"], "metadata-only")
+        self.assertNotIn("private-label", json.dumps(manifest))
+
+    def test_inventory_classifies_every_required_source_without_opening_content(self):
+        (self.home / ".config/Google/AndroidStudioFixture").mkdir(parents=True)
+        repo = self.home / "repo"
+        (repo / ".git/hooks").mkdir(parents=True)
+        (repo / ".git/hooks/pre-commit").write_text("PRIVATE_FIXTURE_CONTENT_NEVER_READ")
+        with mock.patch("fedora_system_monitor.capsules.execution_archive.local_sources._present",
+                        side_effect=lambda command: command in {"systemctl", "journalctl", "podman", "auditctl"}):
+            result = inventory(self.home, repo)
+        sources = {item["source"]: item for item in result["sources"]}
+        expected = {"systemd-system", "systemd-user", "timers", "cron-anacron", "udev",
+                    "autostart", "git-hooks", "podman", "docker", "ide-gradle",
+                    "chrome-native-messaging", "launchers", "auditd-ebpf"}
+        self.assertEqual(set(sources), expected)
+        self.assertIn("NOT COVERED", sources["chrome-native-messaging"]["coverage"])
+        self.assertIn("NOT ENABLED", sources["auditd-ebpf"]["coverage"])
+        self.assertNotIn("PRIVATE_FIXTURE_CONTENT_NEVER_READ", json.dumps(result))
+
+    def test_inventory_resolves_linked_worktree_common_git_hooks(self):
+        repo = self.home / "linked"
+        common = self.home / "common"
+        repo.mkdir()
+        (repo / ".git").write_text("gitdir: elsewhere")
+        (common / "hooks").mkdir(parents=True)
+        (common / "hooks/pre-push").write_text("PRIVATE_HOOK_BODY")
+
+        def runner(argv, **_kwargs):
+            return subprocess.CompletedProcess(argv, 0, stdout=str(common) + "\n", stderr="")
+
+        with mock.patch("fedora_system_monitor.capsules.execution_archive.local_sources._run", runner), \
+             mock.patch("fedora_system_monitor.capsules.execution_archive.local_sources._present", return_value=True):
+            result = inventory(self.home, repo)
+        hooks = next(item for item in result["sources"] if item["source"] == "git-hooks")
+        self.assertTrue(hooks["present"])
+        self.assertEqual(hooks["count"], 1)
+        self.assertNotIn("PRIVATE_HOOK_BODY", json.dumps(result))
+
+    def test_wrapper_records_pid_parent_exit_and_archiver_failure_is_fail_open(self):
+        for source, name in (("git-hook", "pre-commit"), ("ide", "gradle-fixture"),
+                             ("launcher", "launcher-fixture")):
+            self.assertEqual(run_wrapped(self.root, source, name, ["/usr/bin/true"]), 0)
+        manifests = [json.loads(p.read_text()) for p in self.root.glob("events/*/manifest.json")]
+        self.assertEqual({m["source"] for m in manifests}, {"git-hook", "ide", "launcher"})
+        for manifest in manifests:
+            self.assertGreater(manifest["pid"], 0)
+            self.assertEqual(manifest["parent_pid"], os.getpid())
+            self.assertEqual(manifest["exit_code"], 0)
+            self.assertEqual(manifest["coverage"], "metadata-only")
+        broken = self.home / "not-a-directory"
+        broken.write_text("fixture")
+        self.assertEqual(run_wrapped(broken, "launcher", "fixture", ["/usr/bin/true"]), 0)
+        with mock.patch.object(Archive, "record_external", side_effect=sqlite3.OperationalError("fixture")):
+            self.assertEqual(run_wrapped(self.home / "sqlite-failure", "ide", "fixture",
+                                         ["/usr/bin/true"]), 0)
 
 
 class ProcessAdapterTest(unittest.TestCase):
