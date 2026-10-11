@@ -1,6 +1,6 @@
-# Archivio esecuzioni — P36, fasi 1–3
+# Archivio esecuzioni — P37, fasi 1–4
 
-Fedora System Monitor, project_id 15, NV 6. Riutilizza archivio, CLI, hook,
+Fedora System Monitor, project_id 15, NV 7. Riutilizza archivio, CLI, hook,
 SQLite/FTS e replay P34/P48/P35. Non legge né importa chat, transcript Codex,
 sessioni browser, cronologie Bash o backup. Nessun nuovo database, daemon,
 monitor, timer o tmux.
@@ -21,6 +21,10 @@ ea replay UUID --speed 2
 ea sources inventory
 ea sources collect-journal --scope user --unit nome.service
 ea sources collect-podman
+ea remote inventory
+ea remote ssh --target ALIAS --include-output -- /usr/bin/comando argomento
+ea remote adb --include-output -- /system/bin/comando argomento
+ea remote github-run --repo owner/repo --run-id ID --include-logs
 ```
 
 Lo stesso installer imposta la `defaultShell` supportata di Remote Desktop
@@ -349,3 +353,99 @@ journal, exit code user non esposto, cron stdout/stderr, `RUN` udev, autostart,
 log container assenti, IDE non mediati, native messaging e launcher non adottati
 restano NOT COVERED secondo la matrice; nessuna sorgente viene promossa oltre
 l'evidenza realmente osservata.
+
+## Fase 4: SSH, GitHub Actions e ADB
+
+Gli adapter remoti usano solo autenticazione nativa già configurata e invocazioni
+esplicite. Non installano agent sulla VM, workflow, exporter, listener, timer o
+servizi. `ea disable` sospende ogni nuova registrazione senza impedire al comando
+SSH/ADB di funzionare; `ea enable` ripristina la registrazione. `ea search QUERY
+--source ssh|adb|github-actions` applica lo stesso indice FTS5 dell'archivio unico.
+
+### SSH e ADB
+
+`ea remote ssh` accetta soltanto un alias SSH configurato, senza `user@host` o
+endpoint, forza `BatchMode=yes` e chiude stdin. `ea remote adb` richiede un unico
+device autorizzato oppure il suo SHA256 con `--device-sha256`; il seriale raw non
+viene persistito. Entrambi salvano sempre timestamp, PID locale del trasporto,
+parent PID, exit code e basename del comando. Il PID del processo remoto non è
+esposto dal boundary e resta NOT COVERED.
+
+Senza `--include-output` stdout/stderr sono ereditati e l'evento è metadata-only.
+Con consenso esplicito l'adapter conserva stdout e stderr autentici separati,
+stream combinato in ordine di ricezione e timing locale per replay; questo timing
+non pretende di essere il tempo di generazione sul target. stdin è sempre chiuso
+e mai archiviato. Comandi/output riconoscibili come sensibili degradano a
+metadata-only; environment, credenziali e argv completo non vengono persistiti.
+
+### GitHub Actions
+
+`ea remote github-run` legge tramite `gh` un solo run esistente del repository
+esatto. Conserva run/attempt ID, workflow, evento, stato/conclusione, head SHA,
+timestamp, reference stabile e digest del log solo quando ammissibile. I log sono
+opzionali, limitati alla quota evento e respinti integralmente se contengono
+segreti riconoscibili, valori mascherati o `::add-mask::`.
+
+La API restituisce un log aggregato: la copertura è `runner-log`, non stdout/stderr
+separati, raw stream o timing. Non viene creato un timing zero e `ea replay` lo
+rifiuta correttamente; FTS5 e digest restano disponibili. Run identico e stesso
+attempt/update timestamp sono idempotenti. Nessun workflow o artifact viene
+creato, modificato o scaricato indiscriminatamente.
+
+### Matrice finale sintetica
+
+| Fonte | Livello verificabile | Limiti dichiarati |
+| --- | --- | --- |
+| Bash terminale | metadata-only safe; PTY visibile+timing con consenso | stdout/stderr inseparabili nella PTY; hidden stdin escluso |
+| RDC/Codex Bash | PID+parent+exit, stdout/stderr separati e replay | stdin inoltrato ma non salvato; Codex dipende dal trust hook/sessione |
+| systemd system/user e timer | command basename, PID/timestamp/exit quando esposto; journal stream opt-in | parent PID e stdout/stderr separati NOT COVERED |
+| cron/anacron, udev, autostart | metadata-only o NOT COVERED secondo P36 | output job, udev RUN e processi autostart non intercettati |
+| Git hook, IDE, launcher | PID+parent+timestamp+exit con wrapper opt-in | I/O non coperto dal wrapper metadata-only |
+| Podman | lifecycle metadata nativi | log non coperti senza container esatto sicuro; Docker assente |
+| SSH | trasporto PID+parent+exit; stdout/stderr+timing opt-in | remote PID, stdin e timing remoto NOT COVERED |
+| ADB | trasporto PID+parent+exit, device hash; stdout/stderr+timing opt-in | Android PID, stdin e file privati NOT COVERED |
+| GitHub Actions | run metadata/reference/digest e log aggregato opt-in | stdout/stderr/raw timing/replay e secret-masked log NOT COVERED |
+| Chrome native messaging, chat/browser | sola presenza metadata o esclusione | contenuto pagine/messaggi/chat sempre escluso |
+
+La copertura finale è intenzionalmente non universale. Un file scritto da un
+processo non è stdout, un log aggregato non è uno stream riproducibile e un PID
+del client SSH/ADB non è il PID remoto.
+
+### Collaudo finale P37 (2026-10-12)
+
+Il preflight reale ha trovato l'alias SSH `oracle-vm` utilizzabile in
+`BatchMode`, un solo device ADB autorizzato (in archivio compare soltanto il suo
+SHA256), accesso `gh` al repository e il run CI esistente `38182651484` concluso
+con successo. Non sono stati creati workflow, agent VM, listener o scheduler.
+
+Nell'archivio installato NV7, le fixture innocue SSH e ADB hanno exit code 0,
+stdout/stderr autentici separati, stream combinato e replay con timing locale.
+Gli eventi sono rispettivamente
+`b7fb7e30-c457-4103-8124-6fa67a6efe57` e
+`22906c23-d647-473a-ab83-99bee21a4764`; una ricerca FTS5 unica trova entrambi.
+Il run Actions è `c6ad1e97-10ee-51d0-826a-e34e79e7981a`: il log conteneva
+materiale mascherato, quindi è stato conservato solo come metadata/reference e
+il replay è stato rifiutato. Il secondo ingest ha prodotto 0 inserimenti e 1
+duplicato.
+
+La demo terminale Fedora ha verificato output PTY, timing, FTS5 e replay. Un job
+systemd user pianificato ha prodotto un journal stream reale; il secondo
+passaggio sul cursore ha letto e inserito 0 eventi. `ea disable` e `ea enable`
+hanno sospeso e ripristinato la sola registrazione; `ea maintain` e `ea recover`
+non hanno perso eventi. SQLite `integrity_check` è `ok`, l'archivio occupava
+meno di 1 MiB e gli adapter isolati hanno raggiunto circa 25 MiB RSS per SSH/ADB
+e 49 MiB per `gh`, senza polling permanente. Il listener Fedora System Monitor
+è rimasto `active/running`, exit 0 e senza restart.
+
+RDC 0.2.51 è `active/running`, usa la shell adapter installata e conserva prove
+headless precedenti ricercabili e riproducibili. Il hook Codex installato ha
+eventi metadata/stream precedenti, ma il collaudo live di questa sessione non è
+stato ripetuto: P70 vieta nuove chat e input simulato, e non era esposta una
+CLI/API client RDC supportata. Queste due verifiche live restano **PARTIAL**.
+Anche GitHub Actions resta metadata-only per il run osservato; PID remoto SSH/ADB,
+stdin, timing remoto e replay Actions restano NOT COVERED.
+
+Verifica software: 37 test mirati e 269 test repository PASS, `diff --check`,
+readback byte-per-byte del modulo installato e NV7 PASS. Il rollback supportato
+è `python3 scripts/install-execution-archive.py --rollback`; non ferma gli
+esecutori e conserva runtime e archivio privato.

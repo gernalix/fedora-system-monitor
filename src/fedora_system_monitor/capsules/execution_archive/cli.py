@@ -16,6 +16,7 @@ from . import Archive, SAFE, SOURCES, atomic_json, private_file
 from .terminal import relay
 from .capture import request, preferences
 from .local_sources import collect_journal, collect_podman, inventory, run_wrapped
+from .remote_sources import ingest_github_run, remote_inventory, run_remote
 
 def demo_argv() -> list[str]:
     # Fixed program, no external script/input/env reads. Tests replay screen updates
@@ -125,6 +126,21 @@ def build_parser() -> argparse.ArgumentParser:
     wrapped.add_argument("--source", choices=("git-hook", "ide", "launcher"), required=True)
     wrapped.add_argument("--name", required=True)
     wrapped.add_argument("argv", nargs=argparse.REMAINDER)
+    remote = sub.add_parser("remote", help="explicit remote execution adapters and run ingest")
+    remote_sub = remote.add_subparsers(dest="remote_operation", required=True)
+    remote_sub.add_parser("inventory", help="read-only adapter availability")
+    ssh = remote_sub.add_parser("ssh", help="non-interactive SSH adapter")
+    ssh.add_argument("--target", required=True, help="configured SSH alias; no user or endpoint")
+    ssh.add_argument("--include-output", action="store_true")
+    ssh.add_argument("argv", nargs=argparse.REMAINDER)
+    adb = remote_sub.add_parser("adb", help="non-interactive ADB shell adapter")
+    adb.add_argument("--device-sha256", help="select one connected device without persisting its serial")
+    adb.add_argument("--include-output", action="store_true")
+    adb.add_argument("argv", nargs=argparse.REMAINDER)
+    github = remote_sub.add_parser("github-run", help="ingest one existing GitHub Actions run")
+    github.add_argument("--repo", required=True)
+    github.add_argument("--run-id", required=True, type=int)
+    github.add_argument("--include-logs", action="store_true")
     shell = sub.add_parser("shell", help=argparse.SUPPRESS)
     shell.add_argument("--login", action="store_true")
     shell.add_argument("--profile", default=os.environ.get("FSM_EA_PROFILE", os.environ.get("PTYXIS_PROFILE", "default")))
@@ -146,6 +162,19 @@ def main(argv: list[str] | None = None) -> int:
         wrapped_argv = args.argv[1:] if args.argv[:1] == ["--"] else args.argv
         try:
             return run_wrapped(args.root, args.source, args.name, wrapped_argv)
+        except ValueError:
+            print(json.dumps({"ok": False, "error_type": "ValueError"}), file=sys.stderr)
+            return 1
+    if args.operation == "remote" and args.remote_operation == "inventory":
+        print(json.dumps(remote_inventory(), sort_keys=True))
+        return 0
+    if args.operation == "remote" and args.remote_operation in {"ssh", "adb"}:
+        remote_argv = args.argv[1:] if args.argv[:1] == ["--"] else args.argv
+        try:
+            return run_remote(args.root, args.remote_operation, remote_argv,
+                              target=getattr(args, "target", None),
+                              device_sha256=getattr(args, "device_sha256", None),
+                              include_output=args.include_output)
         except ValueError:
             print(json.dumps({"ok": False, "error_type": "ValueError"}), file=sys.stderr)
             return 1
@@ -230,6 +259,12 @@ def main(argv: list[str] | None = None) -> int:
                 result = collect_podman(a, since=args.since)
             else:
                 raise ValueError("unsupported source operation")
+        elif op == "remote":
+            if args.remote_operation == "github-run":
+                result = ingest_github_run(a, repo=args.repo, run_id=args.run_id,
+                                           include_logs=args.include_logs)
+            else:
+                raise ValueError("unsupported remote operation")
         elif op == "status":
             result = a.status()
         elif op == "search":
@@ -240,8 +275,8 @@ def main(argv: list[str] | None = None) -> int:
             event_id = str(uuid.UUID(args.id))
             result = json.loads((a.events / event_id / "manifest.json").read_text())
             if op == "replay":
-                if "output" not in result["files"]:
-                    raise ValueError("metadata-only event has no replay")
+                if "output" not in result["files"] or "timing" not in result["files"]:
+                    raise ValueError("event has no faithful replay")
                 if not 0 < args.speed <= 1000:
                     raise ValueError("invalid replay speed")
                 raw, timing = a.read(result, "output"), a.read(result, "timing")
