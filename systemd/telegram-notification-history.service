@@ -2,6 +2,7 @@
 Description=Sync the configured technical Telegram notification chat to its private archive
 After=network-online.target
 Wants=network-online.target
+OnSuccess=datasette-alerts-summary.service
 ConditionPathExists=%h/.config/fedora-telegram-history/collector.env
 ConditionPathExists=%h/.local/share/fedora-telegram-history/account.session
 
