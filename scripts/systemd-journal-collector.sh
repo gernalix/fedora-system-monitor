@@ -72,6 +72,9 @@ discover_directory() {
     [[ -d $directory ]] || return 0
     shopt -s nullglob
     for path in "$directory"/*.service "$directory"/*.timer; do
+        # Alias symlinks normally point at vendor units; owner-declared custom
+        # units remain discoverable through the MegaVault registry.
+        [[ -L $path ]] && continue
         unit=${path##*/}
         add_unit "$unit" "$scope"
         if [[ $unit == *.timer ]]; then
