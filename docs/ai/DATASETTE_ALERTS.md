@@ -18,8 +18,8 @@ not trigger preparation. No unrelated autodelete or bot poller is changed.
 
 The projection implementation belongs to `gernalix/telegram_insert_bot`,
 `datasette_alerts.py`, with operator documentation `docs/DATASETTE_ALERTS.md`.
-Activate the hookup only after that source has integrated and exists in the
-canonical local checkout. Create the private state directory (0700) and verified
+Activate the hookup only after that source has integrated and is installed from that verified integrated revision at
+~/.local/libexec/datasette-alerts-summary/datasette_alerts.py. Create the private state directory (0700) and verified
 peer receipt (0600) before installing units; user systemd cannot create the
 ReadWritePaths directory under its read-only home sandbox.
 
@@ -30,8 +30,10 @@ three starts per ten minutes; stdout exposes counts/status only. Originals and
 state are local mode 0600, outside Git. No Telegram credentials/session are
 available to this derived service and its address families are limited to Unix.
 
-Package delivery is manual through the supported file/attachment flow; neither
-unit automates model invocation or submission to a Codex chat. Thus preparation
+A supported native heartbeat in the existing Codex chat reads the verified
+private generation and writes correlated delivery receipts. Neither systemd
+unit directly invokes a model. Installation of the projection uses an immutable
+Git blob from verified integrated main, leaving stale canonical worktrees alone. Thus preparation
 success alone does not establish full P95 acceptance. Before claiming acceptance,
 verify actual acquisition, service readback, idempotent restart, active existing
 timer, preserved original checksums and the agreed delivery route.
