@@ -1,5 +1,15 @@
 # Datasette Alerts preparation hook
 
+New exports use `--private-archive` at
+`~/.local/share/fedora-telegram-history/datasette-alerts/archive`. Original files
+and checkpoints are durably replaced in order, with retry deduplication. No Git
+operation runs in this mode; the historical Git archive is preserved untouched.
+The collector uses the global Python runtime and the existing private
+config/session, with pinned Telethon 1.45.0 (the already installed version).
+Bootstrap the private archive from the verified historical export under the
+existing session lock before cutover. Keep the old runtime script/units as
+protected rollback copies, including the existing legacy environment.
+
 The existing `telegram-notification-history.timer` remains the sole persistent
 15-minute acquisition schedule for the authorized `datasette_alerts_bot` account
 chat (peer 8598093378). A successful history service starts the new offline

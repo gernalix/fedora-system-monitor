@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Incrementally mirror one Telegram peer into a private text-only Git archive."""
+"""Incrementally export one authorized Telegram peer; private storage or legacy Git."""
 from __future__ import annotations
 
 import argparse
@@ -81,6 +81,23 @@ def read_state(path: Path) -> int:
     return last_id
 
 
+def durable_text(path: Path, text: str) -> None:
+    fd, name = tempfile.mkstemp(dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(name, path)
+        parent = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(parent)
+        finally:
+            os.close(parent)
+    finally:
+        Path(name).unlink(missing_ok=True)
+
+
 def serialize_changes(root: Path, last_id: int, records: list[dict[str, Any]]) -> list[Path]:
     """Write ordered new records and bounded latest view; return changed paths."""
     if not records:
@@ -105,10 +122,10 @@ def serialize_changes(root: Path, last_id: int, records: list[dict[str, Any]]) -
         additions = [item for item in items if item["message_id"] not in seen]
         if additions:
             separator = "" if not existing or existing.endswith("\n") else "\n"
-            path.write_text(existing + separator + "".join(
+            durable_text(path, existing + separator + "".join(
                 json.dumps(item, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
                 for item in additions
-            ), encoding="utf-8")
+            ))
             os.chmod(path, 0o600)
             changes.append(path)
             all_records.extend(additions)
@@ -119,7 +136,7 @@ def serialize_changes(root: Path, last_id: int, records: list[dict[str, Any]]) -
     state_path = root / "state.json"
     state_text = json.dumps({"last_message_id": new_last_id}, sort_keys=True, indent=2) + "\n"
     if not state_path.exists() or state_path.read_text(encoding="utf-8") != state_text:
-        state_path.write_text(state_text, encoding="utf-8")
+        durable_text(state_path, state_text)
         os.chmod(state_path, 0o600)
         changes.append(state_path)
     all_records.sort(key=lambda item: item["message_id"])
@@ -132,7 +149,7 @@ def serialize_changes(root: Path, last_id: int, records: list[dict[str, Any]]) -
     view_path = root / "latest.md"
     rendered = "\n".join(md)
     if not view_path.exists() or view_path.read_text(encoding="utf-8") != rendered:
-        view_path.write_text(rendered, encoding="utf-8")
+        durable_text(view_path, rendered)
         os.chmod(view_path, 0o600)
         changes.append(view_path)
     return changes
@@ -263,6 +280,27 @@ def sync(config: dict[str, str], client: Any) -> int:
     return len(records)
 
 
+def sync_private(config: dict[str, str], client: Any, archive: Path) -> int:
+    """Same account/session and checkpoint, without any Git operation or send."""
+    if archive.is_symlink() or any((p / ".git").exists() for p in (archive, *archive.parents)):
+        raise ValueError("Private export must be outside Git and not a symlink")
+    archive.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if archive.stat().st_mode & 0o077:
+        raise PermissionError("Private archive permissions must be 0700")
+    entity = client.get_entity(config["TELEGRAM_CHAT"])
+    if getattr(entity, "id", None) != 8598093378 or getattr(entity, "username", None) != "datasette_alerts_bot" or not getattr(entity, "bot", False):
+        raise ValueError("Wrong Datasette Alerts account peer")
+    last_id = read_state(archive / "state.json")
+    records = [message_record(m) for m in client.iter_messages(entity, min_id=last_id, reverse=True) if m.id > last_id]
+    # Durably replace files before checkpoint. On interruption, records already
+    # appended are deduplicated and the old cursor is retried on the next run.
+    serialize_changes(archive, last_id, records)
+    durable_text(archive / "acquisition.json", json.dumps({"peer_id": entity.id, "username": entity.username,
+                 "checked_at": utc_iso(dt.datetime.now(dt.timezone.utc)), "new_messages": len(records),
+                 "state": "new_alerts" if records else "no_new_alerts"}, sort_keys=True) + "\n")
+    return len(records)
+
+
 def telegram_client(config: dict[str, str], *, interactive: bool) -> Any:
     try:
         from telethon.sync import TelegramClient
@@ -294,6 +332,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("command", choices=("login", "sync"))
     parser.add_argument("--config", default="~/.config/fedora-telegram-history/collector.env")
+    parser.add_argument("--private-archive", type=Path, help="Export Datasette Alerts outside Git using the existing account")
     args = parser.parse_args(argv)
     config_path = Path(args.config).expanduser()
     if not config_path.is_file():
@@ -316,13 +355,13 @@ def main(argv: list[str] | None = None) -> int:
                     raise RuntimeError("Telegram login was not completed")
                 print("Telegram session is authorized.")
                 return 0
-            count = sync(config, client)
+            count = sync_private(config, client, args.private_archive.expanduser()) if args.private_archive else sync(config, client)
             print(f"Telegram history sync complete; new_messages={count}.")
             return 0
         finally:
             client.disconnect()
     except Exception as exc:
-        print(f"Telegram history sync failed ({type(exc).__name__}: {exc}).", file=sys.stderr)
+        print(f"Telegram history sync failed ({type(exc).__name__}).", file=sys.stderr)
         return 1
 
 

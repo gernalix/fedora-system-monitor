@@ -3,12 +3,10 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 DEST="$HOME/.local/libexec/fedora-telegram-history"
-VENV="$DEST/venv"
 mkdir -p "$DEST"
 chmod 700 "$DEST"
 install -m 0644 "$ROOT/scripts/telegram_history_collector.py" "$DEST/telegram_history_collector.py"
-python3 -m venv "$VENV"
-"$VENV/bin/pip" install --disable-pip-version-check 'Telethon>=1.36,<2'
+python3 -m pip install --user --disable-pip-version-check -r "$ROOT/config/telegram-history-requirements.txt"
 mkdir -p "$HOME/.config/fedora-telegram-history" "$HOME/.config/systemd/user" "$HOME/.local/share/fedora-telegram-history" "$HOME/.cache/fedora-telegram-history"
 chmod 700 "$HOME/.config/fedora-telegram-history" "$HOME/.local/share/fedora-telegram-history" "$HOME/.cache/fedora-telegram-history"
 if [[ -d "$HOME/projects/telegram-notification-history" ]]; then
