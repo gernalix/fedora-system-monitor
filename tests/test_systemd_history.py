@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+import subprocess
 import sqlite3
 from unittest.mock import patch
 
@@ -142,6 +143,16 @@ class SystemdHistoryTests(unittest.TestCase):
         self.assertIsNone(checkpoint["journal_cursor"])
         self.assertEqual(checkpoint["recovery_state"], "error")
         self.assertIn("journal unavailable", checkpoint["recovery_warning"])
+
+    def test_journal_timeout_is_persisted_as_unknown_coverage(self) -> None:
+        with patch("fedora_system_monitor.capsules.systemd_history.discover_units", return_value=CATALOG), patch(
+            "fedora_system_monitor.capsules.systemd_history._journal", side_effect=subprocess.TimeoutExpired(["journalctl"], 120)
+        ):
+            result = import_history(self.db)
+        self.assertFalse(result["passed"])
+        checkpoint = self.db.query("SELECT recovery_state,recovery_warning FROM systemd_journal_checkpoints")[0]
+        self.assertEqual(checkpoint["recovery_state"], "error")
+        self.assertIn("timed out", checkpoint["recovery_warning"])
 
     def test_snapshot_reports_metrics_and_never_assigns_daemon_percentage(self) -> None:
         output = Path(self.temp.name) / "snapshot.json"

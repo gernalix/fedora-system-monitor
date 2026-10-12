@@ -156,6 +156,14 @@ class SystemdJournalCollectorTests(unittest.TestCase):
         self.assertNotIn("remote.service", rows)
         self.assertNotIn("remote.timer", rows)
 
+    def test_vendor_alias_symlinks_are_not_custom_units(self) -> None:
+        vendor = self.root / "usr/lib/systemd/system"
+        vendor.mkdir(parents=True)
+        (vendor / "vendor.service").write_text("[Service]\nExecStart=/bin/true\n", encoding="utf-8")
+        (self.system / "vendor.service").symlink_to(vendor / "vendor.service")
+        rows = [json.loads(line)["unit"] for line in self.invoke("--discover").stdout.splitlines()]
+        self.assertNotIn("vendor.service", rows)
+
 
 if __name__ == "__main__":
     unittest.main()

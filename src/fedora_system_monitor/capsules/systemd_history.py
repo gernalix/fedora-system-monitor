@@ -172,7 +172,10 @@ def _read_journal(
     fallback_since: str,
 ) -> tuple[list[dict[str, Any]], str | None]:
     command = _journal_command(journalctl, scope, units, cursor=cursor, fallback_since=fallback_since)
-    result = _journal(command)
+    try:
+        result = _journal(command)
+    except subprocess.TimeoutExpired:
+        return [], "journalctl timed out after 120 seconds; coverage is unknown"
     if result.returncode != 0:
         return [], redact_text(result.stderr).strip() or f"journalctl exited with status {result.returncode}"
     entries: list[dict[str, Any]] = []
