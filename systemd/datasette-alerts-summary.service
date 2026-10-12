@@ -7,7 +7,7 @@ StartLimitBurst=3
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/python3 %h/projects/telegram_insert_bot/datasette_alerts.py --source %h/projects/telegram-notification-history/archive --state %h/.local/share/datasette-alerts-summary --identity %h/.config/datasette-alerts-summary/identity.json
+ExecStart=/usr/bin/python3 %h/projects/telegram_insert_bot/datasette_alerts.py --source %h/.local/share/fedora-telegram-history/datasette-alerts/archive --state %h/.local/share/datasette-alerts-summary --identity %h/.config/datasette-alerts-summary/identity.json
 TimeoutStartSec=3min
 Restart=on-failure
 RestartSec=10s
