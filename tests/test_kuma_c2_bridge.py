@@ -18,6 +18,13 @@ def event(heartbeat_id: int, status: int, *, active: bool = True) -> dict[str, o
 
 
 class KumaC2BridgeTests(unittest.TestCase):
+    def test_retired_bridge_does_not_read_network_or_write_state(self):
+        from pathlib import Path
+        from unittest.mock import patch
+        from fedora_system_monitor.capsules import kuma_c2_bridge as bridge
+        with patch.object(bridge, 'fetch_events', side_effect=AssertionError('remote query')), patch.object(bridge, '_ensure_state', side_effect=AssertionError('state write')), patch.object(bridge, 'capture', side_effect=AssertionError('C3 intake')):
+            self.assertEqual([], bridge.run_once(Path('/nonexistent/c3-test.sqlite3')))
+
     def test_repeated_down_and_flapping_keep_one_unresolved_incident(self) -> None:
         states = {}
         captures = []

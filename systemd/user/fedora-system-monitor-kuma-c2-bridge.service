@@ -1,4 +1,6 @@
 [Unit]
+# C3 retired; historical definition retained, never start/install as active.
+ConditionPathExists=/nonexistent/c3-permanently-retired
 Description=Capture Uptime Kuma DOWN transitions in the C2 Inbox
 After=network-online.target
 Wants=network-online.target
