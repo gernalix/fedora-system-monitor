@@ -78,6 +78,7 @@ from fedora_system_monitor.capsules.systemd_history import (
     DEFAULT_COLLECTOR as SYSTEMD_HISTORY_COLLECTOR,
     DEFAULT_REGISTRY as SYSTEMD_HISTORY_REGISTRY,
     add_cli_subcommand,
+    build_runtime_snapshot,
     history_status,
     import_history,
 )
@@ -1321,7 +1322,7 @@ def execute(args: argparse.Namespace) -> int:
     }
     if args.command == "alerts" and not args.resolve:
         read_only_commands.add("alerts")
-    if args.command == "systemd-history" and args.systemd_history_command == "status":
+    if args.command == "systemd-history" and args.systemd_history_command in {"status", "snapshot"}:
         read_only_commands.add("systemd-history")
     database_required = args.command not in {"config-check", "kuma-configure", "kuma-runtime", *read_only_commands}
     if args.command == "smart-alert" and (args.action in {"details", "disks"} or args.no_open):
@@ -1350,6 +1351,15 @@ def execute(args: argparse.Namespace) -> int:
         output = history_status(Path(config["monitor"]["database_path"]))
         _print(output, args)
         return 0 if output["ok"] else 1
+    if args.command == "systemd-history" and args.systemd_history_command == "snapshot":
+        output = build_runtime_snapshot(
+            Path(config["monitor"]["database_path"]), output=args.output, host_id=args.host_id,
+            window_days=args.window_days, collector=args.collector or SYSTEMD_HISTORY_COLLECTOR,
+            registry=args.registry or SYSTEMD_HISTORY_REGISTRY, systemctl=args.systemctl,
+            system_unit_dir=args.system_unit_dir, user_unit_dir=args.user_unit_dir,
+        )
+        _print(output, args)
+        return 0
     if args.command == "test":
         output = _self_test(config, system=args.system)
         _print(output, args)
