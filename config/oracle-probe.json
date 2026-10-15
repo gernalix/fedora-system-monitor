@@ -6,6 +6,9 @@
     {"key": "oracle_workflowy_import", "kind": "jobs", "jobs": [
       {"unit": "workflowy-import.service", "freshness_seconds": 129600}
     ]},
+    {"key": "oracle_livinggaul_source", "kind": "jobs", "jobs": [
+      {"unit": "livinggaul-source.service", "freshness_seconds": 10800}
+    ]},
     {"key": "oracle_backup", "kind": "jobs", "jobs": [
       {"unit": "oracle-backup.service", "freshness_seconds": 5400},
       {"unit": "oracle-backup-healthcheck.service", "freshness_seconds": 1500}
