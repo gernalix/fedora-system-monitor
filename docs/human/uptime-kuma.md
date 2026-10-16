@@ -66,7 +66,9 @@ Gli URL sono in `/home/daniele/.config/codex/secrets/fedora_system_monitor_uptim
 con modo `0600`. Non vanno mai stampati, copiati nei documenti o
 committati. Il runtime non usa cookie o credenziali Kuma.
 
-### Capture automatico delle transizioni DOWN in C2
+### Capture C2 storico (ritirato; non riattivare)
+
+Questo bridge C2 è dismesso e mascherato. Il sostituto Kuma → Pn attivo è documentato in [kuma-pn-monitor.md](kuma-pn-monitor.md).
 
 Il bridge locale legge in sola lettura i nuovi record `heartbeat` dal DB Kuma
 Oracle usando l'helper SSH canonico. Non usa la UI, cookie o API di
