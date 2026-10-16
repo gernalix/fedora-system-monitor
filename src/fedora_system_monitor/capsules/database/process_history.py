@@ -10,7 +10,7 @@ SCHEMA = (
     """CREATE TABLE IF NOT EXISTS process_identities (
         id INTEGER PRIMARY KEY, boot_id TEXT NOT NULL, pid INTEGER NOT NULL,
         start_ticks INTEGER NOT NULL, uid INTEGER, user TEXT, name TEXT NOT NULL, unit TEXT,
-        UNIQUE(boot_id,pid,start_ticks,uid,name,unit))""",
+        UNIQUE(boot_id,pid,start_ticks,uid,user,name,unit))""",
     "CREATE INDEX IF NOT EXISTS idx_process_identity_pid ON process_identities(pid)",
     "CREATE INDEX IF NOT EXISTS idx_process_identity_name ON process_identities(name)",
     "CREATE INDEX IF NOT EXISTS idx_process_identity_unit ON process_identities(unit)",

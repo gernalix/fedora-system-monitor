@@ -187,6 +187,14 @@ class ProcessHistoryTests(unittest.TestCase):
         self.assertEqual(output['maintenance']['process_history']['samples'],12)
         self.assertEqual(self.db.query('SELECT COUNT(*) n FROM process_samples')[0]['n'],12)
 
+    def test_user_label_changes_preserve_both_observations(self):
+        proc(self.root)
+        snap=self.scan(False);snap['rows'][0]['user']='old-label'
+        self.db.insert_process_snapshot(snap,OPTIONS)
+        self.advance();snap=self.scan(False);snap['rows'][0]['user']='new-label'
+        self.db.insert_process_snapshot(snap,OPTIONS)
+        self.assertEqual(self.db.query('SELECT COUNT(*) n FROM process_samples')[0]['n'],2)
+
     def test_query_timeout_is_a_controlled_error(self):
         proc(self.root);self.scan()
         with patch('fedora_system_monitor.capsules.reporting.process_history._rows',side_effect=sqlite3.OperationalError('interrupted')):
