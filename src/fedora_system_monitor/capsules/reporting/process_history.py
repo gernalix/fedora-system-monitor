@@ -1,6 +1,7 @@
 """Bounded, read-only current/raw/hourly process queries."""
 from datetime import datetime, timezone
 import time
+import sqlite3
 from . import _connection, _rows
 
 
@@ -18,6 +19,15 @@ def add_parser(subparsers):
 
 
 def report(path, args):
+    try:
+        return _report(path, args)
+    except sqlite3.OperationalError as exc:
+        if str(exc) == 'interrupted':
+            raise ValueError('process history query deadline exceeded; narrow the time range or filters') from exc
+        raise ValueError('process history database unavailable or incompatible') from exc
+
+
+def _report(path, args):
     if not 1 <= args.limit <= 1000 or not 0 <= args.offset <= 100000 or not 0 < args.since_hours <= 24*365:
         raise ValueError('limit 1..1000, offset 0..100000, since-hours >0..8760 required')
     if args.view == 'hourly' and (args.pid is not None or args.boot_id):

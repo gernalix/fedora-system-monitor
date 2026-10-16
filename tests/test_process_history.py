@@ -187,6 +187,12 @@ class ProcessHistoryTests(unittest.TestCase):
         self.assertEqual(output['maintenance']['process_history']['samples'],12)
         self.assertEqual(self.db.query('SELECT COUNT(*) n FROM process_samples')[0]['n'],12)
 
+    def test_query_timeout_is_a_controlled_error(self):
+        proc(self.root);self.scan()
+        with patch('fedora_system_monitor.capsules.reporting.process_history._rows',side_effect=sqlite3.OperationalError('interrupted')):
+            with self.assertRaisesRegex(ValueError,'deadline exceeded'):
+                report(self.db.path,self.args())
+
     def test_privacy_allowlist_and_transaction_rollback(self):
         proc(self.root)
         from fedora_system_monitor.capsules.collectors import process_history as mod
