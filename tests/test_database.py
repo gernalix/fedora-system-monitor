@@ -520,9 +520,9 @@ class DatabaseTests(unittest.TestCase):
         with closing(sqlite3.connect(self.database_path)) as connection, connection:
             connection.execute("DROP INDEX idx_metrics_collector_run")
             connection.execute("DROP INDEX idx_events_collector_run")
-            connection.execute("DELETE FROM schema_versions WHERE version=5")
+            connection.execute("DELETE FROM schema_versions WHERE version>=5")
         self.db = Database(self.database_path)
-        self.assertEqual(self.db.schema_version, 5)
+        self.assertEqual(self.db.schema_version, SCHEMA_VERSION)
         self.assertTrue(self.db.check_indexes()["ok"])
         self.db.initialize()
         self.assertEqual(self.db.query("SELECT count(*) n FROM schema_versions WHERE version=5"), [{"n": 1}])

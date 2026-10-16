@@ -76,11 +76,15 @@ class AppTests(unittest.TestCase):
             self.assertEqual(result, 0)
             self.assertEqual(json.loads(output.getvalue())["schema_version"], SCHEMA_VERSION)
 
-    def test_collect_worker_persists_real_minute_metrics(self) -> None:
+    def test_collect_worker_persists_fixture_minute_metrics(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             database = Path(temp) / "monitor.sqlite3"
             output = io.StringIO()
-            with redirect_stdout(output):
+            from fedora_system_monitor.capsules.collectors.model import CollectionResult, record
+            fixture = CollectionResult("minute", metrics=[
+                record(60,"memory","memory.used_percent",10,"percent",source="fixture"),
+                *[record(60,"system",f"fixture.{i}",i,"count",source="fixture") for i in range(6)]])
+            with patch("fedora_system_monitor.capsules.runtime.coordinator.collect_scope", return_value=fixture), redirect_stdout(output):
                 result = main(
                     [
                         "--config",

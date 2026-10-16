@@ -77,7 +77,7 @@ from fedora_system_monitor.capsules.smart_action import maybe_notify_smart_alert
 from fedora_system_monitor.capsules.systemd_history import (
     DEFAULT_COLLECTOR as SYSTEMD_HISTORY_COLLECTOR,
     DEFAULT_REGISTRY as SYSTEMD_HISTORY_REGISTRY,
-    add_cli_subcommand,
+    add_cli_subcommand as add_systemd_cli_subcommand,
     build_runtime_snapshot,
     history_status,
     import_history,
@@ -98,6 +98,12 @@ DEFAULT_UNITS = (
     "fedora-system-monitor-context.timer",
     "fedora-system-monitor-software.path",
 )
+
+
+def add_cli_subcommand(subparsers):
+    from ..reporting.process_history import add_parser
+    add_parser(subparsers)
+    add_systemd_cli_subcommand(subparsers)
 
 
 def _default_config_path() -> Path:
@@ -552,6 +558,8 @@ def _run_scope(scope: str, config: dict[str, Any], db: Database) -> dict[str, An
         result = collect_scope(scope, config, db)
         metrics_inserted = db.insert_metrics(result.metrics, cadence_seconds=cadence, collector_run_id=run_id)
         events_inserted = db.insert_events(result.events, collector_run_id=run_id)
+        if result.process_snapshot is not None:
+            maintenance["process_history"] = db.insert_process_snapshot(result.process_snapshot, config["process_history"])
         if result.hardware_inventory:
             db.insert_hardware_snapshot(result.hardware_inventory)
         if result.software_inventory:
@@ -1258,6 +1266,9 @@ def _context_command(args: argparse.Namespace, config: dict[str, Any]) -> Any:
 
 def _report_command(args: argparse.Namespace, config: dict[str, Any], db: Database | None) -> Any:
     path = db.path if db is not None else Path(config["monitor"]["database_path"])
+    if args.command == "process-history":
+        from ..reporting.process_history import report
+        return report(path, args)
     if args.command == "status":
         report = status_report(path)
         report["units"] = _systemd_states()
@@ -1318,7 +1329,7 @@ def execute(args: argparse.Namespace) -> int:
     read_only_commands = {
         "status", "health", "events", "metrics", "disks", "network", "software",
         "services", "service-history", "dashboard", "timeline", "trends", "prometheus",
-        "last-errors", "daily-summary", "export", "test", "context",
+        "last-errors", "daily-summary", "export", "test", "context", "process-history",
     }
     if args.command == "alerts" and not args.resolve:
         read_only_commands.add("alerts")

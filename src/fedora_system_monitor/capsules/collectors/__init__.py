@@ -66,8 +66,12 @@ def _db_quick(scope: str, config: Mapping[str, Any], db: object) -> CollectionRe
     return collect_db_check(scope, config, db, quick=True)
 
 
+from .process_history import collect_process_history
+
+
 _COLLECTORS: dict[str, tuple[tuple[str, Collector], ...]] = {
     "minute": (
+        ("process_history", collect_process_history),
         ("proc", collect_proc),
         ("critical_filesystems", _critical_filesystems),
         ("services", collect_services),

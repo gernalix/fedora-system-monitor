@@ -154,6 +154,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "restart_loop_window_minutes": 15,
         },
     },
+    "process_history": {"interval_seconds": 60, "max_scan_seconds": 5, "raw_hours": 48, "aggregate_days": 90},
     "retention": {
         "minute_days": 14,
         "five_minute_days": 60,
@@ -549,6 +550,14 @@ def validate_config(config: Mapping[str, Any] | object) -> list[str]:
     ):
         _require_positive(config, path, errors)
 
+    for key in ("interval_seconds", "max_scan_seconds", "raw_hours", "aggregate_days"):
+        _require_positive(config, ("process_history", key), errors)
+    options = config.get("process_history", {})
+    if isinstance(options, Mapping):
+        for key, low, high in (("interval_seconds",60,86400),("max_scan_seconds",0.1,10),("raw_hours",1,168),("aggregate_days",1,365)):
+            value = options.get(key)
+            if isinstance(value,(int,float)) and not low <= value <= high:
+                errors.append(f"process_history.{key} must be between {low} and {high}")
     if not isinstance(config.get("retention"), Mapping):
         errors.append("retention must be a table")
     for key in (
