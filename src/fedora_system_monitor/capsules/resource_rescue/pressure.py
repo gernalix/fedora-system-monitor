@@ -63,7 +63,7 @@ def sample(previous=None, *, root=Path('/proc'), volumes=('/', '/home','/var'), 
             if dev in seen: continue
             seen.add(dev);v=os.statvfs(path)
             paths.append({'mount':str(path),'free_percent':v.f_bavail/v.f_blocks*100 if v.f_blocks else None,
-                'free_bytes':v.f_bavail*v.f_frsize,'inode_percent':v.f_favail/v.f_files*100 if v.f_files else None})
+                'free_bytes':v.f_bavail*v.f_frsize,'total_bytes':v.f_blocks*v.f_frsize,'inode_percent':v.f_favail/v.f_files*100 if v.f_files else None})
         except OSError: pass
     scans=[rate(k) for k in vm if k.startswith('pgscan_')]
     # Some kernels expose both totals and subtypes. Do not sum overlapping totals.
@@ -103,7 +103,7 @@ def classify(s, cfg, *, triggered=False):
         return Risk('memory',1,'RAM disponibile bassa con stall/reclaim, oppure PSI RAM sostenuta.')
     for volume in s.volumes:
         free,inodes=volume['free_percent'],volume['inode_percent']
-        if (free is not None and free<cfg['disk_free_percent']) or (inodes is not None and inodes<cfg['inode_free_percent']) or volume['free_bytes']<cfg['disk_free_mib']*1024**2:
+        if (free is not None and free<cfg['disk_free_percent']) or (inodes is not None and inodes<cfg['inode_free_percent']) or (volume.get('total_bytes',0)>5*1024**3 and volume['free_bytes']<cfg['disk_free_mib']*1024**2):
             return Risk('disk',2 if (free is not None and free<2) or (inodes is not None and inodes<2) else 1,
                 'Spazio/inode critici: chiudere applicazioni non garantisce spazio. Nessuna cancellazione automatica.')
     if s.io_full is not None and s.io_full>=cfg['io_psi_full']:
@@ -118,7 +118,7 @@ def clearly_healthy(s,cfg):
         and s.io_full is not None and s.io_full<cfg['io_psi_full']/2
         and all((v['free_percent'] is None or v['free_percent']>=cfg['disk_free_percent']+cfg['hysteresis_percent'])
             and (v['inode_percent'] is None or v['inode_percent']>=cfg['inode_free_percent']+cfg['hysteresis_percent'])
-            and v['free_bytes']>=cfg['disk_free_mib']*1024**2*1.5 for v in s.volumes))
+            and (v.get('total_bytes',0)<=5*1024**3 or v['free_bytes']>=cfg['disk_free_mib']*1024**2*1.5) for v in s.volumes))
 
 
 class Gate:

@@ -86,6 +86,13 @@ class PressureTests(unittest.TestCase):
         self.assertEqual(classify(metrics(io_full=20),CFG).kind,'io')
         self.assertFalse(clearly_healthy(metrics(volumes=[v]),CFG))
 
+    def test_small_efi_volume_does_not_trigger_absolute_gib_floor(self):
+        v={'mount':'/boot/efi','total_bytes':600*1024**2,'free_bytes':300*1024**2,'free_percent':50,'inode_percent':None}
+        self.assertEqual(classify(metrics(volumes=[v]),CFG).kind,'healthy')
+        self.assertTrue(clearly_healthy(metrics(volumes=[v]),CFG))
+        v['free_percent']=1
+        self.assertEqual(classify(metrics(volumes=[v]),CFG).kind,'disk')
+
     def test_locked_pending_then_unlocked_dispatch(self):
         g=Gate(CFG)
         self.assertEqual(g.step(metrics(memory_full=8),locked=True)[0],'pending')
@@ -175,8 +182,8 @@ class IntegrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             p=Path(tmp)/'db';db=Database(p)
             db.set_state('incident',{'level':1,'sample':{'available':12}},namespace='resource_rescue');db.close()
-            out=io.StringIO()
-            with redirect_stdout(out): code=main(['--database',str(p),'resource-rescue','status','--json'])
+            out=io.StringIO();config=Path(tmp)/'config.toml';config.write_text('')
+            with redirect_stdout(out): code=main(['--config',str(config),'--database',str(p),'resource-rescue','status','--json'])
             self.assertEqual(code,0);self.assertEqual(json.loads(out.getvalue())['incident']['level'],1)
             text=out.getvalue();self.assertNotIn('title',text);self.assertNotIn('url',text)
 
