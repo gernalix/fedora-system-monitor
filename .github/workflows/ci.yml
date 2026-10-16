@@ -27,6 +27,8 @@ jobs:
           PYTHONPATH: src
           PYTHONWARNINGS: error
         run: python3 -m unittest discover -s tests -q
+      - name: Validate Chrome rescue safeguards
+        run: node tests/test_chrome_rescue.mjs
       - name: Validate deployment shell scripts
         run: |
           bash -n scripts/*.sh

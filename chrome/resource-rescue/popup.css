@@ -1,0 +1,1 @@
+body{font:14px system-ui;min-width:650px;max-width:900px;padding:16px;line-height:1.5;color:#17202a;background:#fafafa}h1{font-size:20px}ol{max-height:340px;overflow:auto;padding-left:34px}li{padding:8px;border-bottom:1px solid #ddd;overflow-wrap:anywhere}button,input{font:inherit;padding:8px;margin:4px}#status{font-weight:600}button:disabled{opacity:.5}

@@ -68,3 +68,8 @@ OPS.context_query=fedora-system-monitor context around <timestamp>;context incid
 OPS.context_sync=fedora-system-monitor context sync; resumes from last-sync with overlap and bounded catch-up
 OPS.context_publish=Set context.git_push=true only after private gernalix/fedora-context-data exists at configured output path
 SECURITY.context=Publisher runs as daniele, exact repo/branch validation, bounded Git, unrelated dirty files fail closed; raw ActivityWatch URLs excluded
+
+FEATURE.resource_rescue=Existing events daemon PSI/adaptive thread; user-owned event-driven UI oneshot; no second continuous daemon/timer; numeric state only in existing SQLite
+OPS.resource_rescue=fedora-system-monitor resource-rescue status --json
+LINK.resource_rescue=docs/human/resource-rescue.md
+FEATURE.chrome_rescue=Own least-privilege extension panel; Stable per-tab CPU/RSS/I/O unavailable; explicit confirmed tabs.discard/remove; one-message capabilities-only native host; manual Chrome UI activation required

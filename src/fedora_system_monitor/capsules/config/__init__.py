@@ -154,6 +154,15 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "restart_loop_window_minutes": 15,
         },
     },
+    "resource_rescue": {
+        "enabled": True, "idle_seconds": 10, "active_seconds": 5,
+        "warning_available": 15, "emergency_available": 5, "support_psi_percent": 1,
+        "warning_psi_some": 10, "emergency_psi_full": 5, "io_psi_full": 10,
+        "swap_out_mib_s": 4, "reclaim_pages_s": 1024, "hysteresis_percent": 3,
+        "disk_free_percent": 5, "inode_free_percent": 5, "disk_free_mib": 1024,
+        "debounce_seconds": 5, "recovery_samples": 3, "snooze_seconds": 600,
+        "minimum_popup_seconds": 120, "dialog_timeout_seconds": 600,
+    },
     "process_history": {"interval_seconds": 60, "max_scan_seconds": 5, "raw_hours": 48, "aggregate_days": 90},
     "retention": {
         "minute_days": 14,
@@ -550,6 +559,20 @@ def validate_config(config: Mapping[str, Any] | object) -> list[str]:
     ):
         _require_positive(config, path, errors)
 
+    _require_bool(config, ("resource_rescue", "enabled"), errors)
+    for key in DEFAULT_CONFIG["resource_rescue"]:
+        if key != "enabled": _require_positive(config, ("resource_rescue",key), errors)
+    rescue=config.get("resource_rescue",{})
+    if isinstance(rescue,Mapping):
+        for key,low,high in (("idle_seconds",2,60),("active_seconds",2,30),("recovery_samples",2,20),("snooze_seconds",60,86400),("minimum_popup_seconds",60,3600),("dialog_timeout_seconds",60,600)):
+            value=rescue.get(key)
+            if isinstance(value,(float,int)) and (not low<=value<=high or int(value)!=value):
+                errors.append(f"resource_rescue.{key} must be an integer between {low} and {high}")
+        for key in ("warning_available","emergency_available","warning_psi_some","emergency_psi_full","io_psi_full","disk_free_percent","inode_free_percent","hysteresis_percent"):
+            _require_percent(config,("resource_rescue",key),errors)
+        emergency=rescue.get("emergency_available");warning=rescue.get("warning_available")
+        if isinstance(emergency,(int,float)) and isinstance(warning,(int,float)) and emergency>=warning:
+            errors.append("resource_rescue.emergency_available must be below warning_available")
     for key in ("interval_seconds", "max_scan_seconds", "raw_hours", "aggregate_days"):
         _require_positive(config, ("process_history", key), errors)
     options = config.get("process_history", {})

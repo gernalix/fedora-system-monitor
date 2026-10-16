@@ -157,3 +157,16 @@ interval_seconds = 60
 max_scan_seconds = 5
 raw_hours = 48
 aggregate_days = 90
+
+# Preventive checks run inside the existing event daemon, not another poller.
+[resource_rescue]
+enabled = true
+idle_seconds = 10
+active_seconds = 5
+warning_available = 15
+emergency_available = 5
+warning_psi_some = 10
+emergency_psi_full = 5
+debounce_seconds = 5
+snooze_seconds = 600
+minimum_popup_seconds = 120
