@@ -150,3 +150,10 @@ filesystem_free_change_gib = 1.0
 reminder_seconds = 21600
 timeout_seconds = 5
 inverted_categories = ["storage"]
+
+# Every fast/minute wake; interval may be increased in multiples of 60 seconds.
+[process_history]
+interval_seconds = 60
+max_scan_seconds = 5
+raw_hours = 48
+aggregate_days = 90

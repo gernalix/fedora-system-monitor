@@ -44,7 +44,8 @@ printf '%s\n' "$REVISION" > "$STAGE/.source-revision"
 /usr/bin/python3 -m compileall -q "$STAGE/fedora_system_monitor"
 PYTHONPATH="$STAGE" /usr/bin/python3 -c 'import fedora_system_monitor; import fedora_system_monitor.capsules.runtime.coordinator'
 PYTHONPATH="$STAGE" /usr/bin/python3 -m fedora_system_monitor config-check >/dev/null
-PYTHONPATH="$STAGE" /usr/bin/python3 -m fedora_system_monitor db-check >/dev/null
+# Validate staged schema without migrating the live DB under the old runtime.
+PYTHONPATH="$STAGE" /usr/bin/python3 -m fedora_system_monitor --database :memory: db-check >/dev/null
 chown -R root:root "$STAGE"
 find "$STAGE" -type d -exec chmod 0755 '{}' +
 find "$STAGE" -type f -exec chmod 0644 '{}' +
