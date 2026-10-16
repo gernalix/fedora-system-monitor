@@ -1,5 +1,8 @@
 """PSI and adaptive checks inside FSM's existing event daemon, no new poller."""
 from dataclasses import asdict
+from datetime import datetime, timezone
+import json
+import math
 from pathlib import Path
 import os
 import re
@@ -53,6 +56,39 @@ def psi_triggers():
     return fds
 
 
+def collector_volumes(db, paths, now):
+    """Read bounded, fresh host measurements; ProtectHome hides live statvfs."""
+    cutoff=datetime.fromtimestamp(now-180,timezone.utc).isoformat(timespec='seconds').replace('+00:00','Z')
+    rows=db.query("SELECT timestamp_utc,name,value,details_json FROM periodic_metrics "
+        "WHERE timestamp_utc>=? AND name IN ('filesystem.free_percent','filesystem.inode_free_percent') "
+        "AND outcome='ok' ORDER BY timestamp_utc DESC,id DESC LIMIT 240",(cutoff,))
+    values={};seen=set()
+    for row in rows:
+        try:
+            data=json.loads(row['details_json']);path=data.get('mount_point')
+            observed=datetime.fromisoformat(row['timestamp_utc'].replace('Z','+00:00')).timestamp()
+            value=float(row['value']);key=(path,row['name'])
+            if path not in paths or key in seen or not now-180<=observed<=now+5 or not math.isfinite(value) or not 0<=value<=100: continue
+            seen.add(key)
+            if row['name']=='filesystem.free_percent':
+                free,total=int(data['free_bytes']),int(data['total_bytes'])
+                if not 0<=free<=total or total<=0: continue
+                values[path]={'mount':path,'free_percent':value,'free_bytes':free,'total_bytes':total,
+                    'inode_percent':None,'observed_at_utc':observed,'source':'existing_collector'}
+        except (KeyError,TypeError,ValueError,OverflowError): continue
+    # Inodes may precede capacity rows in descending row order.
+    for row in rows:
+        try:
+            data=json.loads(row['details_json']);path=data.get('mount_point')
+            if row['name']!='filesystem.inode_free_percent' or path not in values or values[path]['inode_percent'] is not None: continue
+            observed=datetime.fromisoformat(row['timestamp_utc'].replace('Z','+00:00')).timestamp()
+            value=float(row['value'])
+            if now-180<=observed<=now+5 and math.isfinite(value) and 0<=value<=100:
+                values[path]['inode_percent']=value
+        except (KeyError,TypeError,ValueError,OverflowError): continue
+    return list(values.values())
+
+
 def watch(config,db,stop):
     cfg=config['resource_rescue']
     if not cfg['enabled']: return
@@ -67,7 +103,7 @@ def watch(config,db,stop):
     for fd in fds: poll.register(fd,select.POLLPRI)
     descriptor={'psi_triggers':len(fds),'fallback_seconds':cfg['idle_seconds'],'oomd':oomd_status()}
     db.set_state('capabilities',descriptor,namespace='resource_rescue')
-    due=0.;triggered=False
+    due=0.;triggered=False;volumes=[];volume_due=0.
     try:
         while not stop.is_set():
             now=time.monotonic()
@@ -84,7 +120,14 @@ def watch(config,db,stop):
                 continue
             try:
                 measured=time.perf_counter()
-                s,previous=sample(previous,volumes=tuple(config['collection']['critical_filesystems']))
+                s,previous=sample(previous,volumes=())
+                wall=time.time()
+                if now>=volume_due:
+                    try: volumes=collector_volumes(db,config['collection']['critical_filesystems'],wall)
+                    except Exception: volumes=[]
+                    volume_due=now+60
+                s.volumes=[v for v in volumes if wall-v['observed_at_utc']<=180]
+                s.volumes_fresh=bool(s.volumes)
                 sample_ms=(time.perf_counter()-measured)*1000;sample_count+=1
                 risk=classify(s,cfg,triggered=triggered)
                 unlocked=session_unlocked(user) if risk.level>0 or active or gate.state.get('pending_recap') else False

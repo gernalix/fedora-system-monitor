@@ -38,6 +38,7 @@ class Sample:
     oom: float | None
     volumes: list = field(default_factory=list)
     zram: dict = field(default_factory=dict)
+    volumes_fresh: bool = True
 
 
 def sample(previous=None, *, root=Path('/proc'), volumes=('/', '/home','/var'), now=None, sys_root=Path('/sys')):
@@ -112,7 +113,7 @@ def classify(s, cfg, *, triggered=False):
 
 
 def clearly_healthy(s,cfg):
-    return (s.available is not None and s.available>=cfg['warning_available']+cfg['hysteresis_percent']
+    return (s.volumes_fresh and s.available is not None and s.available>=cfg['warning_available']+cfg['hysteresis_percent']
         and s.memory_some is not None and s.memory_some<cfg['warning_psi_some']/2
         and s.memory_full is not None and s.memory_full<cfg['emergency_psi_full']/2
         and s.io_full is not None and s.io_full<cfg['io_psi_full']/2

@@ -15,7 +15,7 @@ import unittest
 
 from fedora_system_monitor.capsules.resource_rescue.pressure import Sample,Risk,Gate,classify,clearly_healthy,sample
 from fedora_system_monitor.capsules.resource_rescue.targets import Identity,Candidate,Snapshot,same,protected,terminate,candidates
-from fedora_system_monitor.capsules.resource_rescue.watch import session_unlocked,oomd_status,watch
+from fedora_system_monitor.capsules.resource_rescue.watch import session_unlocked,oomd_status,watch,collector_volumes
 from fedora_system_monitor.capsules.config import load_config,validate_config
 from fedora_system_monitor.capsules.database import Database
 from fedora_system_monitor.app import main
@@ -249,6 +249,25 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(sum('start' in c for c in calls),1)
         self.assertTrue(any(key=='incident' for key,value in db.states))
         self.assertNotIn('title',json.dumps(db.states))
+
+    def test_host_filesystems_use_fresh_collector_not_masked_namespace(self):
+        now=1792193500
+        from datetime import datetime,timezone
+        def row(name,value,path,age=0):
+            return {'name':name,'value':value,'timestamp_utc':datetime.fromtimestamp(now-age,timezone.utc).isoformat(),
+                'details_json':json.dumps({'mount_point':path,'free_bytes':200,'total_bytes':1000})}
+        db=Mock();db.query.return_value=[row('filesystem.inode_free_percent',70,'/home'),
+            row('filesystem.free_percent',20,'/home'),row('filesystem.free_percent',99,'/home',10),
+            row('filesystem.free_percent',5,'/',181),row('filesystem.free_percent',4,'/other')]
+        with patch('os.statvfs',side_effect=AssertionError('masked namespace must not be probed')):
+            volumes=collector_volumes(db,['/home','/'],now)
+        self.assertEqual(len(volumes),1)
+        self.assertEqual(volumes[0]['free_percent'],20)
+        self.assertEqual(volumes[0]['inode_percent'],70)
+        self.assertEqual(volumes[0]['source'],'existing_collector')
+        self.assertFalse(clearly_healthy(metrics(volumes_fresh=False),CFG))
+        db.query.return_value=[]
+        self.assertEqual(collector_volumes(db,['/home'],now),[])
 
     def test_browser_minimal_permissions_and_no_persistence(self):
         root=Path(__file__).resolve().parents[1]/'chrome/resource-rescue'

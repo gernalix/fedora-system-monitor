@@ -13,7 +13,13 @@ Il warning predefinito richiede MemAvailable <15% con PSI/reclaim/swap-out,
 oppure PSI RAM some ≥10%; l'emergenza richiede PSI full ≥5%, OOM recente,
 oppure MemAvailable <5% con pressione corroborante. I trigger kernel sono hint
 some RAM 100 ms / 2 s e full I/O 200 ms / 2 s; non costituiscono da soli prova OOM.
-Si rilevano anche capacità/inode critici e PSI I/O sostenuta. Il pavimento
+Si rilevano anche capacità/inode critici e PSI I/O sostenuta. Il daemon mantiene
+`ProtectHome=yes`: per capacità/inode riusa le misure del collector esistente,
+aggiornando la cache ogni 60 secondi e scartando misure oltre 180 secondi.
+I filesystem esclusi dalla policy del collector restano non misurati; nessun
+valore è dedotto dal filesystem mascherato del sandbox. Se mancano tutte le
+misure disco fresche, il recupero non viene dichiarato. Il dialogo utente può
+ricampionare direttamente i filesystem nella propria vista in sola lettura. Il pavimento
 assoluto in MiB non viene applicato ai filesystem ≤5 GiB, in coerenza con la
 policy disco esistente, evitando falsi allarmi sulla partizione EFI. Stato e limiti
 numerici globali esposti da oomd sono osservati all'avvio; assenti = unknown.
