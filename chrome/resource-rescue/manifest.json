@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "FSM Schede Chrome",
+  "version": "1.0.0",
+  "description": "Schede effimere, limiti di attribuzione espliciti e scaricamento/chiusura solo su scelta confermata.",
+  "permissions": [
+    "tabs",
+    "nativeMessaging"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "FSM Schede Chrome"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'none'"
+  },
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAu0rw5/HSzaQwnAviDHdhC5uHA8bZ0rTqqiGOWoszQWY8QSbANsczx1rabRb88NwlVBaGMH1z+iS7YMssVB0OjkYcVsBs8REwhOvTpya0Ev+TnjFuvdDpIHHzYvx7nj2AsVatWu8kKtiEswl/Ec6oAt52bcEwOj2YMtXJHlD2krd+B+jz6aOm23ZDxGSDQBNrkUA7d10XePP70LgS2dK1FTcwA3D9ZVLtpfZbpPsDBnlOIoLH28VIpH1wjKn7oi49pUSxWzroSV7UT7U6w6yw4VedAaFBBRC1tX6OKL4MCl/VSF9yO3NqECcNe9OTXBfrGbBYkMvjUXGEhSiFhUekfQIDAQAB"
+}

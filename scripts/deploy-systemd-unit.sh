@@ -7,7 +7,7 @@ fi
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 
-if [[ ! -d "$ROOT/.git" ]]; then
+if ! git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     printf 'Systemd unit deploy requires a Git checkout: %s\n' "$ROOT" >&2
     exit 1
 fi

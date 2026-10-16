@@ -1,0 +1,9 @@
+<!doctype html><html lang="it"><meta charset="utf-8"><title>FSM Schede Chrome</title>
+<link rel="stylesheet" href="popup.css"><h1>FSM · Schede Chrome</h1>
+<p id="capabilities"></p><p>CPU, RSS/footprint e I/O per scheda: <strong>non disponibili</strong> in questa integrazione Stable. Nessuna somma di renderer condivisi; JS heap non usato come RAM totale.</p>
+<p>Priorità per inattività, <strong>non per consumo</strong>. Titoli e URL restano solo nella memoria di questa finestra, mai nel database FSM.</p>
+<button id="refresh">Aggiorna elenco e numeri</button><ol id="tabs"></ol>
+<label>Numero scheda <input id="number" type="text" inputmode="numeric" autocomplete="off"></label>
+<button id="discard">Scarica scheda inattiva</button><button id="close">Chiudi scheda</button>
+<p>Ogni azione richiede conferma: puoi perdere modifiche non salvate. Nessun PID Chrome viene terminato.</p><p id="status" role="status"></p>
+<script type="module" src="popup.js"></script></html>

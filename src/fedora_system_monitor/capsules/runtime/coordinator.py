@@ -104,6 +104,8 @@ def add_cli_subcommand(subparsers):
     from ..reporting.process_history import add_parser
     add_parser(subparsers)
     add_systemd_cli_subcommand(subparsers)
+    from ..resource_rescue import add_parser as add_rescue_parser
+    add_rescue_parser(subparsers)
 
 
 def _default_config_path() -> Path:
@@ -1084,7 +1086,17 @@ def _daemon(config: dict[str, Any], db: Database) -> int:
                 LOGGER.warning("compositor watcher failed: %s", redact_text(exc)[:300])
             stop_event.wait(3)
 
+    from ..resource_rescue.watch import watch as watch_resources
+    def resource_worker():
+        while not stop_event.is_set():
+            try:
+                watch_resources(config,db,stop_event)
+                if not config['resource_rescue']['enabled']: return
+            except Exception as exc:
+                LOGGER.warning("resource rescue watcher failed: %s",type(exc).__name__)
+            stop_event.wait(10)
     threads = [
+        threading.Thread(target=resource_worker,name="resource-rescue",daemon=True),
         threading.Thread(target=power_profile_worker, name="power-profile-dbus", daemon=True),
         threading.Thread(target=platform_profile_worker, name="platform-profile-sysfs", daemon=True),
         threading.Thread(target=compositor_worker, name="gnome-compositor-watch", daemon=True),
@@ -1329,7 +1341,7 @@ def execute(args: argparse.Namespace) -> int:
     read_only_commands = {
         "status", "health", "events", "metrics", "disks", "network", "software",
         "services", "service-history", "dashboard", "timeline", "trends", "prometheus",
-        "last-errors", "daily-summary", "export", "test", "context", "process-history",
+        "last-errors", "daily-summary", "export", "test", "context", "process-history", "resource-rescue",
     }
     if args.command == "alerts" and not args.resolve:
         read_only_commands.add("alerts")
@@ -1354,6 +1366,12 @@ def execute(args: argparse.Namespace) -> int:
             specs=(*DEFAULT_MONITORS, *service_monitor_specs(args.service_unit)),
         )
         _print(output, args)
+        return 0
+    if args.command == "resource-rescue":
+        from ..resource_rescue import execute as rescue_execute
+        result=rescue_execute(args,config)
+        if isinstance(result,int): return result
+        _print(result,args)
         return 0
     if args.command == "context":
         _print(_context_command(args, config), args)
