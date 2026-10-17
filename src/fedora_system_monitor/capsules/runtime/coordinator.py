@@ -51,6 +51,12 @@ from fedora_system_monitor.capsules.notifications import (
     integration_status,
     notify_filesystem_free_changes,
     send_category_heartbeat,
+    send_named_heartbeat,
+)
+from fedora_system_monitor.capsules.prompt_history_freshness import (
+    ENDPOINT_KEY as PROMPT_HISTORY_FRESHNESS_KEY,
+    MONITOR_SPEC as PROMPT_HISTORY_FRESHNESS_MONITOR,
+    prompt_history_freshness,
 )
 from fedora_system_monitor.capsules.service_health import send_service_heartbeats, service_monitor_specs
 from fedora_system_monitor.capsules.prometheus import exposition as prometheus_exposition, serve as serve_prometheus
@@ -909,6 +915,16 @@ def _collect_command(args: argparse.Namespace, config: dict[str, Any], db: Datab
             ping_ms=duration,
         )
         heartbeats.append(discord_heartbeat.__dict__)
+        prompt_history_healthy, prompt_history_message = prompt_history_freshness(db)
+        heartbeats.append(
+            send_named_heartbeat(
+                config,
+                PROMPT_HISTORY_FRESHNESS_KEY,
+                healthy=prompt_history_healthy,
+                message=prompt_history_message,
+                ping_ms=duration,
+            ).__dict__
+        )
         heartbeats.extend(
             item.__dict__
             for item in send_service_heartbeats(
@@ -1392,11 +1408,12 @@ def execute(args: argparse.Namespace) -> int:
         _print(runtime_descriptor(), args)
         return 0
     if args.command == "kuma-configure":
+        extra_specs = (PROMPT_HISTORY_FRESHNESS_MONITOR,) if args.prompt_history_freshness else ()
         output = configure_push_monitors(
             base_url=args.base_url,
             chrome_profile=args.chrome_profile,
             credentials_path=args.credentials or config["notifications"]["uptime_kuma_credentials"],
-            specs=(*DEFAULT_MONITORS, *service_monitor_specs(args.service_unit)),
+            specs=(*DEFAULT_MONITORS, *service_monitor_specs(args.service_unit), *extra_specs),
         )
         _print(output, args)
         return 0
