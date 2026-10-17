@@ -88,6 +88,8 @@ LOGGER = logging.getLogger("fedora-system-monitor")
 SOURCE_ROOT = Path(__file__).resolve().parents[3]
 SYSTEM_CONFIG = Path("/etc/fedora-system-monitor/config.toml")
 PROJECT_CONFIG = SOURCE_ROOT / "config/fedora-system-monitor.toml"
+MEGAVAULT_CLI = Path("/home/daniele/MegaVault/megavault.py")
+MEGAVAULT_SERVICE_SNAPSHOT = Path("/run/fedora-system-monitor/megavault-systemd-snapshot.json")
 DEFAULT_UNITS = (
     "fedora-system-monitor-events.service",
     "fedora-system-monitor-lifecycle.service",
@@ -806,6 +808,35 @@ def _discord_exporter_service_health(
     return healthy, f"discord-exporter-crawl.service: {reason}"
 
 
+def _reconcile_megavault_service_runtime(config: dict[str, Any], db: Database) -> dict[str, Any]:
+    """Project FSM evidence through MegaVault's existing canonical writer."""
+    snapshot = build_runtime_snapshot(
+        db.path,
+        output=MEGAVAULT_SERVICE_SNAPSHOT,
+        host_id="H0001",
+        window_days=30,
+        collector=SYSTEMD_HISTORY_COLLECTOR,
+        registry=SYSTEMD_HISTORY_REGISTRY,
+    )
+    MEGAVAULT_SERVICE_SNAPSHOT.chmod(0o640)
+    command = [
+        "runuser", "--user", "daniele", "--", "python3", str(MEGAVAULT_CLI),
+        "service-runtime", "reconcile", "--snapshot", str(MEGAVAULT_SERVICE_SNAPSHOT),
+    ]
+    result = run_command(command, timeout=180)
+    if not result.ok:
+        return {
+            "status": "ERROR",
+            "snapshot": snapshot,
+            "error": redact_text(result.stderr).strip() or f"megavault_exit_{result.returncode}",
+        }
+    try:
+        receipt = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return {"status": "ERROR", "snapshot": snapshot, "error": "megavault_invalid_json"}
+    return {"status": "PASS", "snapshot": snapshot, "receipt": receipt}
+
+
 def _collect_command(args: argparse.Namespace, config: dict[str, Any], db: Database) -> dict[str, Any]:
     scopes: list[str]
     if args.scope == "fast":
@@ -889,6 +920,8 @@ def _collect_command(args: argparse.Namespace, config: dict[str, Any], db: Datab
         )
         heartbeats.extend(item.__dict__ for item in send_event_job_heartbeats(config, ping_ms=duration))
     output: dict[str, Any] = {"results": results, "heartbeats": heartbeats}
+    if "hourly" in scopes:
+        output["service_runtime_reconciliation"] = _reconcile_megavault_service_runtime(config, db)
     log_record(LOGGER, "collection_complete", scopes=scopes, outcomes=[item["outcome"] for item in results])
     return output
 
