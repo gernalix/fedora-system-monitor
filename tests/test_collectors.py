@@ -133,6 +133,23 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(len({metric["device_id"] for metric in metrics}), 3)
         self.assertEqual(len({metric["details"]["filesystem_id"] for metric in metrics}), 1)
 
+    def test_uuid_capacity_override_survives_mount_path_change(self) -> None:
+        gib = 1024**3
+        fake_stat = SimpleNamespace(f_blocks=4000, f_bavail=100, f_frsize=gib, f_files=100, f_favail=90)
+        config = {"storage": {"capacity_overrides": [{
+            "filesystem_uuid": "22E02106E020E1B1",
+            "warning_free_gib": 20,
+            "critical_free_gib": 10,
+            "emergency_free_gib": 5,
+        }]}}
+        for mount_point in ("/media/old", "/run/media/user/new"):
+            mounts = [{"mount_point": mount_point, "root": "/", "major_minor": "253:9", "options": "rw", "fstype": "fuseblk", "source": "/dev/mapper/changing-name"}]
+            with mock.patch.object(periodic, "mount_table", return_value=mounts), mock.patch.object(periodic.os, "statvfs", return_value=fake_stat), mock.patch.object(periodic, "_filesystem_source_id", return_value="fsuuid:22E02106E020E1B1"):
+                result = periodic.collect_filesystems("five_minute", config, self.db, all_relevant=True)
+            percent = next(metric for metric in result.metrics if metric["name"] == "filesystem.free_percent")
+            self.assertEqual(percent["severity"], "info")
+            self.assertEqual(percent["details"]["capacity_policy"], "filesystem_uuid_absolute")
+
     def test_virtual_and_temporary_filesystems_are_excluded(self) -> None:
         fake_stat = SimpleNamespace(
             f_blocks=100,

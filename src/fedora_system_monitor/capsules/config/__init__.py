@@ -70,6 +70,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "small_filesystem_max_gib": 5.0,
         "small_filesystem_min_free_mib": 128,
         "expected_devices": [],
+        "capacity_overrides": [],
     },
     "inventory": {
         "user_home": "/home/daniele",
@@ -459,7 +460,7 @@ def validate_config(config: Mapping[str, Any] | object) -> list[str]:
 
     if not isinstance(config.get("storage"), Mapping):
         errors.append("storage must be a table")
-    for key in ("known_labels", "known_model_patterns", "expected_devices"):
+    for key in ("known_labels", "known_model_patterns", "expected_devices", "capacity_overrides"):
         _require_list(config, ("storage", key), errors)
     require_string_items(("storage", "known_labels"))
     require_string_items(("storage", "known_model_patterns"))
@@ -474,6 +475,32 @@ def validate_config(config: Mapping[str, Any] | object) -> list[str]:
                 valid = valid and ("required" not in item or isinstance(item["required"], bool))
             if not valid:
                 errors.append(f"storage.expected_devices[{index}] must contain a stable identifier")
+    overrides = _value(config, ("storage", "capacity_overrides"))
+    if isinstance(overrides, list):
+        allowed = {
+            "filesystem_uuid", "warning_free_gib", "critical_free_gib",
+            "emergency_free_gib", "recovery_hysteresis_gib",
+        }
+        for index, item in enumerate(overrides):
+            prefix = f"storage.capacity_overrides[{index}]"
+            if not isinstance(item, Mapping) or set(item) - allowed:
+                errors.append(f"{prefix} must contain only the supported UUID capacity fields")
+                continue
+            uuid = item.get("filesystem_uuid")
+            if not isinstance(uuid, str) or not uuid.strip():
+                errors.append(f"{prefix}.filesystem_uuid must be a non-empty string")
+            values = []
+            for key in ("warning_free_gib", "critical_free_gib", "emergency_free_gib"):
+                value = item.get(key)
+                if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+                    errors.append(f"{prefix}.{key} must be a positive number")
+                values.append(value)
+            if all(isinstance(value, (int, float)) and not isinstance(value, bool) for value in values):
+                if not values[0] > values[1] > values[2]:
+                    errors.append(f"{prefix} must satisfy warning_free_gib > critical_free_gib > emergency_free_gib")
+            recovery = item.get("recovery_hysteresis_gib", 0)
+            if isinstance(recovery, bool) or not isinstance(recovery, (int, float)) or recovery < 0:
+                errors.append(f"{prefix}.recovery_hysteresis_gib must be a non-negative number")
     for key in ("small_filesystem_max_gib", "small_filesystem_min_free_mib"):
         _require_positive(config, ("storage", key), errors)
 

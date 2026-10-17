@@ -73,6 +73,62 @@ class AlertingTests(unittest.TestCase):
         }
         self.assertEqual(evaluate_metric_alerts([metric], self.config, self.get, self.set), [])
 
+    def test_uuid_capacity_override_uses_absolute_reserve(self) -> None:
+        self.config["storage"]["capacity_overrides"] = [{
+            "filesystem_uuid": "22E02106E020E1B1",
+            "warning_free_gib": 20,
+            "critical_free_gib": 10,
+            "emergency_free_gib": 5,
+            "recovery_hysteresis_gib": 2,
+        }]
+        metric = {
+            "category": "filesystem",
+            "name": "filesystem.free_percent",
+            "value": 2.79,
+            "unit": "%",
+            "device_id": "seagate-view",
+            "source": "statvfs",
+            "details": {
+                "filesystem_id": "fsuuid:22E02106E020E1B1",
+                "total_bytes": 3833266438144,
+                "free_bytes": 107051343872,
+            },
+        }
+        self.assertEqual(evaluate_metric_alerts([metric], self.config, self.get, self.set), [])
+        for free_gib, expected in ((19, "warning"), (9, "critical"), (4, "emergency")):
+            self.state.clear()
+            metric["details"]["free_bytes"] = free_gib * 1024**3
+            signal = evaluate_metric_alerts([metric], self.config, self.get, self.set)[0]
+            self.assertEqual(signal.severity, expected)
+
+    def test_uuid_capacity_override_does_not_mask_other_storage_failures(self) -> None:
+        self.config["storage"]["capacity_overrides"] = [{
+            "filesystem_uuid": "22E02106E020E1B1",
+            "warning_free_gib": 20,
+            "critical_free_gib": 10,
+            "emergency_free_gib": 5,
+        }]
+        capacity = {
+            "category": "filesystem", "name": "filesystem.free_percent", "value": 2.79,
+            "device_id": "seagate", "source": "statvfs",
+            "details": {"filesystem_id": "fsuuid:22E02106E020E1B1", "total_bytes": 3833266438144, "free_bytes": 100 * 1024**3},
+        }
+        read_only = {
+            "category": "filesystem", "name": "filesystem.read_only", "value": 1,
+            "device_id": "seagate", "source": "mount", "details": {},
+        }
+        signals = evaluate_metric_alerts([capacity, read_only], self.config, self.get, self.set)
+        self.assertEqual([(signal.name, signal.severity) for signal in signals], [("filesystem.read_only", "critical")])
+
+    def test_required_device_absence_remains_visible(self) -> None:
+        metric = {
+            "category": "storage", "name": "expected_device_mounted", "value": 0,
+            "device_id": "expected:seagate", "source": "lsblk",
+            "details": {"present": False, "mounted": False, "required": True},
+        }
+        signal = evaluate_metric_alerts([metric], self.config, self.get, self.set)[0]
+        self.assertEqual(signal.severity, "warning")
+
     def test_sensor_alarm_recovers(self) -> None:
         metric = {"category": "temperature", "name": "sensor.alarm", "value": 1, "unit": "boolean", "device_id": "spd", "source": "hwmon"}
         self.assertTrue(evaluate_metric_alerts([metric], self.config, self.get, self.set)[0].active)

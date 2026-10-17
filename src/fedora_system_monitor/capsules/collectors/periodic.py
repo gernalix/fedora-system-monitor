@@ -25,6 +25,7 @@ from .common import (
 )
 from .model import CADENCE_SECONDS, CollectionResult, record
 from fedora_system_monitor.capsules.activitywatch import correlate_activitywatch
+from fedora_system_monitor.capsules.capacity_policy import disk_capacity_level
 
 
 PROC_ROOT = Path("/proc")
@@ -374,21 +375,36 @@ def mount_table() -> list[dict[str, str]]:
     return mounts
 
 
-def _disk_severity(config: Mapping[str, Any], free_percent: float, free_bytes: int, total_bytes: int) -> str:
+def _disk_severity(
+    config: Mapping[str, Any],
+    free_percent: float,
+    free_bytes: int,
+    total_bytes: int,
+    filesystem_id: str = "",
+) -> tuple[str, str]:
+    level, policy = disk_capacity_level(
+        config,
+        free_percent,
+        free_bytes,
+        total_bytes,
+        filesystem_id=filesystem_id,
+    )
+    if policy == "filesystem_uuid_absolute":
+        return level or "info", policy
     warning = _threshold(config, (("thresholds", "disk", "warning_free_percent"), ("thresholds", "disk_free_percent", "warning")), 20)
     critical = _threshold(config, (("thresholds", "disk", "critical_free_percent"), ("thresholds", "disk_free_percent", "critical")), 10)
     emergency = _threshold(config, (("thresholds", "disk", "emergency_free_percent"), ("thresholds", "disk_free_percent", "emergency")), 5)
     if free_percent < emergency:
-        return "emergency"
+        return "emergency", policy
     if free_percent < critical:
-        return "critical"
+        return "critical", policy
     if free_percent < warning:
-        return "warning"
+        return "warning", policy
     small_limit = _threshold(config, (("storage", "small_filesystem_max_gib"),), 5) * 1024**3
     absolute = _threshold(config, (("thresholds", "disk", "absolute_free_gib"), ("thresholds", "disk_free_gib", "warning")), 10) * 1024**3
     if total_bytes > small_limit and free_bytes < absolute:
-        return "warning"
-    return "info"
+        return "warning", policy
+    return "info", policy
 
 
 def _filesystem_source_id(source: str) -> str:
@@ -478,8 +494,8 @@ def collect_filesystems(
         if total <= 0:
             continue
         free_percent = free * 100.0 / total if total else 0.0
-        severity = _disk_severity(config, free_percent, free, total)
         device_id, source_id = _filesystem_device_id(mount, path)
+        severity, capacity_policy = _disk_severity(config, free_percent, free, total, source_id)
         details = {
             "mount_point": path,
             "filesystem": fstype,
@@ -488,6 +504,7 @@ def collect_filesystems(
             "filesystem_root": mount.get("root", "/"),
             "total_bytes": total,
             "free_bytes": free,
+            "capacity_policy": capacity_policy,
         }
         result.metrics.extend(
             [
