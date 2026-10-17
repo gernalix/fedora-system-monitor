@@ -93,6 +93,19 @@ secondary = ["sshd.service"]
             with self.assertRaises(ConfigError):
                 load_config(path)
 
+    def test_uuid_capacity_override_validation(self) -> None:
+        config = deepcopy(DEFAULT_CONFIG)
+        config["storage"]["capacity_overrides"] = [{
+            "filesystem_uuid": "22E02106E020E1B1",
+            "warning_free_gib": 20,
+            "critical_free_gib": 10,
+            "emergency_free_gib": 5,
+            "recovery_hysteresis_gib": 2,
+        }]
+        self.assertEqual(validate_config(config), [])
+        config["storage"]["capacity_overrides"][0]["critical_free_gib"] = 25
+        self.assertTrue(any("warning_free_gib" in error for error in validate_config(config)))
+
     def test_missing_and_malformed_files_raise_config_error(self) -> None:
         with TemporaryDirectory() as directory:
             missing = Path(directory) / "missing.toml"
