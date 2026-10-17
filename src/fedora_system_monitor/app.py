@@ -5,7 +5,6 @@ import argparse
 import json
 import sys
 from pathlib import Path
-
 from fedora_system_monitor.capsules.command import LockUnavailable
 from fedora_system_monitor.capsules.config import ConfigError, redact_text
 from fedora_system_monitor.capsules.database import StorageError
@@ -86,6 +85,7 @@ def build_parser() -> argparse.ArgumentParser:
     kuma.add_argument("--chrome-profile", type=Path, default=Path("/home/daniele/.var/app/com.google.Chrome/config/google-chrome"))
     kuma.add_argument("--credentials", type=Path)
     kuma.add_argument("--service-unit", action="append", default=[], help="custom systemd service identity; repeatable, prefix user units with user:")
+    kuma.add_argument("--prompt-history-freshness", action="store_true", help="provision the end-to-end ChatGPT export freshness monitor")
     export = subparsers.add_parser("export")
     export.add_argument("--format", choices=("json", "csv", "text"), default="json")
     export.add_argument("--table", choices=tuple(sorted({"periodic_metrics", "events", "alerts", "hardware_inventory", "software_inventory", "collector_runs", "metric_aggregates", "summaries"})), default="events")
