@@ -12,7 +12,8 @@ User=root
 Group=daniele
 ExecStart=/usr/local/bin/fedora-system-monitor daemon
 Restart=always
-RestartSec=5s
+# Keep retries below the start limit during long daily SQLite maintenance.
+RestartSec=60s
 TimeoutStopSec=15s
 UMask=0027
 StateDirectory=fedora-system-monitor

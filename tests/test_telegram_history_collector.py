@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import telegram_history_collector as collector
@@ -161,6 +162,47 @@ class TelegramHistoryCollectorTests(unittest.TestCase):
         self.assertFalse(archive.exists())
         self.assertEqual(git(self.repo, "rev-parse", "HEAD"), base)
         self.assertEqual(git(self.repo, "status", "--porcelain"), "")
+
+    def private_client(self, messages, *, peer_id=8598093378):
+        class PrivateClient(FakeClient):
+            def get_entity(self, peer):
+                self.peer = SimpleNamespace(id=peer_id, username="datasette_alerts_bot", bot=True)
+                return self.peer
+        return PrivateClient(messages)
+
+    def test_private_export_never_invokes_git_and_retry_is_idempotent(self):
+        archive = Path(self.tmp.name) / "private" / "archive"
+        client = self.private_client([Message(3, "same alert"), Message(4, "same alert")])
+        with patch.object(collector, "git", side_effect=AssertionError("Git prohibited")):
+            self.assertEqual(collector.sync_private(self.config, client, archive), 2)
+            self.assertEqual(collector.sync_private(self.config, client, archive), 0)
+        rows = (archive / "messages-2026-09.jsonl").read_text().splitlines()
+        self.assertEqual([json.loads(r)["message_id"] for r in rows], [3, 4])
+        self.assertEqual(json.loads((archive / "acquisition.json").read_text())["state"], "no_new_alerts")
+        self.assertTrue(all(p.stat().st_mode & 0o077 == 0 for p in archive.iterdir()))
+
+    def test_private_export_recovers_interrupted_checkpoint_without_duplicates(self):
+        archive = Path(self.tmp.name) / "private" / "archive"
+        client = self.private_client([Message(3, "alert")])
+        writer = collector.durable_text
+        def interrupted(path, text):
+            if path.name == "state.json":
+                raise OSError("checkpoint interruption")
+            writer(path, text)
+        with patch.object(collector, "durable_text", side_effect=interrupted):
+            with self.assertRaises(OSError):
+                collector.sync_private(self.config, client, archive)
+        self.assertFalse((archive / "state.json").exists())
+        collector.sync_private(self.config, client, archive)
+        self.assertEqual(len((archive / "messages-2026-09.jsonl").read_text().splitlines()), 1)
+        self.assertEqual(collector.read_state(archive / "state.json"), 3)
+
+    def test_private_export_rejects_wrong_peer_and_git_storage(self):
+        archive = Path(self.tmp.name) / "private" / "archive"
+        with self.assertRaisesRegex(ValueError, "Wrong"):
+            collector.sync_private(self.config, self.private_client([], peer_id=7570533814), archive)
+        with self.assertRaisesRegex(ValueError, "outside Git"):
+            collector.sync_private(self.config, self.private_client([]), self.repo / "archive")
 
 
 if __name__ == "__main__":

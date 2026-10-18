@@ -29,6 +29,15 @@ risulta attivo; un oneshot terminato con successo può essere UP anche quando
 deve inoltre verificare la freschezza dell'ultima run rispetto alla relativa
 schedulazione.
 
+La freschezza ChatGPT → Prompt History è un failure domain distinto dal timer
+`prompt-history-sync.service`. Il monitor
+`Fedora Data Freshness · ChatGPT → Prompt History` usa il ciclo minuto già
+esistente e diventa UP soltanto quando un audit completo di ChatGPTExporter è
+entro la finestra consumer di 2.400 secondi, una run consumer riuscita è
+successiva all'audit e il database derivato contiene almeno tutti i file
+validati. L'età dell'ultimo messaggio non è un segnale di guasto: in assenza di
+un audit producer recente il risultato è `UNKNOWN`, mai un falso OK.
+
 Il tooling espone anche i path canonici non segreti usati per le operazioni
 amministrative dirette sul runtime Oracle:
 
@@ -54,7 +63,8 @@ inserire token nelle unità:
 sudo fedora-system-monitor kuma-configure \
   --base-url https://kuma.danielegalati.com \
   --service-unit example.service \
-  --service-unit user:example-user.service
+  --service-unit user:example-user.service \
+  --prompt-history-freshness
 ```
 
 La lista passata deve rappresentare l'insieme che si vuole provisionare in quella
@@ -66,7 +76,9 @@ Gli URL sono in `/home/daniele/.config/codex/secrets/fedora_system_monitor_uptim
 con modo `0600`. Non vanno mai stampati, copiati nei documenti o
 committati. Il runtime non usa cookie o credenziali Kuma.
 
-### Capture automatico delle transizioni DOWN in C2
+### Capture C2 storico (ritirato; non riattivare)
+
+Questo bridge C2 è dismesso e mascherato. Il sostituto Kuma → Pn attivo è documentato in [kuma-pn-monitor.md](kuma-pn-monitor.md).
 
 Il bridge locale legge in sola lettura i nuovi record `heartbeat` dal DB Kuma
 Oracle usando l'helper SSH canonico. Non usa la UI, cookie o API di

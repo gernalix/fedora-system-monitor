@@ -60,6 +60,7 @@ class CollectionResult:
     software_inventory: list[dict[str, Any]] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     duration_ms: int = 0
+    process_snapshot: dict[str, Any] | None = None
 
     def merge(self, other: "CollectionResult") -> None:
         self.metrics.extend(other.metrics)
@@ -67,6 +68,8 @@ class CollectionResult:
         self.hardware_inventory.extend(other.hardware_inventory)
         self.software_inventory.extend(other.software_inventory)
         self.errors.extend(other.errors)
+        if other.process_snapshot is not None:
+            self.process_snapshot = other.process_snapshot
 
 
 __all__ = ["CADENCE_SECONDS", "CollectionResult", "record"]

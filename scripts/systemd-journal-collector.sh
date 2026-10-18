@@ -8,6 +8,7 @@ SQLITE3_BIN="${SQLITE3_BIN:-sqlite3}"
 SYSTEM_UNIT_DIR="${SYSTEM_UNIT_DIR:-/etc/systemd/system}"
 USER_UNIT_DIR="${USER_UNIT_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user}"
 REGISTRY_PATH="${MEGAVAULT_REGISTRY_PATH:-/home/daniele/MegaVault/megavault.sqlite}"
+REGISTRY_HOST_ID="${MEGAVAULT_HOST_ID:-H0001}"
 LIMIT=200
 SINCE=""
 UNTIL=""
@@ -32,6 +33,7 @@ Options:
   --limit N         entries per unit and journal; 1..5000 (default: 200)
   --output FILE     JSONL destination, or - for stdout (default)
   --registry PATH   MegaVault SQLite registry path (optional when absent)
+  --host-id ID      registry host to discover (default: H0001)
   --discover        emit discovered unit/scope/timer mappings as JSONL
   --help            show this help
 EOF
@@ -70,6 +72,9 @@ discover_directory() {
     [[ -d $directory ]] || return 0
     shopt -s nullglob
     for path in "$directory"/*.service "$directory"/*.timer; do
+        # Alias symlinks normally point at vendor units; owner-declared custom
+        # units remain discoverable through the MegaVault registry.
+        [[ -L $path ]] && continue
         unit=${path##*/}
         add_unit "$unit" "$scope"
         if [[ $unit == *.timer ]]; then
@@ -95,7 +100,7 @@ discover_registry() {
             add_unit "$unit" "$scope"
         done
     done < <("$SQLITE3_BIN" -readonly -noheader -separator $'\t' "$REGISTRY_PATH" \
-        "SELECT COALESCE(scope, ''), COALESCE(unit, '') FROM services WHERE TRIM(COALESCE(unit, '')) <> '';" 2>/dev/null || true)
+        "SELECT COALESCE(scope, ''), COALESCE(unit, '') FROM services WHERE host_id='$REGISTRY_HOST_ID' AND TRIM(COALESCE(unit, '')) <> '';" 2>/dev/null || true)
 
     while IFS=$'\t' read -r timer service; do
         valid_unit "$timer" || continue
@@ -104,7 +109,7 @@ discover_registry() {
         add_unit "$timer" "${UNIT_SCOPE[$timer]:-system}"
         add_unit "$service" "${UNIT_SCOPE[$timer]:-system}"
     done < <("$SQLITE3_BIN" -readonly -noheader -separator $'\t' "$REGISTRY_PATH" \
-        "SELECT timer_unit, service_unit FROM periodic_service_evidence WHERE present = 1;" 2>/dev/null || true)
+        "SELECT e.timer_unit, e.service_unit FROM periodic_service_evidence e JOIN services s ON s.service_id=e.service_id WHERE e.present = 1 AND s.host_id='$REGISTRY_HOST_ID';" 2>/dev/null || true)
 }
 
 selected() {
@@ -155,12 +160,14 @@ while (($#)); do
         --limit) (($# >= 2)) || fail '--limit requires a value'; LIMIT=$2; shift 2 ;;
         --output) (($# >= 2)) || fail '--output requires a value'; OUTPUT=$2; shift 2 ;;
         --registry) (($# >= 2)) || fail '--registry requires a value'; REGISTRY_PATH=$2; shift 2 ;;
+        --host-id) (($# >= 2)) || fail '--host-id requires a value'; REGISTRY_HOST_ID=$2; shift 2 ;;
         --discover) DISCOVER_ONLY=1; shift ;;
         --help) usage; exit 0 ;;
         *) fail "unknown option: $1" ;;
     esac
 done
 [[ $LIMIT =~ ^[0-9]+$ ]] && ((LIMIT >= 1 && LIMIT <= 5000)) || fail '--limit must be between 1 and 5000'
+[[ $REGISTRY_HOST_ID =~ ^H[0-9]{4}$ ]] || fail '--host-id must match HNNNN'
 discover_directory "$SYSTEM_UNIT_DIR" system
 discover_directory "$USER_UNIT_DIR" user
 discover_registry

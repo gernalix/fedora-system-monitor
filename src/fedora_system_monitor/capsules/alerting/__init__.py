@@ -6,6 +6,8 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterable
 
+from fedora_system_monitor.capsules.capacity_policy import disk_capacity_level
+
 
 StateGetter = Callable[[str, Any], Any]
 StateSetter = Callable[[str, Any], None]
@@ -51,37 +53,15 @@ def _disk_level(metric: dict[str, Any], active_level: str, config: dict[str, Any
     details = metric.get("details") or {}
     total = float(details.get("total_bytes") or 0)
     free = float(details.get("free_bytes") or 0)
-    small_limit = float(_nested(config, "storage.small_filesystem_max_gib", 5.0)) * 1024**3
-    if total and total <= small_limit:
-        configured_minimum = float(_nested(config, "storage.small_filesystem_min_free_mib", 128)) * 1024**2
-        minimum = min(configured_minimum, total * 0.10)
-        if free < minimum / 2:
-            return "critical", 0
-        if free < minimum:
-            return "warning", 0
-        return "", 0
-    warning = float(_nested(config, "thresholds.disk.warning_free_percent", 20))
-    critical = float(_nested(config, "thresholds.disk.critical_free_percent", 10))
-    emergency = float(_nested(config, "thresholds.disk.emergency_free_percent", 5))
-    hysteresis = float(_nested(config, "thresholds.disk.recovery_hysteresis_percent", 2))
-    absolute = float(_nested(config, "thresholds.disk.absolute_free_gib", 10)) * 1024**3
-    if active_level == "emergency":
-        emergency += hysteresis
-    if active_level == "critical":
-        critical += hysteresis
-    if active_level == "warning":
-        warning += hysteresis
-    if free_percent < emergency:
-        return "emergency", 0
-    if free_percent < critical:
-        return "critical", 0
-    # The absolute floor is a warning backstop for large volumes.  Applying a
-    # 10 GiB floor to a roughly 10 GiB filesystem makes recovery impossible
-    # even when the filesystem is almost empty.
-    absolute_applicable = total >= absolute * 100.0 / max(warning, 0.001)
-    if free_percent < warning or (absolute_applicable and free < absolute):
-        return "warning", 0
-    return "", 0
+    level, _policy = disk_capacity_level(
+        config,
+        free_percent,
+        free,
+        total,
+        filesystem_id=str(details.get("filesystem_id") or ""),
+        active_level=active_level,
+    )
+    return level, 0
 
 
 def _inode_level(value: float, active_level: str, config: dict[str, Any]) -> tuple[str, int]:
@@ -247,6 +227,11 @@ def _metric_condition(metric: dict[str, Any], active_level: str, config: dict[st
             0,
             "filesystem is writable or intentionally read-only",
         )
+    if name == "expected_device_mounted":
+        required = bool((metric.get("details") or {}).get("required", True))
+        if required and not value:
+            return "warning", 0, "required storage device is absent or not mounted"
+        return "", 0, "required storage device is mounted"
     return None
 
 

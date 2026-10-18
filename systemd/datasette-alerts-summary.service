@@ -1,0 +1,21 @@
+[Unit]
+Description=Prepare private Datasette Alerts export for manual assistant review
+ConditionPathExists=%h/.config/datasette-alerts-summary/identity.json
+ConditionPathExists=%h/.local/libexec/datasette-alerts-summary/datasette_alerts.py
+StartLimitIntervalSec=10min
+StartLimitBurst=3
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 %h/.local/libexec/datasette-alerts-summary/datasette_alerts.py --source %h/.local/share/fedora-telegram-history/datasette-alerts/archive --state %h/.local/share/datasette-alerts-summary --identity %h/.config/datasette-alerts-summary/identity.json
+TimeoutStartSec=3min
+Restart=on-failure
+RestartSec=10s
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/share/datasette-alerts-summary
+RestrictAddressFamilies=AF_UNIX
+Environment=PYTHONDONTWRITEBYTECODE=1

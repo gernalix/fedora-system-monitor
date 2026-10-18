@@ -77,15 +77,15 @@ class DatabaseTests(unittest.TestCase):
         try:
             connection.execute("DROP VIEW IF EXISTS current_alerts")
             connection.execute("DROP VIEW IF EXISTS recent_events")
-            connection.execute("DELETE FROM schema_versions WHERE version = 4")
+            connection.execute("DELETE FROM schema_versions WHERE version >= 4")
             connection.commit()
         finally:
             connection.close()
 
         migrated = Database(self.database_path)
         try:
-            self.assertEqual(migrated.schema_version, 4)
-            self.assertEqual(migrated.initialize(), 4)
+            self.assertEqual(migrated.schema_version, SCHEMA_VERSION)
+            self.assertEqual(migrated.initialize(), SCHEMA_VERSION)
             versions = migrated.query("SELECT version FROM schema_versions WHERE version = 4")
             self.assertEqual(versions, [{"version": 4}])
             views = {
@@ -513,6 +513,35 @@ class DatabaseTests(unittest.TestCase):
             )
 
         self.assertEqual(batch_sizes, [2, 2, 2])
+
+    def test_schema_v4_adds_cleanup_indexes_idempotently(self) -> None:
+        self.db.close()
+        from contextlib import closing
+        with closing(sqlite3.connect(self.database_path)) as connection, connection:
+            connection.execute("DROP INDEX idx_metrics_collector_run")
+            connection.execute("DROP INDEX idx_events_collector_run")
+            connection.execute("DELETE FROM schema_versions WHERE version>=5")
+        self.db = Database(self.database_path)
+        self.assertEqual(self.db.schema_version, SCHEMA_VERSION)
+        self.assertTrue(self.db.check_indexes()["ok"])
+        self.db.initialize()
+        self.assertEqual(self.db.query("SELECT count(*) n FROM schema_versions WHERE version=5"), [{"n": 1}])
+
+    def test_collector_cleanup_uses_child_indexes_and_preserves_history(self) -> None:
+        run = self.db.start_collector_run("minute", cadence_seconds=60)
+        self.db.insert_metrics({"name": "kept.metric", "value": 1}, cadence_seconds=60, collector_run_id=run)
+        self.db.insert_events({"name": "kept.event", "severity": "warning"}, collector_run_id=run)
+        with self.db._connection() as connection:
+            plan = connection.execute("EXPLAIN QUERY PLAN DELETE FROM collector_runs WHERE id=?", (run,)).fetchall()
+        details = " ".join(row[3] for row in plan)
+        self.assertIn("idx_metrics_collector_run", details)
+        self.assertIn("idx_events_collector_run", details)
+        self.assertNotIn("SCAN periodic_metrics", details)
+        self.assertNotIn("SCAN events", details)
+        with self.db._transaction() as connection:
+            connection.execute("DELETE FROM collector_runs WHERE id=?", (run,))
+        self.assertEqual(self.db.query("SELECT collector_run_id FROM periodic_metrics"), [{"collector_run_id": None}])
+        self.assertEqual(self.db.query("SELECT collector_run_id FROM events"), [{"collector_run_id": None}])
 
     def test_utc_bucket_is_stable_across_copenhagen_dst_change(self) -> None:
         day = datetime(2026, 3, 29, tzinfo=timezone.utc)

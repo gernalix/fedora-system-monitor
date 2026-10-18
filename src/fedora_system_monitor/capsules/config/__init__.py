@@ -70,6 +70,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "small_filesystem_max_gib": 5.0,
         "small_filesystem_min_free_mib": 128,
         "expected_devices": [],
+        "capacity_overrides": [],
     },
     "inventory": {
         "user_home": "/home/daniele",
@@ -154,6 +155,16 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "restart_loop_window_minutes": 15,
         },
     },
+    "resource_rescue": {
+        "enabled": True, "idle_seconds": 10, "active_seconds": 5,
+        "warning_available": 15, "emergency_available": 5, "support_psi_percent": 1,
+        "warning_psi_some": 10, "emergency_psi_full": 5, "io_psi_full": 10,
+        "swap_out_mib_s": 4, "reclaim_pages_s": 1024, "hysteresis_percent": 3,
+        "disk_free_percent": 5, "inode_free_percent": 5, "disk_free_mib": 1024,
+        "debounce_seconds": 5, "recovery_samples": 3, "snooze_seconds": 600,
+        "minimum_popup_seconds": 120, "dialog_timeout_seconds": 600,
+    },
+    "process_history": {"interval_seconds": 60, "max_scan_seconds": 5, "raw_hours": 48, "aggregate_days": 90},
     "retention": {
         "minute_days": 14,
         "five_minute_days": 60,
@@ -449,7 +460,7 @@ def validate_config(config: Mapping[str, Any] | object) -> list[str]:
 
     if not isinstance(config.get("storage"), Mapping):
         errors.append("storage must be a table")
-    for key in ("known_labels", "known_model_patterns", "expected_devices"):
+    for key in ("known_labels", "known_model_patterns", "expected_devices", "capacity_overrides"):
         _require_list(config, ("storage", key), errors)
     require_string_items(("storage", "known_labels"))
     require_string_items(("storage", "known_model_patterns"))
@@ -464,6 +475,32 @@ def validate_config(config: Mapping[str, Any] | object) -> list[str]:
                 valid = valid and ("required" not in item or isinstance(item["required"], bool))
             if not valid:
                 errors.append(f"storage.expected_devices[{index}] must contain a stable identifier")
+    overrides = _value(config, ("storage", "capacity_overrides"))
+    if isinstance(overrides, list):
+        allowed = {
+            "filesystem_uuid", "warning_free_gib", "critical_free_gib",
+            "emergency_free_gib", "recovery_hysteresis_gib",
+        }
+        for index, item in enumerate(overrides):
+            prefix = f"storage.capacity_overrides[{index}]"
+            if not isinstance(item, Mapping) or set(item) - allowed:
+                errors.append(f"{prefix} must contain only the supported UUID capacity fields")
+                continue
+            uuid = item.get("filesystem_uuid")
+            if not isinstance(uuid, str) or not uuid.strip():
+                errors.append(f"{prefix}.filesystem_uuid must be a non-empty string")
+            values = []
+            for key in ("warning_free_gib", "critical_free_gib", "emergency_free_gib"):
+                value = item.get(key)
+                if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+                    errors.append(f"{prefix}.{key} must be a positive number")
+                values.append(value)
+            if all(isinstance(value, (int, float)) and not isinstance(value, bool) for value in values):
+                if not values[0] > values[1] > values[2]:
+                    errors.append(f"{prefix} must satisfy warning_free_gib > critical_free_gib > emergency_free_gib")
+            recovery = item.get("recovery_hysteresis_gib", 0)
+            if isinstance(recovery, bool) or not isinstance(recovery, (int, float)) or recovery < 0:
+                errors.append(f"{prefix}.recovery_hysteresis_gib must be a non-negative number")
     for key in ("small_filesystem_max_gib", "small_filesystem_min_free_mib"):
         _require_positive(config, ("storage", key), errors)
 
@@ -549,6 +586,28 @@ def validate_config(config: Mapping[str, Any] | object) -> list[str]:
     ):
         _require_positive(config, path, errors)
 
+    _require_bool(config, ("resource_rescue", "enabled"), errors)
+    for key in DEFAULT_CONFIG["resource_rescue"]:
+        if key != "enabled": _require_positive(config, ("resource_rescue",key), errors)
+    rescue=config.get("resource_rescue",{})
+    if isinstance(rescue,Mapping):
+        for key,low,high in (("idle_seconds",2,60),("active_seconds",2,30),("recovery_samples",2,20),("snooze_seconds",60,86400),("minimum_popup_seconds",60,3600),("dialog_timeout_seconds",60,600)):
+            value=rescue.get(key)
+            if isinstance(value,(float,int)) and (not low<=value<=high or int(value)!=value):
+                errors.append(f"resource_rescue.{key} must be an integer between {low} and {high}")
+        for key in ("warning_available","emergency_available","warning_psi_some","emergency_psi_full","io_psi_full","disk_free_percent","inode_free_percent","hysteresis_percent"):
+            _require_percent(config,("resource_rescue",key),errors)
+        emergency=rescue.get("emergency_available");warning=rescue.get("warning_available")
+        if isinstance(emergency,(int,float)) and isinstance(warning,(int,float)) and emergency>=warning:
+            errors.append("resource_rescue.emergency_available must be below warning_available")
+    for key in ("interval_seconds", "max_scan_seconds", "raw_hours", "aggregate_days"):
+        _require_positive(config, ("process_history", key), errors)
+    options = config.get("process_history", {})
+    if isinstance(options, Mapping):
+        for key, low, high in (("interval_seconds",60,86400),("max_scan_seconds",0.1,10),("raw_hours",1,168),("aggregate_days",1,365)):
+            value = options.get(key)
+            if isinstance(value,(int,float)) and not low <= value <= high:
+                errors.append(f"process_history.{key} must be between {low} and {high}")
     if not isinstance(config.get("retention"), Mapping):
         errors.append("retention must be a table")
     for key in (

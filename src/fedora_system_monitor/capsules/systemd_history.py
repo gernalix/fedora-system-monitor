@@ -8,7 +8,7 @@ fields, and persists idempotent entries and logical executions.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import os
@@ -53,6 +53,13 @@ def add_cli_subcommand(subparsers: Any) -> None:
     importer.add_argument("--initial-lookback-hours", type=int, default=24)
     importer.add_argument("--fallback-lookback-hours", type=int, default=168)
     commands.add_parser("status", help="read checkpoint and history status")
+    snapshot = commands.add_parser("snapshot", help="write a read-only custom-unit runtime snapshot")
+    snapshot.add_argument("--output", type=Path, required=True)
+    snapshot.add_argument("--host-id", default="H0001")
+    snapshot.add_argument("--window-days", type=int, default=30)
+    snapshot.add_argument("--systemctl", default="systemctl")
+    for option in ("collector", "registry", "system-unit-dir", "user-unit-dir"):
+        snapshot.add_argument(f"--{option}", type=Path)
 
 
 @dataclass(frozen=True)
@@ -165,7 +172,10 @@ def _read_journal(
     fallback_since: str,
 ) -> tuple[list[dict[str, Any]], str | None]:
     command = _journal_command(journalctl, scope, units, cursor=cursor, fallback_since=fallback_since)
-    result = _journal(command)
+    try:
+        result = _journal(command)
+    except subprocess.TimeoutExpired:
+        return [], "journalctl timed out after 120 seconds; coverage is unknown"
     if result.returncode != 0:
         return [], redact_text(result.stderr).strip() or f"journalctl exited with status {result.returncode}"
     entries: list[dict[str, Any]] = []
@@ -595,7 +605,7 @@ def history_status(path: Path, *, limit: int = 20) -> dict[str, Any]:
 
     if not path.exists():
         return {"ok": False, "database": str(path), "error": "database does not exist"}
-    connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    connection = sqlite3.connect(f"file:{path}?mode=ro&immutable=1", uri=True)
     connection.row_factory = sqlite3.Row
     try:
         try:
@@ -617,6 +627,142 @@ def history_status(path: Path, *, limit: int = 20) -> dict[str, Any]:
     return {"ok": True, "database": str(path), "counts": counts, "checkpoints": checkpoints, "executions": executions}
 
 
+_SHOW_PROPERTIES = (
+    "LoadState", "UnitFileState", "ActiveState", "SubState", "Result", "Type",
+    "RemainAfterExit", "ActiveEnterTimestamp", "InactiveEnterTimestamp", "NextElapseUSecRealtime",
+    "NRestarts", "Restart", "RestartUSec", "StartLimitIntervalUSec", "StartLimitBurst",
+    "TimeoutStartUSec", "TimeoutStopUSec", "Requires", "Wants", "After", "LoadCredential", "FragmentPath",
+)
+
+
+def _show_unit(systemctl: str, identity: UnitIdentity) -> tuple[dict[str, str], str | None]:
+    if "@." in identity.unit:
+        return {}, "template_unit_requires_instance"
+    command = [systemctl]
+    if identity.scope == "user":
+        command.append("--user")
+    command += ["show", identity.unit, "--no-pager"]
+    command += [f"--property={name}" for name in _SHOW_PROPERTIES]
+    result = subprocess.run(command, text=True, capture_output=True, timeout=15, check=False)
+    if result.returncode:
+        return {}, redact_text(result.stderr).strip() or f"systemctl_exit_{result.returncode}"
+    values = {}
+    for line in result.stdout.splitlines():
+        if "=" in line:
+            key, value = line.split("=", 1)
+            values[key] = value
+    return values, None
+
+
+def _unit_class(identity: UnitIdentity, values: Mapping[str, str]) -> str:
+    if identity.unit.endswith(".timer"):
+        return "timer"
+    unit_type = values.get("Type", "")
+    if unit_type == "oneshot":
+        if identity.timer_unit:
+            return "scheduled_oneshot"
+        return "lifecycle" if values.get("RemainAfterExit") == "yes" else "event_driven_oneshot"
+    return "daemon"
+
+
+def build_runtime_snapshot(
+    database: Path,
+    *,
+    output: Path,
+    host_id: str = "H0001",
+    window_days: int = 30,
+    collector: Path = DEFAULT_COLLECTOR,
+    registry: Path = DEFAULT_REGISTRY,
+    systemctl: str = "systemctl",
+    system_unit_dir: Path | None = None,
+    user_unit_dir: Path | None = None,
+) -> dict[str, Any]:
+    """Project local systemd state without changing units or journal history."""
+    if not __import__("re").fullmatch(r"H[0-9]{4}", host_id) or window_days < 1:
+        raise ValueError("invalid snapshot host/window")
+    observed_at = _utc_now()
+    window_start = (datetime.now(timezone.utc) - timedelta(days=window_days)).isoformat().replace("+00:00", "Z")
+    env = os.environ.copy()
+    env.update({"MEGAVAULT_REGISTRY_PATH": str(registry), "MEGAVAULT_HOST_ID": host_id})
+    if system_unit_dir:
+        env["SYSTEM_UNIT_DIR"] = str(system_unit_dir)
+    if user_unit_dir:
+        env["USER_UNIT_DIR"] = str(user_unit_dir)
+    identities = discover_units(collector, environment=env)
+    connection = None
+    if database.exists():
+        connection = sqlite3.connect(f"file:{database}?mode=ro&immutable=1", uri=True)
+        connection.row_factory = sqlite3.Row
+    units = []
+    try:
+        for identity in identities:
+            values, error = _show_unit(systemctl, identity)
+            coverage, coverage_reason = ("UNKNOWN", error) if error else ("PASS", None)
+            checkpoint = None
+            total = success = 0
+            if connection is not None:
+                try:
+                    checkpoint = connection.execute(
+                        "SELECT recovery_state,recovery_warning,updated_at_utc FROM systemd_journal_checkpoints WHERE hostname=? AND journal_scope=?",
+                        (socket.gethostname(), identity.scope),
+                    ).fetchone()
+                    metric_unit = identity.service_unit if identity.unit.endswith(".timer") else identity.unit
+                    totals = connection.execute(
+                        "SELECT COUNT(*), SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) FROM systemd_executions WHERE hostname=? AND journal_scope=? AND unit=? AND started_at_utc >= ?",
+                        (socket.gethostname(), identity.scope, metric_unit, window_start),
+                    ).fetchone()
+                    total, success = int(totals[0]), int(totals[1] or 0)
+                except sqlite3.Error as exc:
+                    coverage, coverage_reason = "UNKNOWN", f"history_unavailable:{redact_text(exc)}"
+            state = str(checkpoint[0]) if checkpoint else None
+            if not checkpoint:
+                coverage, coverage_reason = "UNKNOWN", coverage_reason or "journal_not_imported"
+            elif state in {"error"}:
+                coverage, coverage_reason = "UNKNOWN", str(checkpoint[1] or state)
+            elif state in {"first_run", "journal_rotation"}:
+                coverage, coverage_reason = "PARTIAL", str(checkpoint[1] or state)
+            klass = _unit_class(identity, values)
+            percent = round(success * 100.0 / total, 2) if klass != "daemon" and total else None
+            fragment = values.get("FragmentPath")
+            definition_digest = None
+            if fragment and Path(fragment).is_file():
+                definition_digest = hashlib.sha256(Path(fragment).read_bytes()).hexdigest()
+            units.append({
+                "unit": identity.unit, "scope": identity.scope, "timer_unit": identity.timer_unit,
+                "service_unit": identity.service_unit, "class": klass, "coverage": coverage,
+                "coverage_reason": coverage_reason, "load_state": values.get("LoadState"),
+                "enabled_state": values.get("UnitFileState"), "active_state": values.get("ActiveState"),
+                "sub_state": values.get("SubState"), "result": values.get("Result"),
+                "last_started_at": values.get("ActiveEnterTimestamp") or None,
+                "last_ended_at": values.get("InactiveEnterTimestamp") or None,
+                "next_trigger_at": (values.get("NextElapseUSecRealtime") or None) if identity.unit.endswith(".timer") else None,
+                "restart_count": int(values.get("NRestarts") or 0), "run_total": total,
+                "run_success": success, "success_percent": percent,
+                "success_denominator": total if klass != "daemon" else None,
+                "window_days": window_days, "journal_recovery_state": state,
+                "journal_checked_at": str(checkpoint[2]) if checkpoint else None,
+                "definition_digest": definition_digest,
+                "resilience": {name: values.get(name) or None for name in _SHOW_PROPERTIES[11:21]},
+            })
+    finally:
+        if connection is not None:
+            connection.close()
+    payload = {
+        "schema_version": "fedora.systemd.snapshot/v1", "host_id": host_id,
+        "hostname": socket.gethostname(), "observed_at": observed_at,
+        "window_days": window_days, "units": units,
+        "limits": {"offline_hosts": "not_observed", "templates": "UNKNOWN", "daemon_run_percentage": "undefined"},
+    }
+    output.parent.mkdir(parents=True, exist_ok=True)
+    previous = os.umask(0o077)
+    try:
+        output.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    finally:
+        os.umask(previous)
+    output.chmod(0o600)
+    return {"ok": True, "output": str(output), "units": len(units), "unknown": sum(x["coverage"] == "UNKNOWN" for x in units)}
+
+
 __all__ = [
     "add_cli_subcommand",
     "DEFAULT_COLLECTOR",
@@ -625,6 +771,7 @@ __all__ = [
     "UnitIdentity",
     "discover_units",
     "history_status",
+    "build_runtime_snapshot",
     "ingest_entries",
     "import_history",
 ]

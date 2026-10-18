@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import sqlite3
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -136,6 +137,32 @@ class SystemdJournalCollectorTests(unittest.TestCase):
         timer = next(row for row in rows if row["unit"] == "backup.timer")
         self.assertEqual(timer, {"unit": "backup.timer", "scope": "system", "timer_target": "fixture-backup.service"})
         self.assertFalse(self.calls.exists())
+
+    def test_registry_discovery_is_limited_to_requested_host(self) -> None:
+        registry = self.root / "registry.sqlite"
+        connection = sqlite3.connect(registry)
+        connection.executescript("""
+          CREATE TABLE services(service_id TEXT PRIMARY KEY, host_id TEXT, scope TEXT, unit TEXT);
+          CREATE TABLE periodic_service_evidence(service_id TEXT, timer_unit TEXT, service_unit TEXT, present INTEGER);
+          INSERT INTO services VALUES('local','H0001','system','local.service');
+          INSERT INTO services VALUES('remote','H0002','system','remote.service');
+          INSERT INTO periodic_service_evidence VALUES('local','local.timer','local.service',1);
+          INSERT INTO periodic_service_evidence VALUES('remote','remote.timer','remote.service',1);
+        """)
+        connection.close()
+        rows = [json.loads(line)["unit"] for line in self.invoke("--discover", "--host-id", "H0001", registry=registry).stdout.splitlines()]
+        self.assertIn("local.service", rows)
+        self.assertIn("local.timer", rows)
+        self.assertNotIn("remote.service", rows)
+        self.assertNotIn("remote.timer", rows)
+
+    def test_vendor_alias_symlinks_are_not_custom_units(self) -> None:
+        vendor = self.root / "usr/lib/systemd/system"
+        vendor.mkdir(parents=True)
+        (vendor / "vendor.service").write_text("[Service]\nExecStart=/bin/true\n", encoding="utf-8")
+        (self.system / "vendor.service").symlink_to(vendor / "vendor.service")
+        rows = [json.loads(line)["unit"] for line in self.invoke("--discover").stdout.splitlines()]
+        self.assertNotIn("vendor.service", rows)
 
 
 if __name__ == "__main__":

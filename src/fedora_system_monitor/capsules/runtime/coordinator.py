@@ -51,6 +51,12 @@ from fedora_system_monitor.capsules.notifications import (
     integration_status,
     notify_filesystem_free_changes,
     send_category_heartbeat,
+    send_named_heartbeat,
+)
+from fedora_system_monitor.capsules.prompt_history_freshness import (
+    ENDPOINT_KEY as PROMPT_HISTORY_FRESHNESS_KEY,
+    MONITOR_SPEC as PROMPT_HISTORY_FRESHNESS_MONITOR,
+    prompt_history_freshness,
 )
 from fedora_system_monitor.capsules.service_health import send_service_heartbeats, service_monitor_specs
 from fedora_system_monitor.capsules.prometheus import exposition as prometheus_exposition, serve as serve_prometheus
@@ -77,7 +83,8 @@ from fedora_system_monitor.capsules.smart_action import maybe_notify_smart_alert
 from fedora_system_monitor.capsules.systemd_history import (
     DEFAULT_COLLECTOR as SYSTEMD_HISTORY_COLLECTOR,
     DEFAULT_REGISTRY as SYSTEMD_HISTORY_REGISTRY,
-    add_cli_subcommand,
+    add_cli_subcommand as add_systemd_cli_subcommand,
+    build_runtime_snapshot,
     history_status,
     import_history,
 )
@@ -87,6 +94,8 @@ LOGGER = logging.getLogger("fedora-system-monitor")
 SOURCE_ROOT = Path(__file__).resolve().parents[3]
 SYSTEM_CONFIG = Path("/etc/fedora-system-monitor/config.toml")
 PROJECT_CONFIG = SOURCE_ROOT / "config/fedora-system-monitor.toml"
+MEGAVAULT_CLI = Path("/home/daniele/MegaVault/megavault.py")
+MEGAVAULT_SERVICE_SNAPSHOT = Path("/run/fedora-system-monitor/megavault-systemd-snapshot.json")
 DEFAULT_UNITS = (
     "fedora-system-monitor-events.service",
     "fedora-system-monitor-lifecycle.service",
@@ -97,6 +106,14 @@ DEFAULT_UNITS = (
     "fedora-system-monitor-context.timer",
     "fedora-system-monitor-software.path",
 )
+
+
+def add_cli_subcommand(subparsers):
+    from ..reporting.process_history import add_parser
+    add_parser(subparsers)
+    add_systemd_cli_subcommand(subparsers)
+    from ..resource_rescue import add_parser as add_rescue_parser
+    add_rescue_parser(subparsers)
 
 
 def _default_config_path() -> Path:
@@ -551,6 +568,8 @@ def _run_scope(scope: str, config: dict[str, Any], db: Database) -> dict[str, An
         result = collect_scope(scope, config, db)
         metrics_inserted = db.insert_metrics(result.metrics, cadence_seconds=cadence, collector_run_id=run_id)
         events_inserted = db.insert_events(result.events, collector_run_id=run_id)
+        if result.process_snapshot is not None:
+            maintenance["process_history"] = db.insert_process_snapshot(result.process_snapshot, config["process_history"])
         if result.hardware_inventory:
             db.insert_hardware_snapshot(result.hardware_inventory)
         if result.software_inventory:
@@ -795,6 +814,35 @@ def _discord_exporter_service_health(
     return healthy, f"discord-exporter-crawl.service: {reason}"
 
 
+def _reconcile_megavault_service_runtime(config: dict[str, Any], db: Database) -> dict[str, Any]:
+    """Project FSM evidence through MegaVault's existing canonical writer."""
+    snapshot = build_runtime_snapshot(
+        db.path,
+        output=MEGAVAULT_SERVICE_SNAPSHOT,
+        host_id="H0001",
+        window_days=30,
+        collector=SYSTEMD_HISTORY_COLLECTOR,
+        registry=SYSTEMD_HISTORY_REGISTRY,
+    )
+    MEGAVAULT_SERVICE_SNAPSHOT.chmod(0o640)
+    command = [
+        "runuser", "--user", "daniele", "--", "python3", str(MEGAVAULT_CLI),
+        "service-runtime", "reconcile", "--snapshot", str(MEGAVAULT_SERVICE_SNAPSHOT),
+    ]
+    result = run_command(command, timeout=180)
+    if not result.ok:
+        return {
+            "status": "ERROR",
+            "snapshot": snapshot,
+            "error": redact_text(result.stderr).strip() or f"megavault_exit_{result.returncode}",
+        }
+    try:
+        receipt = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return {"status": "ERROR", "snapshot": snapshot, "error": "megavault_invalid_json"}
+    return {"status": "PASS", "snapshot": snapshot, "receipt": receipt}
+
+
 def _collect_command(args: argparse.Namespace, config: dict[str, Any], db: Database) -> dict[str, Any]:
     scopes: list[str]
     if args.scope == "fast":
@@ -810,8 +858,12 @@ def _collect_command(args: argparse.Namespace, config: dict[str, Any], db: Datab
     lock_path = Path(config["monitor"]["lock_path"])
     if os.geteuid() != 0 and not os.access(lock_path.parent, os.W_OK):
         lock_path = db.path.parent / "collector.lock"
-    with exclusive_lock(lock_path, timeout=55):
-        for scope in scopes:
+    for scope in scopes:
+        # Keep maintenance jobs serialized, but do not hold minute collection
+        # behind a slow daily run. SQLite still serializes each short write.
+        lock_group = "minute" if scope == "minute" else "slow"
+        scope_lock = lock_path.with_name(f"{lock_path.name}.{lock_group}")
+        with exclusive_lock(scope_lock, timeout=55):
             result = _run_isolated_scope(args, scope, config, db)
             results.append(result)
             if result["outcome"] in {"ok", "partial"}:
@@ -863,6 +915,16 @@ def _collect_command(args: argparse.Namespace, config: dict[str, Any], db: Datab
             ping_ms=duration,
         )
         heartbeats.append(discord_heartbeat.__dict__)
+        prompt_history_healthy, prompt_history_message = prompt_history_freshness(db)
+        heartbeats.append(
+            send_named_heartbeat(
+                config,
+                PROMPT_HISTORY_FRESHNESS_KEY,
+                healthy=prompt_history_healthy,
+                message=prompt_history_message,
+                ping_ms=duration,
+            ).__dict__
+        )
         heartbeats.extend(
             item.__dict__
             for item in send_service_heartbeats(
@@ -874,6 +936,8 @@ def _collect_command(args: argparse.Namespace, config: dict[str, Any], db: Datab
         )
         heartbeats.extend(item.__dict__ for item in send_event_job_heartbeats(config, ping_ms=duration))
     output: dict[str, Any] = {"results": results, "heartbeats": heartbeats}
+    if "hourly" in scopes:
+        output["service_runtime_reconciliation"] = _reconcile_megavault_service_runtime(config, db)
     log_record(LOGGER, "collection_complete", scopes=scopes, outcomes=[item["outcome"] for item in results])
     return output
 
@@ -1071,7 +1135,17 @@ def _daemon(config: dict[str, Any], db: Database) -> int:
                 LOGGER.warning("compositor watcher failed: %s", redact_text(exc)[:300])
             stop_event.wait(3)
 
+    from ..resource_rescue.watch import watch as watch_resources
+    def resource_worker():
+        while not stop_event.is_set():
+            try:
+                watch_resources(config,db,stop_event)
+                if not config['resource_rescue']['enabled']: return
+            except Exception as exc:
+                LOGGER.warning("resource rescue watcher failed: %s",type(exc).__name__)
+            stop_event.wait(10)
     threads = [
+        threading.Thread(target=resource_worker,name="resource-rescue",daemon=True),
         threading.Thread(target=power_profile_worker, name="power-profile-dbus", daemon=True),
         threading.Thread(target=platform_profile_worker, name="platform-profile-sysfs", daemon=True),
         threading.Thread(target=compositor_worker, name="gnome-compositor-watch", daemon=True),
@@ -1253,6 +1327,9 @@ def _context_command(args: argparse.Namespace, config: dict[str, Any]) -> Any:
 
 def _report_command(args: argparse.Namespace, config: dict[str, Any], db: Database | None) -> Any:
     path = db.path if db is not None else Path(config["monitor"]["database_path"])
+    if args.command == "process-history":
+        from ..reporting.process_history import report
+        return report(path, args)
     if args.command == "status":
         report = status_report(path)
         report["units"] = _systemd_states()
@@ -1313,11 +1390,11 @@ def execute(args: argparse.Namespace) -> int:
     read_only_commands = {
         "status", "health", "events", "metrics", "disks", "network", "software",
         "services", "service-history", "dashboard", "timeline", "trends", "prometheus",
-        "last-errors", "daily-summary", "export", "test", "context",
+        "last-errors", "daily-summary", "export", "test", "context", "process-history", "resource-rescue",
     }
     if args.command == "alerts" and not args.resolve:
         read_only_commands.add("alerts")
-    if args.command == "systemd-history" and args.systemd_history_command == "status":
+    if args.command == "systemd-history" and args.systemd_history_command in {"status", "snapshot"}:
         read_only_commands.add("systemd-history")
     database_required = args.command not in {"config-check", "kuma-configure", "kuma-runtime", *read_only_commands}
     if args.command == "smart-alert" and (args.action in {"details", "disks"} or args.no_open):
@@ -1331,13 +1408,20 @@ def execute(args: argparse.Namespace) -> int:
         _print(runtime_descriptor(), args)
         return 0
     if args.command == "kuma-configure":
+        extra_specs = (PROMPT_HISTORY_FRESHNESS_MONITOR,) if args.prompt_history_freshness else ()
         output = configure_push_monitors(
             base_url=args.base_url,
             chrome_profile=args.chrome_profile,
             credentials_path=args.credentials or config["notifications"]["uptime_kuma_credentials"],
-            specs=(*DEFAULT_MONITORS, *service_monitor_specs(args.service_unit)),
+            specs=(*DEFAULT_MONITORS, *service_monitor_specs(args.service_unit), *extra_specs),
         )
         _print(output, args)
+        return 0
+    if args.command == "resource-rescue":
+        from ..resource_rescue import execute as rescue_execute
+        result=rescue_execute(args,config)
+        if isinstance(result,int): return result
+        _print(result,args)
         return 0
     if args.command == "context":
         _print(_context_command(args, config), args)
@@ -1346,6 +1430,15 @@ def execute(args: argparse.Namespace) -> int:
         output = history_status(Path(config["monitor"]["database_path"]))
         _print(output, args)
         return 0 if output["ok"] else 1
+    if args.command == "systemd-history" and args.systemd_history_command == "snapshot":
+        output = build_runtime_snapshot(
+            Path(config["monitor"]["database_path"]), output=args.output, host_id=args.host_id,
+            window_days=args.window_days, collector=args.collector or SYSTEMD_HISTORY_COLLECTOR,
+            registry=args.registry or SYSTEMD_HISTORY_REGISTRY, systemctl=args.systemctl,
+            system_unit_dir=args.system_unit_dir, user_unit_dir=args.user_unit_dir,
+        )
+        _print(output, args)
+        return 0
     if args.command == "test":
         output = _self_test(config, system=args.system)
         _print(output, args)

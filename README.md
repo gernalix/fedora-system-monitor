@@ -67,6 +67,14 @@ After successful login, enable the timer with `systemctl --user enable --now tel
 
 ## Sviluppo
 
+L'archivio locale delle esecuzioni, gli hook Bash/Ptyxis e gli adapter RDC/Codex sono descritti in
+[Archivio esecuzioni](docs/human/execution-archive.md). Comandi: `ea search`, `ea capture on/off`, `ea pause/resume`; safe automatico e full con consenso esplicito.
+Controlli: `ea disable` / `ea enable`. In safe i comandi generici hanno soli
+metadati; full acquisisce output visibile con consenso e guard conservativi.
+RDC usa la propria `defaultShell`; Codex usa il hook ufficiale `PreToolUse` per
+le sole chiamate Bash. Nessun archivio, transcript o messaggio di chat viene
+letto o importato.
+
 ```bash
 PYTHONPATH=src PYTHONWARNINGS=error python3 -m unittest discover -s tests -q
 python3 -m compileall -q src

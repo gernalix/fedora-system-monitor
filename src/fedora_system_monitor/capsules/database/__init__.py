@@ -25,7 +25,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from ..config import redact_text
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 6
 DEFAULT_TIMEZONE = "Europe/Copenhagen"
 DEFAULT_METRIC_RETENTION_DAYS = {60: 14, 300: 60, 900: 180, 3600: 365, 86400: 3650}
 
@@ -43,6 +43,13 @@ _SECRET_KEYS = {
 }
 
 _EXPECTED_INDEXES = {
+    "idx_process_scans_time",
+    "idx_process_identity_pid",
+    "idx_process_identity_name",
+    "idx_process_identity_unit",
+    "idx_process_samples_identity",
+    "idx_metrics_collector_run",
+    "idx_events_collector_run",
     "idx_metrics_time",
     "idx_metrics_name_time",
     "idx_metrics_cadence_time",
@@ -530,6 +537,12 @@ def _percentile_95(values: Sequence[float]) -> float | None:
     return ordered[index]
 
 
+_MIGRATION_5_STATEMENTS = (
+    "CREATE INDEX IF NOT EXISTS idx_metrics_collector_run ON periodic_metrics(collector_run_id)",
+    "CREATE INDEX IF NOT EXISTS idx_events_collector_run ON events(collector_run_id)",
+)
+
+
 class Database:
     """Own and query a versioned Fedora System Monitor SQLite database."""
 
@@ -604,6 +617,13 @@ class Database:
 
         if str(self.path) != ":memory:":
             self.path.parent.mkdir(parents=True, exist_ok=True)
+        # Preserve an online, integrity-checked backup before additive v6 DDL.
+        if str(self.path) != ":memory:" and self.path.exists() and self.path.stat().st_size:
+            with self._connection() as probe:
+                exists = probe.execute("SELECT 1 FROM sqlite_master WHERE name='schema_versions'").fetchone()
+                version = probe.execute("SELECT MAX(version) FROM schema_versions").fetchone()[0] if exists else 0
+            if version and version < 6:
+                self.backup(self.path.parent / f"{self.path.name}.pre-v6-{uuid4().hex}.bak")
         with self._transaction() as connection:
             connection.execute(
                 """
@@ -655,6 +675,22 @@ class Database:
                     "INSERT INTO schema_versions(version, applied_at_utc, description) VALUES (?, ?, ?)",
                     (4, utc, "bounded Datasette current-alert and recent-event views"),
                 )
+            if current < 5:
+                for statement in _MIGRATION_5_STATEMENTS:
+                    connection.execute(statement)
+                utc, _ = self._timestamps()
+                connection.execute(
+                    "INSERT INTO schema_versions(version, applied_at_utc, description) VALUES (?, ?, ?)",
+                    (5, utc, "indexed collector history foreign-key cleanup"),
+                )
+            if current < 6:
+                from .process_history import SCHEMA
+                for statement in SCHEMA:
+                    connection.execute(statement)
+                if connection.execute("PRAGMA quick_check").fetchone()[0] != "ok" or connection.execute("PRAGMA foreign_key_check").fetchone():
+                    raise StorageError("process history migration checks failed")
+                utc, _ = self._timestamps()
+                connection.execute("INSERT INTO schema_versions VALUES(?,?,?)", (6,utc,"compact per-process history"))
         if str(self.path) != ":memory:":
             try:
                 os.chmod(self.path, 0o640)
@@ -665,6 +701,14 @@ class Database:
             connection.execute("PRAGMA synchronous = NORMAL")
             connection.execute("PRAGMA wal_autocheckpoint = 1000")
         return self.get_schema_version()
+
+    def insert_process_snapshot(self, snapshot, options):
+        from .process_history import persist, maintain
+        with self._transaction() as connection:
+            count = persist(connection, snapshot)
+            maintenance = maintain(connection, now=snapshot['timestamp'],
+                raw_hours=options['raw_hours'], aggregate_days=options['aggregate_days'])
+        return {"samples": count, **maintenance}
 
     def get_schema_version(self) -> int:
         """Return the latest applied schema migration number."""

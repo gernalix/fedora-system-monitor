@@ -111,3 +111,9 @@ L’endpoint non richiede pacchetti Prometheus e resta disabilitato per default:
 sudo systemctl start fedora-system-monitor-prometheus.service
 curl http://127.0.0.1:9109/metrics
 ```
+
+Lo [storico per-processo CPU/RAM/I/O](process-history.md) include tutti i PID
+campionabili ogni minuto, con query correnti, dettagliate e aggregate orarie.
+
+Il [recupero risorse interattivo](resource-rescue.md) aggiunge preavvisi PSI,
+scelte confermate sulle app dell'utente e un pannello Chrome con limiti per-tab espliciti.

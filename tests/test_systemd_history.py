@@ -4,10 +4,14 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+import subprocess
+import sqlite3
 from unittest.mock import patch
 
 from fedora_system_monitor.capsules.database import Database
-from fedora_system_monitor.capsules.systemd_history import DEFAULT_COLLECTOR, UnitIdentity, import_history
+from fedora_system_monitor.capsules.systemd_history import (
+    DEFAULT_COLLECTOR, UnitIdentity, build_runtime_snapshot, history_status, import_history,
+)
 
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "systemd_history"
@@ -139,6 +143,56 @@ class SystemdHistoryTests(unittest.TestCase):
         self.assertIsNone(checkpoint["journal_cursor"])
         self.assertEqual(checkpoint["recovery_state"], "error")
         self.assertIn("journal unavailable", checkpoint["recovery_warning"])
+
+    def test_journal_timeout_is_persisted_as_unknown_coverage(self) -> None:
+        with patch("fedora_system_monitor.capsules.systemd_history.discover_units", return_value=CATALOG), patch(
+            "fedora_system_monitor.capsules.systemd_history._journal", side_effect=subprocess.TimeoutExpired(["journalctl"], 120)
+        ):
+            result = import_history(self.db)
+        self.assertFalse(result["passed"])
+        checkpoint = self.db.query("SELECT recovery_state,recovery_warning FROM systemd_journal_checkpoints")[0]
+        self.assertEqual(checkpoint["recovery_state"], "error")
+        self.assertIn("timed out", checkpoint["recovery_warning"])
+
+    def test_snapshot_reports_metrics_and_never_assigns_daemon_percentage(self) -> None:
+        output = Path(self.temp.name) / "snapshot.json"
+        self.db.close()
+        connection = sqlite3.connect(self.database)
+        connection.execute(
+            "INSERT INTO systemd_journal_checkpoints(hostname,journal_scope,updated_at_utc,recovery_state) VALUES(?,?,?,'incremental')",
+            (__import__('socket').gethostname(), "system", "2026-10-12T00:00:00Z"),
+        )
+        connection.execute(
+            "INSERT INTO systemd_executions(run_key,hostname,journal_scope,unit,started_at_utc,status,severity) VALUES(?,?,?,?,?,'success','info')",
+            ("one", __import__('socket').gethostname(), "system", "backup.service", "2099-01-01T00:00:00Z"),
+        )
+        connection.commit()
+        connection.close()
+        daemon = UnitIdentity("daemon.service", "system", None, "daemon.service")
+        with patch("fedora_system_monitor.capsules.systemd_history.discover_units", return_value=CATALOG + [daemon]), patch(
+            "fedora_system_monitor.capsules.systemd_history._show_unit",
+            side_effect=lambda _binary, identity: ({"Type": "oneshot" if identity.unit == "backup.service" else "simple", "ActiveState": "active", "SubState": "running"}, None),
+        ):
+            result = build_runtime_snapshot(self.database, output=output)
+        payload = json.loads(output.read_text(encoding="utf-8"))
+        backup = next(row for row in payload["units"] if row["unit"] == "backup.service")
+        daemon_row = next(row for row in payload["units"] if row["unit"] == "daemon.service")
+        self.assertEqual((result["units"], backup["run_total"], backup["success_percent"]), (3, 1, 100.0))
+        self.assertIsNone(daemon_row["success_percent"])
+        self.assertEqual(output.stat().st_mode & 0o777, 0o600)
+
+    def test_snapshot_marks_template_and_missing_history_unknown(self) -> None:
+        output = Path(self.temp.name) / "snapshot.json"
+        template = UnitIdentity("job@.service", "system", None, "job@.service")
+        with patch("fedora_system_monitor.capsules.systemd_history.discover_units", return_value=[template]):
+            build_runtime_snapshot(Path(self.temp.name) / "missing.sqlite", output=output)
+        row = json.loads(output.read_text(encoding="utf-8"))["units"][0]
+        self.assertEqual(row["coverage"], "UNKNOWN")
+        self.assertEqual(row["coverage_reason"], "template_unit_requires_instance")
+
+    def test_status_can_read_wal_database_without_write_access(self) -> None:
+        self.db.close()
+        self.assertTrue(history_status(self.database)["ok"])
 
 
 if __name__ == "__main__":

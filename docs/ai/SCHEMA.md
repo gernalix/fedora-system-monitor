@@ -57,3 +57,15 @@ DERIVED.incident_bundle_schema=fedora-system-monitor.incident-bundle.v1
 DERIVED.context_layout=metadata/,timeline/YYYY/MM/YYYY-MM-DD.jsonl,incidents/<incident-id>.json,summaries/YYYY-MM-DD.json
 DERIVED.context_identity=Stable record_id from monitor row id or ActivityWatch content hash; overlapping sync replaces its time slice
 DERIVED.context_privacy=Raw ActivityWatch URLs are excluded; strings pass through monitor redaction
+
+## Process history (schema v6)
+
+Additive tables in the existing monitor SQLite: `process_scans` (UTC epoch,
+boot, coverage, timing, rollup watermark), `process_identities` (boot/PID/start
+and bounded process/user/unit metadata), `process_samples` (WITHOUT ROWID,
+scan/identity key, counters, RSS, interval deltas), `process_hourly` (WITHOUT
+ROWID, hour/name/UID/unit key, valid counts and CPU/RAM/I/O aggregates).
+Foreign-key cascade removes samples with scans; identity cleanup uses the
+identity/scan index. No per-metric generic records. Migration is transactional,
+with verified online pre-v6 backup and SQLite/FK checks. See
+[process history](../human/process-history.md) for semantics, retention and benchmark.

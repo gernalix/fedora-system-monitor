@@ -37,6 +37,15 @@ while IFS= read -r -d '' source; do
     install -d -m 0755 "$STAGE/fedora_system_monitor/$(dirname "$relative")"
     install -m 0644 -o root -g root "$source" "$STAGE/fedora_system_monitor/$relative"
 done < <(find "$ROOT/src/fedora_system_monitor" -type f -name '*.py' -print0)
+# Owned static Chrome panel; loading it in Chrome remains an explicit user action.
+if find "$ROOT/chrome/resource-rescue" -type l -print -quit | grep -q .; then
+    printf 'Refusing symlinks in Chrome resource panel.\n' >&2
+    exit 1
+fi
+install -d -m 0755 "$STAGE/chrome-resource-rescue"
+for asset in manifest.json popup.html popup.css popup.js model.js; do
+    install -m 0644 -o root -g root "$ROOT/chrome/resource-rescue/$asset" "$STAGE/chrome-resource-rescue/$asset"
+done
 install -d -m 0755 "$STAGE/scripts"
 install -m 0755 -o root -g root "$ROOT/scripts/systemd-journal-collector.sh" "$STAGE/scripts/systemd-journal-collector.sh"
 printf '%s\n' "$REVISION" > "$STAGE/.source-revision"
@@ -44,7 +53,8 @@ printf '%s\n' "$REVISION" > "$STAGE/.source-revision"
 /usr/bin/python3 -m compileall -q "$STAGE/fedora_system_monitor"
 PYTHONPATH="$STAGE" /usr/bin/python3 -c 'import fedora_system_monitor; import fedora_system_monitor.capsules.runtime.coordinator'
 PYTHONPATH="$STAGE" /usr/bin/python3 -m fedora_system_monitor config-check >/dev/null
-PYTHONPATH="$STAGE" /usr/bin/python3 -m fedora_system_monitor db-check >/dev/null
+# Validate staged schema without migrating the live DB under the old runtime.
+PYTHONPATH="$STAGE" /usr/bin/python3 -m fedora_system_monitor --database :memory: db-check >/dev/null
 chown -R root:root "$STAGE"
 find "$STAGE" -type d -exec chmod 0755 '{}' +
 find "$STAGE" -type f -exec chmod 0644 '{}' +
@@ -65,6 +75,18 @@ fi
 STAGE=
 
 install -m 0755 "$ROOT/packaging/fedora-system-monitor" /usr/local/bin/fedora-system-monitor
+install -m 0755 "$ROOT/packaging/fsm-chrome-capabilities" /usr/local/bin/fsm-chrome-capabilities
+/usr/bin/python3 - "$ROOT/chrome/resource-rescue/EXTENSION_ID" <<'PYHOST'
+import json,sys,os
+from pathlib import Path
+origin='chrome-extension://'+Path(sys.argv[1]).read_text().strip()+'/'
+p=Path('/etc/opt/chrome/native-messaging-hosts/com.gernalix.fsm_resource_rescue.json')
+value={'name':'com.gernalix.fsm_resource_rescue','description':'FSM capabilities-only one-shot host','path':'/usr/local/bin/fsm-chrome-capabilities','type':'stdio','allowed_origins':[origin]}
+if p.exists() and json.loads(p.read_text()).get('path')!=value['path']:
+    raise SystemExit('Refusing unrelated native host')
+p.parent.mkdir(parents=True,exist_ok=True)
+p.write_text(json.dumps(value)+'\n');os.chmod(p,0o644)
+PYHOST
 command -v restorecon >/dev/null && restorecon -RF "$LIB" /usr/local/bin/fedora-system-monitor || true
 
 if ! /usr/local/bin/fedora-system-monitor config-check >/dev/null \

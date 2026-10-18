@@ -8,7 +8,7 @@ EVENT.device=Block and USB add,change,remove,mount,unmount,mount failure,unsafe 
 EVENT.network=Wi-Fi connect/disconnect,SSID/interface/IP/default route changes,gateway and Internet transitions,VPN,NetworkManager state,suspend,and resume
 EVENT.system=Boot,clean shutdown,reboot,suspend,resume,unclean boot,panic,oops,OOM,failed units,coredumps,hardware errors,critical thermal,and read-only remount
 EVENT.software=DNF,RPM,PackageKit,Flatpak,manual metadata,AppImage,pip,pipx,uv,npm,Cargo,Android,GNOME extension,launcher,and icon deltas
-THRESHOLD.disk=Warning below 20 percent,critical below 10,emergency below 5,absolute warning below 10 GiB,2 percent recovery hysteresis
+THRESHOLD.disk=Warning below 20 percent,critical below 10,emergency below 5,absolute warning below 10 GiB,2 percent recovery hysteresis;filesystem UUID 22E02106E020E1B1 uses absolute 20/10/5 GiB warning/critical/emergency with 2 GiB recovery hysteresis and remains a required mount
 THRESHOLD.small_fs=Filesystems at most 5 GiB use a proportional 128 MiB free floor instead of the 10 GiB absolute rule
 THRESHOLD.inode=Warning below 15 percent,critical below 5,2 percent recovery hysteresis
 THRESHOLD.cpu=Warning above 90 C for 300 seconds,critical above 95 C,recovery 5 C below threshold
@@ -68,3 +68,8 @@ OPS.context_query=fedora-system-monitor context around <timestamp>;context incid
 OPS.context_sync=fedora-system-monitor context sync; resumes from last-sync with overlap and bounded catch-up
 OPS.context_publish=Set context.git_push=true only after private gernalix/fedora-context-data exists at configured output path
 SECURITY.context=Publisher runs as daniele, exact repo/branch validation, bounded Git, unrelated dirty files fail closed; raw ActivityWatch URLs excluded
+
+FEATURE.resource_rescue=Existing events daemon PSI/adaptive thread; user-owned event-driven UI oneshot; no second continuous daemon/timer; numeric state only in existing SQLite
+OPS.resource_rescue=fedora-system-monitor resource-rescue status --json
+LINK.resource_rescue=docs/human/resource-rescue.md
+FEATURE.chrome_rescue=Own least-privilege extension panel; Stable per-tab CPU/RSS/I/O unavailable; explicit confirmed tabs.discard/remove; one-message capabilities-only native host; manual Chrome UI activation required

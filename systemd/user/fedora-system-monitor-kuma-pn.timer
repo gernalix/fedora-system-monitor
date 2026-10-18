@@ -1,0 +1,11 @@
+[Unit]
+Description=Observe Uptime Kuma DOWN/UP transitions and register new Pn
+
+[Timer]
+OnBootSec=30s
+OnUnitInactiveSec=30s
+AccuracySec=3s
+Unit=fedora-system-monitor-kuma-pn.service
+
+[Install]
+WantedBy=timers.target

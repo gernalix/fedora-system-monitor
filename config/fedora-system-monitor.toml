@@ -27,9 +27,9 @@ smart_periodic_skip_model_patterns = ["T7 Shield"]
 
 [services]
 auto_detect = true
-retired = ["user:workflowy-roadmap-sync.service", "user:c3-writer.service", "user:c3-web.service", "user:c3-symphony.service", "user:c3-runtime.service"]
+retired = ["user:workflowy-roadmap-sync.service", "user:livinggaul-x-source-availability.service", "user:c3-writer.service", "user:c3-web.service", "user:c3-symphony.service", "user:c3-runtime.service"]
 essential = ["NetworkManager.service", "firewalld.service", "user:discord-exporter-crawl.service"]
-secondary = ["bluetooth.service", "libvirtd.service", "podman.service", "docker.service", "rustdesk.service", "smartd.service", "sshd.service", "uptime-kuma.service", "fedora-diagnostics-telemetry.service", "x-repost-downloader.service", "amici-fb.service", "fedora-system-monitor-events.service", "fedora-system-monitor-prometheus.service", "user:activitywatch.service", "user:activitywatch-wayland-watcher.service", "user:espanso.service", "user:tailscale-systray.service", "user:adb-device-keeper.service", "user:telegram-insert-bot.service", "user:workflowy-bridge.service", "user:chrome-codex-switcher.service", "user:github-autosync.service", "user:repo-integrator.service", "user:activity-watch-uploader.service", "user:codex-usage-monitor.service", "user:codex-session-archive.service", "user:codex-usage-publisher.service", "user:prompt-history-sync.service", "user:personalhub-consolidation.service", "user:livinggaul-x-source-availability.service", "user:logseq-updater.service", "user:duplicate-photos-detector-watch.service", "user:sqlite-to-obsidian.service"]
+secondary = ["bluetooth.service", "libvirtd.service", "podman.service", "docker.service", "rustdesk.service", "smartd.service", "sshd.service", "uptime-kuma.service", "fedora-diagnostics-telemetry.service", "x-repost-downloader.service", "amici-fb.service", "fedora-system-monitor-events.service", "fedora-system-monitor-prometheus.service", "user:activitywatch.service", "user:activitywatch-wayland-watcher.service", "user:espanso.service", "user:tailscale-systray.service", "user:adb-device-keeper.service", "user:telegram-insert-bot.service", "user:workflowy-bridge.service", "user:chrome-codex-switcher.service", "user:github-autosync.service", "user:repo-integrator.service", "user:activity-watch-uploader.service", "user:codex-usage-monitor.service", "user:codex-session-archive.service", "user:codex-usage-publisher.service", "user:prompt-history-sync.service", "user:personalhub-consolidation.service", "user:logseq-updater.service", "user:duplicate-photos-detector-watch.service", "user:sqlite-to-obsidian.service"]
 name_patterns = ["backup", "adb", "kuma", "megavault", "monitor"]
 
 # Scheduled oneshot services need semantic freshness, not merely a successful
@@ -46,7 +46,6 @@ name_patterns = ["backup", "adb", "kuma", "megavault", "monitor"]
 "user:codex-session-archive.service" = 2400
 "user:codex-usage-publisher.service" = 2400
 "user:prompt-history-sync.service" = 2400
-"user:livinggaul-x-source-availability.service" = 10800
 "user:logseq-updater.service" = 10800
 "amici-fb.service" = 129600
 
@@ -55,7 +54,8 @@ known_labels = ["Ventoy", "VTOYEFI", "VEEAMRE", "Seagate Expansion Drive"]
 known_model_patterns = ["Samsung Portable SSD T7", "Seagate"]
 small_filesystem_max_gib = 5.0
 small_filesystem_min_free_mib = 128
-expected_devices = []
+expected_devices = [{ uuid = "22E02106E020E1B1", required = true }]
+capacity_overrides = [{ filesystem_uuid = "22E02106E020E1B1", warning_free_gib = 20, critical_free_gib = 10, emergency_free_gib = 5, recovery_hysteresis_gib = 2 }]
 
 [inventory]
 user_home = "/home/daniele"
@@ -151,3 +151,23 @@ filesystem_free_change_gib = 1.0
 reminder_seconds = 21600
 timeout_seconds = 5
 inverted_categories = ["storage"]
+
+# Every fast/minute wake; interval may be increased in multiples of 60 seconds.
+[process_history]
+interval_seconds = 60
+max_scan_seconds = 5
+raw_hours = 48
+aggregate_days = 90
+
+# Preventive checks run inside the existing event daemon, not another poller.
+[resource_rescue]
+enabled = true
+idle_seconds = 10
+active_seconds = 5
+warning_available = 15
+emergency_available = 5
+warning_psi_some = 10
+emergency_psi_full = 5
+debounce_seconds = 5
+snooze_seconds = 600
+minimum_popup_seconds = 120
