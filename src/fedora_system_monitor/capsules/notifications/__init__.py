@@ -127,7 +127,9 @@ def _push(url: str, *, up: bool, message: str, ping_ms: int | None, timeout: flo
         return False, exc.__class__.__name__
 
 
-def send_telegram_message(config: Mapping[str, Any], message: str) -> NotificationResult:
+def send_telegram_message(
+    config: Mapping[str, Any], message: str, *, event_key: str = "filesystem", severity: str = "info"
+) -> NotificationResult:
     credentials_path = _telegram_credentials_path(config)
     try:
         if credentials_path.stat().st_mode & 0o077:
@@ -139,13 +141,26 @@ def send_telegram_message(config: Mapping[str, Any], message: str) -> Notificati
     try:
         import telegram_notify
 
+        send_alert = getattr(telegram_notify, "send_alert", None)
+        if not callable(send_alert):
+            return NotificationResult(
+                "telegram", "filesystem", False, False, "shared alert policy unavailable"
+            )
         telegram_notify.load_config_files()
         telegram_notify.validate_config()
-        telegram_notify.send_message("Fedora System Monitor", redact_text(message))
-        delivered = True
-        status = "delivered"
+        state_directory = os.environ.get("STATE_DIRECTORY")
+        state_path = Path(state_directory) / "telegram_alert_policy.sqlite" if state_directory else None
+        status = send_alert(
+            "Spazio su Fedora", redact_text(message),
+            event_key=f"fedora_system_monitor:{event_key}",
+            severity=severity,
+            state_path=state_path,
+        )
+        delivered = status in {"sent", "grouped"}
+        accepted = delivered or status == "suppressed"
     except Exception as exc:
         delivered = False
+        accepted = False
         status = exc.__class__.__name__
     finally:
         if previous_config is None:
@@ -158,7 +173,7 @@ def send_telegram_message(config: Mapping[str, Any], message: str) -> Notificati
         True,
         delivered,
         status,
-        "" if delivered else status,
+        "" if accepted else status,
     )
 
 
@@ -238,11 +253,17 @@ def notify_filesystem_free_changes(
         delta = free_bytes - baseline
         delivered = False
         if abs(delta) >= threshold:
-            sign = "+" if delta >= 0 else "-"
-            message = f"💾 {mount_point}: libero {_gib(free_bytes)}; variazione {sign}{_gib(abs(delta))}"
-            notification = send_telegram_message(config, message)
+            direction = "diminuito" if delta < 0 else "aumentato"
+            action = "Controlla i file o il backup se continua a calare." if delta < 0 else "Nessuna azione necessaria."
+            message = f"Lo spazio libero su {mount_point} è {direction} di {_gib(abs(delta))}. Ora disponibili: {_gib(free_bytes)}. {action}"
+            notification = send_telegram_message(
+                config, message, event_key=state_key,
+                severity="warning" if delta < 0 else "info",
+            )
             results.append(notification)
-            delivered = notification.delivered
+            # Suppression is a completed policy decision. Advance the baseline
+            # without claiming a delivery or resubmitting this same observation.
+            delivered = notification.delivered or notification.status == "suppressed"
         db.set_state(
             state_key,
             {

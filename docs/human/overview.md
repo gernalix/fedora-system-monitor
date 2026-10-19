@@ -75,6 +75,13 @@ Telegram riusa esclusivamente
 token e chat ID non devono essere copiati nella configurazione del progetto.
 L’invio usa il helper condiviso `telegram_notify.py` tramite il pacchetto
 `telegram_notify`; il monitor non implementa una seconda chiamata HTTP Telegram.
+Gli avvisi sullo spazio libero passano da `telegram_notify.send_alert`, con una
+chiave stabile per filesystem e priorità `warning` quando lo spazio diminuisce.
+Una soppressione della policy aggiorna il riferimento senza dichiarare una
+consegna né riproporre la stessa osservazione. Il pacchetto condiviso deve esporre
+`send_alert`: con una versione precedente il risultato è
+`shared alert policy unavailable`, senza invio diretto alternativo. L'aggiornamento
+del pacchetto installato resta un'operazione separata.
 
 ## Installazione e aggiornamento
 

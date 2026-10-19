@@ -163,7 +163,7 @@ class NotificationTests(unittest.TestCase):
             helper = SimpleNamespace(
                 load_config_files=mock.Mock(side_effect=capture_config_path),
                 validate_config=mock.Mock(),
-                send_message=mock.Mock(),
+                send_alert=mock.Mock(return_value="sent"),
             )
             with patch.dict(
                 os.environ,
@@ -194,14 +194,82 @@ class NotificationTests(unittest.TestCase):
             helper = SimpleNamespace(
                 load_config_files=mock.Mock(),
                 validate_config=mock.Mock(),
-                send_message=mock.Mock(),
+                send_alert=mock.Mock(return_value="sent"),
             )
             with patch.dict(sys.modules, {"telegram_notify": helper}):
                 result = send_telegram_message(config, "test")
             self.assertTrue(result.delivered)
-            helper.send_message.assert_called_once_with("Fedora System Monitor", "test")
+            helper.send_alert.assert_called_once()
+            self.assertEqual(helper.send_alert.call_args.kwargs["severity"], "info")
             self.assertNotIn(token, repr(result))
             self.assertNotIn(chat_id, repr(result))
+
+    def test_legacy_helper_does_not_bypass_missing_shared_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "telegram.env"
+            path.write_text("synthetic credentials", encoding="utf-8")
+            path.chmod(0o600)
+            helper = SimpleNamespace(
+                load_config_files=mock.Mock(),
+                validate_config=mock.Mock(),
+                send_message=mock.Mock(),
+            )
+            with patch.dict(sys.modules, {"telegram_notify": helper}), patch.dict(
+                os.environ, {"TELEGRAM_NOTIFY_CONFIG": "previous-config"}
+            ):
+                result = send_telegram_message(
+                    {"notifications": {"telegram_credentials": str(path)}}, "test"
+                )
+                self.assertEqual(os.environ["TELEGRAM_NOTIFY_CONFIG"], "previous-config")
+            self.assertFalse(result.attempted)
+            self.assertFalse(result.delivered)
+            self.assertEqual(result.status, "shared alert policy unavailable")
+            helper.load_config_files.assert_not_called()
+            helper.validate_config.assert_not_called()
+            helper.send_message.assert_not_called()
+
+    def test_policy_suppression_is_not_reported_as_delivery(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "telegram.env"
+            path.write_text("synthetic credentials", encoding="utf-8")
+            path.chmod(0o600)
+            helper = SimpleNamespace(
+                load_config_files=mock.Mock(), validate_config=mock.Mock(),
+                send_alert=mock.Mock(return_value="suppressed"),
+            )
+            with patch.dict(sys.modules, {"telegram_notify": helper}), patch.dict(
+                os.environ, {"STATE_DIRECTORY": temp}
+            ):
+                result = send_telegram_message(
+                    {"notifications": {"telegram_credentials": str(path)}}, "test",
+                    event_key="filesystem-free:synthetic-volume", severity="warning",
+                )
+            self.assertTrue(result.attempted)
+            self.assertFalse(result.delivered)
+            self.assertEqual((result.status, result.error), ("suppressed", ""))
+            helper.send_alert.assert_called_once_with(
+                "Spazio su Fedora", "test",
+                event_key="fedora_system_monitor:filesystem-free:synthetic-volume",
+                severity="warning", state_path=Path(temp) / "telegram_alert_policy.sqlite",
+            )
+
+    @patch(
+        "fedora_system_monitor.capsules.notifications.send_telegram_message",
+        return_value=NotificationResult("telegram", "filesystem", True, False, "suppressed"),
+    )
+    def test_suppressed_observation_advances_baseline_without_retries(self, sender) -> None:
+        gib = 1024**3
+        db = _State()
+        config = {"notifications": {"filesystem_free_change_gib": 1.0}}
+        initial = [_filesystem_metric("fsuuid:one", "/", 10 * gib)]
+        changed = [_filesystem_metric("fsuuid:one", "/", 8 * gib)]
+        notify_filesystem_free_changes(initial, config, db)
+        first = notify_filesystem_free_changes(changed, config, db)
+        self.assertFalse(first[0].delivered)
+        self.assertEqual(notify_filesystem_free_changes(changed, config, db), [])
+        sender.assert_called_once()
+        self.assertEqual(sender.call_args.kwargs["severity"], "warning")
+        self.assertEqual(sender.call_args.kwargs["event_key"], "filesystem-free:fsuuid:one")
 
     @patch(
         "fedora_system_monitor.capsules.notifications.send_telegram_message",
@@ -217,7 +285,7 @@ class NotificationTests(unittest.TestCase):
         notify_filesystem_free_changes([_filesystem_metric("fsuuid:one", "/data", 10 * gib - 1100 * 1024**2)], config, db)
         notify_filesystem_free_changes([_filesystem_metric("fsuuid:one", "/data", 10 * gib - 1100 * 1024**2)], config, db)
         self.assertEqual(sender.call_count, 1)
-        self.assertIn("variazione -1.07 GiB", sender.call_args.args[1])
+        self.assertIn("diminuito di 1.07 GiB", sender.call_args.args[1])
         self.assertEqual(config["notifications"]["filesystem_free_change_gib"], 1.0)
 
     @patch(
@@ -240,8 +308,8 @@ class NotificationTests(unittest.TestCase):
         notify_filesystem_free_changes(changed, config, db)
         self.assertEqual(sender.call_count, 2)
         messages = [call.args[1] for call in sender.call_args_list]
-        self.assertTrue(any("variazione +2.00 GiB" in message for message in messages))
-        self.assertTrue(any("variazione -2.00 GiB" in message for message in messages))
+        self.assertTrue(any("aumentato di 2.00 GiB" in message for message in messages))
+        self.assertTrue(any("diminuito di 2.00 GiB" in message for message in messages))
 
     @patch(
         "fedora_system_monitor.capsules.notifications.send_telegram_message",
@@ -255,7 +323,7 @@ class NotificationTests(unittest.TestCase):
         notify_filesystem_free_changes([], config, db)
         notify_filesystem_free_changes([_filesystem_metric("fsuuid:portable", "/media/new", 8 * gib)], config, db)
         self.assertEqual(sender.call_count, 1)
-        self.assertIn("💾 /media/new:", sender.call_args.args[1])
+        self.assertIn("su /media/new è diminuito", sender.call_args.args[1])
 
     @patch(
         "fedora_system_monitor.capsules.notifications.send_telegram_message",
