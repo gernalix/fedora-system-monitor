@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from pathlib import Path
 from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping
 
@@ -111,9 +112,6 @@ def send_service_heartbeats(
         ORDER BY p.device_id
         """
     )
-    current = now or datetime.now(timezone.utc)
-    if current.tzinfo is None:
-        current = current.replace(tzinfo=timezone.utc)
     results: list[NotificationResult] = []
     for row in rows:
         state_id = str(row.get("device_id") or "").strip()
@@ -122,6 +120,11 @@ def send_service_heartbeats(
         endpoint = service_monitor_key(state_id)
         if endpoint not in service_keys:
             continue
+        # Earlier network sends may block while report producers keep updating.
+        # Evaluate each service against the clock at its own read/send boundary.
+        current = now or datetime.now(timezone.utc)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=timezone.utc)
         details = _details(row)
         fresh = _fresh(row.get("timestamp_utc"), now=current, max_age_seconds=max_age_seconds)
         healthy = _healthy(row, details, fresh=fresh, collector_failed=collector_failed)
@@ -134,12 +137,30 @@ def send_service_heartbeats(
             age = details.get("last_success_age_seconds")
             threshold = details.get("freshness_seconds")
             reason += f"; job freshness stale age={age if age is not None else 'missing'}s threshold={threshold}s"
+        message = f"{state_id}: {reason}"
+        custom = config.get("services", {}).get("health_reports", {}).get(state_id)
+        if isinstance(custom, dict):
+            label = str(custom.get("label", "Controllo automatico"))
+            try:
+                report = json.loads(Path(custom["path"]).read_text())
+                age = current.timestamp() - float(report["observed_at"])
+                if not -30 <= age <= max_age_seconds:
+                    raise ValueError("stale report")
+                if not isinstance(report["message"], str) or not isinstance(report["healthy"], bool):
+                    raise ValueError("invalid report")
+                healthy = healthy and report["healthy"]
+                message = report["message"][:3000]
+                if collector_failed or not fresh:
+                    message = label + ": il sistema di controllo non si aggiorna regolarmente.\n" + message
+            except (OSError, ValueError, KeyError, TypeError):
+                healthy = False
+                message = label + ": il controllo non fornisce un resoconto aggiornato. Verificare il servizio di monitoraggio."
         results.append(
             send_named_heartbeat(
                 config,
                 endpoint,
                 healthy=healthy,
-                message=f"{state_id}: {reason}",
+                message=message,
                 ping_ms=ping_ms,
             )
         )
