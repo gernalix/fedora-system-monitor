@@ -71,6 +71,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "small_filesystem_min_free_mib": 128,
         "expected_devices": [],
         "capacity_overrides": [],
+        "capacity_alert_exempt_uuids": [],
     },
     "inventory": {
         "user_home": "/home/daniele",
@@ -460,10 +461,11 @@ def validate_config(config: Mapping[str, Any] | object) -> list[str]:
 
     if not isinstance(config.get("storage"), Mapping):
         errors.append("storage must be a table")
-    for key in ("known_labels", "known_model_patterns", "expected_devices", "capacity_overrides"):
+    for key in ("known_labels", "known_model_patterns", "expected_devices", "capacity_overrides", "capacity_alert_exempt_uuids"):
         _require_list(config, ("storage", key), errors)
     require_string_items(("storage", "known_labels"))
     require_string_items(("storage", "known_model_patterns"))
+    require_string_items(("storage", "capacity_alert_exempt_uuids"))
     expected = _value(config, ("storage", "expected_devices"))
     if isinstance(expected, list):
         for index, item in enumerate(expected):

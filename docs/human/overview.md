@@ -124,3 +124,9 @@ campionabili ogni minuto, con query correnti, dettagliate e aggregate orarie.
 
 Il [recupero risorse interattivo](resource-rescue.md) aggiunge preavvisi PSI,
 scelte confermate sulle app dell'utente e un pannello Chrome con limiti per-tab espliciti.
+
+### Eccezioni per lo spazio libero dei dischi esterni
+
+In `[storage]`, `capacity_alert_exempt_uuids = ["22E02106E020E1B1"]` mantiene le misure dello spazio libero ma esclude i relativi allarmi, anche a disco pieno. La corrispondenza usa l’UUID del filesystem, indipendentemente dal percorso di montaggio, e prevale sulle soglie personalizzate. Gli altri filesystem continuano a usare le proprie soglie.
+
+Per lo stesso volume, `expected_devices = [{ uuid = "22E02106E020E1B1", required = false }]` rende normale anche l’assenza del disco. Errori I/O, SMART e filesystem diventati in sola lettura restano controllati. Per riattivare gli avvisi di spazio basta rimuovere l’UUID dalla lista; per richiedere il disco montato impostare `required = true`.

@@ -129,6 +129,30 @@ class AlertingTests(unittest.TestCase):
         signal = evaluate_metric_alerts([metric], self.config, self.get, self.set)[0]
         self.assertEqual(signal.severity, "warning")
 
+    def test_capacity_exemption_recovers_alert_and_keeps_other_failures(self) -> None:
+        capacity = {
+            "category": "filesystem", "name": "filesystem.free_percent", "value": 0,
+            "device_id": "external-view", "source": "statvfs",
+            "details": {"filesystem_id": "fsuuid:EXTERNAL", "total_bytes": 4000 * 1024**3, "free_bytes": 0},
+        }
+        self.assertTrue(evaluate_metric_alerts([capacity], self.config, self.get, self.set)[0].active)
+        self.config["storage"]["capacity_alert_exempt_uuids"] = ["external"]
+        recovery = evaluate_metric_alerts([capacity], self.config, self.get, self.set)
+        self.assertEqual(len(recovery), 1)
+        self.assertFalse(recovery[0].active)
+        other = {**capacity, "device_id": "root", "details": {**capacity["details"], "filesystem_id": "fsuuid:ROOT"}}
+        read_only = {**capacity, "name": "filesystem.read_only", "value": 1}
+        signals = evaluate_metric_alerts([other, read_only], self.config, self.get, self.set)
+        self.assertEqual({(s.name, s.severity) for s in signals},
+                         {("filesystem.free_percent", "emergency"), ("filesystem.read_only", "critical")})
+
+    def test_optional_device_recovers_previous_absence_alert(self) -> None:
+        metric = {"category": "storage", "name": "expected_device_mounted", "value": 0,
+                  "device_id": "expected:external", "source": "lsblk", "details": {"required": True}}
+        self.assertTrue(evaluate_metric_alerts([metric], self.config, self.get, self.set)[0].active)
+        metric["details"]["required"] = False
+        self.assertFalse(evaluate_metric_alerts([metric], self.config, self.get, self.set)[0].active)
+
     def test_sensor_alarm_recovers(self) -> None:
         metric = {"category": "temperature", "name": "sensor.alarm", "value": 1, "unit": "boolean", "device_id": "spd", "source": "hwmon"}
         self.assertTrue(evaluate_metric_alerts([metric], self.config, self.get, self.set)[0].active)

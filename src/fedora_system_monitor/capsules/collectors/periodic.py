@@ -389,7 +389,7 @@ def _disk_severity(
         total_bytes,
         filesystem_id=filesystem_id,
     )
-    if policy == "filesystem_uuid_absolute":
+    if policy in {"filesystem_uuid_absolute", "filesystem_uuid_exempt"}:
         return level or "info", policy
     warning = _threshold(config, (("thresholds", "disk", "warning_free_percent"), ("thresholds", "disk_free_percent", "warning")), 20)
     critical = _threshold(config, (("thresholds", "disk", "critical_free_percent"), ("thresholds", "disk_free_percent", "critical")), 10)
