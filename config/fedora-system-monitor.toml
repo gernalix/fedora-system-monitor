@@ -54,7 +54,9 @@ known_labels = ["Ventoy", "VTOYEFI", "VEEAMRE", "Seagate Expansion Drive"]
 known_model_patterns = ["Samsung Portable SSD T7", "Seagate"]
 small_filesystem_max_gib = 5.0
 small_filesystem_min_free_mib = 128
-expected_devices = [{ uuid = "22E02106E020E1B1", required = true }]
+expected_devices = [{ uuid = "22E02106E020E1B1", required = false }]
+# UUID exemptions retain capacity readings and take precedence over thresholds.
+capacity_alert_exempt_uuids = ["22E02106E020E1B1"]
 capacity_overrides = [{ filesystem_uuid = "22E02106E020E1B1", warning_free_gib = 20, critical_free_gib = 10, emergency_free_gib = 5, recovery_hysteresis_gib = 2 }]
 
 [inventory]

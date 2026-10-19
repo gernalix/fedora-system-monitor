@@ -106,6 +106,14 @@ secondary = ["sshd.service"]
         config["storage"]["capacity_overrides"][0]["critical_free_gib"] = 25
         self.assertTrue(any("warning_free_gib" in error for error in validate_config(config)))
 
+    def test_capacity_exemptions_require_nonempty_uuid_strings(self) -> None:
+        config = deepcopy(DEFAULT_CONFIG)
+        config["storage"]["capacity_alert_exempt_uuids"] = ["EXTERNAL"]
+        self.assertEqual(validate_config(config), [])
+        for invalid in ([""], [False], "EXTERNAL"):
+            config["storage"]["capacity_alert_exempt_uuids"] = invalid
+            self.assertTrue(any("capacity_alert_exempt_uuids" in error for error in validate_config(config)))
+
     def test_missing_and_malformed_files_raise_config_error(self) -> None:
         with TemporaryDirectory() as directory:
             missing = Path(directory) / "missing.toml"

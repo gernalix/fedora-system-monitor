@@ -41,6 +41,12 @@ def disk_capacity_level(
 ) -> tuple[str, str]:
     """Return severity and policy name for one filesystem capacity sample."""
 
+    exempt = _nested(config, ("storage", "capacity_alert_exempt_uuids"), [])
+    if filesystem_id.startswith("fsuuid:") and isinstance(exempt, list):
+        uuid = filesystem_id.split(":", 1)[1].casefold()
+        if any(isinstance(item, str) and item.strip().casefold() == uuid for item in exempt):
+            return "", "filesystem_uuid_exempt"
+
     override = _capacity_override(config, filesystem_id)
     if override is not None:
         warning = float(override["warning_free_gib"])
