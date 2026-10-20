@@ -63,6 +63,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         ],
         "name_patterns": ["backup", "adb", "kuma", "megavault", "monitor"],
         "freshness_seconds": {},
+        "health_reports": {},
     },
     "storage": {
         "known_labels": ["Ventoy", "VTOYEFI", "VEEAMRE", "Seagate Expansion Drive"],
@@ -443,6 +444,24 @@ def validate_config(config: Mapping[str, Any] | object) -> list[str]:
                     errors.append(f"services.{key}[{index}] must be a unit string or a name/essential table")
     require_string_items(("services", "name_patterns"))
     require_string_items(("services", "retired"))
+    health_reports = _value(config, ("services", "health_reports"))
+    if not isinstance(health_reports, Mapping):
+        errors.append("services.health_reports must be a table")
+    else:
+        for identity, report in health_reports.items():
+            if not isinstance(identity, str) or not identity.strip():
+                errors.append("services.health_reports keys must be non-empty unit identities")
+            if not isinstance(report, Mapping):
+                errors.append(f"services.health_reports.{identity} must be a table")
+                continue
+            for field in report:
+                if field not in {"path", "label"}:
+                    errors.append(f"unknown configuration key: services.health_reports.{identity}.{field}")
+            path = report.get("path")
+            if not isinstance(path, str) or not Path(path).is_absolute():
+                errors.append(f"services.health_reports.{identity}.path must be an absolute path")
+            if "label" in report and (not isinstance(report["label"], str) or not report["label"].strip()):
+                errors.append(f"services.health_reports.{identity}.label must be a non-empty string")
     freshness = _value(config, ("services", "freshness_seconds"))
     if not isinstance(freshness, Mapping):
         errors.append("services.freshness_seconds must be a table")
