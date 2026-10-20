@@ -1,5 +1,5 @@
 [Unit]
-Description=Register Uptime Kuma DOWN incidents as canonical MegaVault Pn
+Description=Record Uptime Kuma DOWN/UP in canonical MegaVault incidents
 Wants=network-online.target
 After=network-online.target
 ConditionPathExists=%h/.local/libexec/fedora-system-monitor-kuma-pn/fedora_system_monitor/capsules/kuma_pn_monitor.py

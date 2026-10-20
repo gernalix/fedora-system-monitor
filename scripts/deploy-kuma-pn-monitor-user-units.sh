@@ -21,4 +21,4 @@ done
 systemctl --user daemon-reload
 systemctl --user enable --now fedora-system-monitor-kuma-pn.timer
 systemctl --user start fedora-system-monitor-kuma-pn.service
-printf 'Kuma Pn monitor installed from commit %s\n' "$(git -C "$ROOT" rev-parse HEAD)"
+printf 'Kuma incident monitor installed from commit %s\n' "$(git -C "$ROOT" rev-parse HEAD)"
