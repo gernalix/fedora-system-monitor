@@ -728,7 +728,20 @@ class BashPTYTest(unittest.TestCase):
                 return m["id"]
         self.fail("missing shell session")
 
+    def await_guard(self, proc):
+        # The PTY prompt can become visible before the async guard state is
+        # re-armed. Observe readiness rather than racing a capture command.
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            state = request(self.a, self.session(proc), {"action": "status"})
+            if state.get("guard"):
+                return
+            time.sleep(.01)
+        self.fail("shell capture guard did not become ready")
+
     def control(self, proc, action, **kwargs):
+        if action in {"on", "resume"}:
+            self.await_guard(proc)
         result = request(self.a, self.session(proc), {"action": action} | kwargs)
         self.assertTrue(result["ok"], result)
         return result
@@ -813,7 +826,12 @@ class BashPTYTest(unittest.TestCase):
         self.command(fd, f"cd {sensitive}")
         self.command(fd, "printf 'PUBLIC_PATH_EXCLUDED_48\\n'")
         self.command(fd, f"cd {self.home}")
+        self.await_guard(proc)
         self.command(fd, "echo public_after_guard")
+        deadline = time.monotonic() + 3
+        while not self.a.query("public_after_guard") and time.monotonic() < deadline:
+            time.sleep(.01)
+        self.assertTrue(self.a.query("public_after_guard"))
         self.control(proc, "off")
         os.write(fd, b"exit 0\n")
         proc.wait(timeout=10)
