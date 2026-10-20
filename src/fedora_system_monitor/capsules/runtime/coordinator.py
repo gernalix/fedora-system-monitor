@@ -823,6 +823,8 @@ def _reconcile_megavault_service_runtime(config: dict[str, Any], db: Database) -
         window_days=30,
         collector=SYSTEMD_HISTORY_COLLECTOR,
         registry=SYSTEMD_HISTORY_REGISTRY,
+        user_unit_dir=Path("/home/daniele/.config/systemd/user"),
+        user_account="daniele",
     )
     MEGAVAULT_SERVICE_SNAPSHOT.chmod(0o640)
     command = [
@@ -1436,6 +1438,7 @@ def execute(args: argparse.Namespace) -> int:
             window_days=args.window_days, collector=args.collector or SYSTEMD_HISTORY_COLLECTOR,
             registry=args.registry or SYSTEMD_HISTORY_REGISTRY, systemctl=args.systemctl,
             system_unit_dir=args.system_unit_dir, user_unit_dir=args.user_unit_dir,
+            user_account=args.user_account,
         )
         _print(output, args)
         return 0
