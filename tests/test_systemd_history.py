@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 import tempfile
 import unittest
 import subprocess
@@ -10,7 +11,7 @@ from unittest.mock import patch
 
 from fedora_system_monitor.capsules.database import Database
 from fedora_system_monitor.capsules.systemd_history import (
-    DEFAULT_COLLECTOR, UnitIdentity, build_runtime_snapshot, history_status, import_history,
+    DEFAULT_COLLECTOR, UnitIdentity, _show_unit, build_runtime_snapshot, history_status, import_history,
 )
 
 
@@ -189,6 +190,57 @@ class SystemdHistoryTests(unittest.TestCase):
         row = json.loads(output.read_text(encoding="utf-8"))["units"][0]
         self.assertEqual(row["coverage"], "UNKNOWN")
         self.assertEqual(row["coverage_reason"], "template_unit_requires_instance")
+
+    def test_root_collects_user_scope_from_explicit_account_bus(self) -> None:
+        identity = UnitIdentity("activitywatch.service", "user", None, "activitywatch.service")
+        with patch("fedora_system_monitor.capsules.systemd_history.os.geteuid", return_value=0), patch(
+            "fedora_system_monitor.capsules.systemd_history.pwd.getpwnam", return_value=SimpleNamespace(pw_uid=1000)
+        ), patch(
+            "fedora_system_monitor.capsules.systemd_history.subprocess.run",
+            return_value=SimpleNamespace(returncode=0, stdout="ActiveState=active\nUnitFileState=enabled\n", stderr=""),
+        ) as run:
+            values, error = _show_unit("systemctl", identity, user_account="daniele")
+        self.assertIsNone(error)
+        self.assertEqual(values["ActiveState"], "active")
+        argv = run.call_args.args[0]
+        self.assertEqual(argv[:5], ["runuser", "--user", "daniele", "--", "env"])
+        self.assertIn("XDG_RUNTIME_DIR=/run/user/1000", argv)
+        self.assertIn("DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus", argv)
+        self.assertIn("--user", argv)
+
+    def test_root_without_explicit_account_does_not_query_root_bus(self) -> None:
+        identity = UnitIdentity("activitywatch.service", "user", None, "activitywatch.service")
+        with patch("fedora_system_monitor.capsules.systemd_history.os.geteuid", return_value=0), patch(
+            "fedora_system_monitor.capsules.systemd_history.subprocess.run"
+        ) as run:
+            values, error = _show_unit("systemctl", identity)
+        self.assertEqual(values, {})
+        self.assertEqual(error, "user_scope_requires_explicit_account")
+        run.assert_not_called()
+
+    def test_user_scope_failure_remains_unknown_despite_partial_journal(self) -> None:
+        output = Path(self.temp.name) / "unknown-user.json"
+        self.db.close()
+        connection = sqlite3.connect(self.database)
+        try:
+            connection.execute(
+                "INSERT INTO systemd_journal_checkpoints(hostname,journal_scope,updated_at_utc,recovery_state,recovery_warning) "
+                "VALUES(?,?,?,'first_run','older data unavailable')",
+                (__import__("socket").gethostname(), "user", "2026-10-20T00:00:00Z"),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        identity = UnitIdentity("activitywatch.service", "user", None, "activitywatch.service")
+        with patch("fedora_system_monitor.capsules.systemd_history.discover_units", return_value=[identity]), patch(
+            "fedora_system_monitor.capsules.systemd_history._show_unit", return_value=({}, "user_manager_unavailable")
+        ) as show:
+            build_runtime_snapshot(self.database, output=output, user_account="daniele")
+        show.assert_called_once_with("systemctl", identity, user_account="daniele")
+        row = json.loads(output.read_text())["units"][0]
+        self.assertEqual(row["coverage"], "UNKNOWN")
+        self.assertEqual(row["coverage_reason"], "user_manager_unavailable")
+        self.assertIsNone(row["active_state"])
 
     def test_status_can_read_wal_database_without_write_access(self) -> None:
         self.db.close()

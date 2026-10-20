@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import pwd
 import socket
 import sqlite3
 import subprocess
@@ -58,6 +59,7 @@ def add_cli_subcommand(subparsers: Any) -> None:
     snapshot.add_argument("--host-id", default="H0001")
     snapshot.add_argument("--window-days", type=int, default=30)
     snapshot.add_argument("--systemctl", default="systemctl")
+    snapshot.add_argument("--user-account", help="Explicit owner of user systemd units when the collector runs as root")
     for option in ("collector", "registry", "system-unit-dir", "user-unit-dir"):
         snapshot.add_argument(f"--{option}", type=Path)
 
@@ -635,11 +637,32 @@ _SHOW_PROPERTIES = (
 )
 
 
-def _show_unit(systemctl: str, identity: UnitIdentity) -> tuple[dict[str, str], str | None]:
+def _show_unit(systemctl: str, identity: UnitIdentity, *, user_account: str | None = None) -> tuple[dict[str, str], str | None]:
     if "@." in identity.unit:
         return {}, "template_unit_requires_instance"
     command = [systemctl]
     if identity.scope == "user":
+        if os.geteuid() == 0:
+            # systemctl --user from a root-owned collector would query root's
+            # missing user bus, not the account that owns the service.
+            if not user_account:
+                return {}, "user_scope_requires_explicit_account"
+            try:
+                uid = pwd.getpwnam(user_account).pw_uid
+            except KeyError:
+                return {}, "user_scope_account_missing"
+            command = [
+                "runuser", "--user", user_account, "--", "env",
+                f"XDG_RUNTIME_DIR=/run/user/{uid}",
+                f"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{uid}/bus",
+                systemctl,
+            ]
+        elif user_account:
+            try:
+                if os.geteuid() != pwd.getpwnam(user_account).pw_uid:
+                    return {}, "user_scope_account_mismatch"
+            except KeyError:
+                return {}, "user_scope_account_missing"
         command.append("--user")
     command += ["show", identity.unit, "--no-pager"]
     command += [f"--property={name}" for name in _SHOW_PROPERTIES]
@@ -676,6 +699,7 @@ def build_runtime_snapshot(
     systemctl: str = "systemctl",
     system_unit_dir: Path | None = None,
     user_unit_dir: Path | None = None,
+    user_account: str | None = None,
 ) -> dict[str, Any]:
     """Project local systemd state without changing units or journal history."""
     if not __import__("re").fullmatch(r"H[0-9]{4}", host_id) or window_days < 1:
@@ -696,7 +720,11 @@ def build_runtime_snapshot(
     units = []
     try:
         for identity in identities:
-            values, error = _show_unit(systemctl, identity)
+            values, error = (
+                _show_unit(systemctl, identity, user_account=user_account)
+                if identity.scope == "user" and user_account
+                else _show_unit(systemctl, identity)
+            )
             coverage, coverage_reason = ("UNKNOWN", error) if error else ("PASS", None)
             checkpoint = None
             total = success = 0
@@ -719,7 +747,7 @@ def build_runtime_snapshot(
                 coverage, coverage_reason = "UNKNOWN", coverage_reason or "journal_not_imported"
             elif state in {"error"}:
                 coverage, coverage_reason = "UNKNOWN", str(checkpoint[1] or state)
-            elif state in {"first_run", "journal_rotation"}:
+            elif state in {"first_run", "journal_rotation"} and coverage != "UNKNOWN":
                 coverage, coverage_reason = "PARTIAL", str(checkpoint[1] or state)
             klass = _unit_class(identity, values)
             percent = round(success * 100.0 / total, 2) if klass != "daemon" and total else None
