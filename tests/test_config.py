@@ -78,6 +78,34 @@ secondary = ["sshd.service"]
         self.assertTrue(any("absolute" in error for error in errors))
         self.assertTrue(any("unknown configuration key" in error for error in errors))
 
+    def test_health_report_overrides_preserve_validated_absolute_paths(self) -> None:
+        with TemporaryDirectory() as directory:
+            config_path = Path(directory) / "fsm.toml"
+            config_path.write_text(
+                '[services.health_reports."user:grindr-snapshot-health.service"]\n'
+                'path = "/home/daniele/.local/state/grindr-favorites-monitor/snapshot-alert.json"\n'
+                'label = "Snapshot Grindr"\n',
+                encoding="utf-8",
+            )
+            config = load_config(config_path)
+        self.assertEqual(validate_config(config), [])
+        self.assertEqual(
+            config["services"]["health_reports"]["user:grindr-snapshot-health.service"]["label"],
+            "Snapshot Grindr",
+        )
+
+    def test_rejects_invalid_health_report_schema(self) -> None:
+        config = load_config(None)
+        config["services"]["health_reports"] = {
+            "bad": {"path": "relative/report.json", "label": "", "other": "not allowed"},
+            "invalid": {"label": "No path"},
+        }
+        errors = validate_config(config)
+        self.assertTrue(any("bad.path must be an absolute path" in error for error in errors))
+        self.assertTrue(any("bad.label must be a non-empty string" in error for error in errors))
+        self.assertTrue(any("invalid.path must be an absolute path" in error for error in errors))
+        self.assertTrue(any("bad.other" in error for error in errors))
+
     def test_invalid_thresholds_are_reported_and_load_raises(self) -> None:
         config = deepcopy(DEFAULT_CONFIG)
         config["thresholds"]["disk"]["warning_free_percent"] = 4.0
