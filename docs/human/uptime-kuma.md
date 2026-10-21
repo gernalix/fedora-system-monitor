@@ -161,3 +161,12 @@ verificato direttamente i monitor 39-43 tutti `UP`. Due alert rimasti attivi da
 un boot precedente sono stati recuperati senza alterare le soglie: l'OOM era
 riferito a un altro `boot_id`, mentre il filesystem quasi pieno non era più
 montato né osservato. Il browser/JWT non serve per la verifica runtime.
+
+### Resoconti leggibili per i monitor dei servizi
+
+`services.health_reports` può associare a una specifica unità un `path` JSON
+e una `label`. Il producer aggiorna `observed_at` (Unix timestamp), `healthy`
+(booleano) e `message` (testo senza credenziali o dati personali). Il controller
+centrale usa il testo solo se recente: un resoconto mancante o scaduto resta
+DOWN e un messaggio positivo non può nascondere un servizio guasto. Gli altri
+monitor mantengono il comportamento esistente.
