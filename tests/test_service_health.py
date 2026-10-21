@@ -36,6 +36,37 @@ class ServiceHealthTests(unittest.TestCase):
         self.assertEqual([], result)
         sender.assert_not_called()
 
+    @mock.patch('fedora_system_monitor.capsules.service_health.configured_push_keys')
+    @mock.patch('fedora_system_monitor.capsules.service_health.send_named_heartbeat')
+    def test_readable_report_never_masks_failure_or_staleness(self, sender, keys):
+        import json
+        identity = 'user:grindr-snapshot-health.service'
+        keys.return_value = {service_monitor_key(identity)}
+        now = datetime(2026, 10, 19, 1, 0, tzinfo=timezone.utc)
+        config = {'services': {'health_reports': {identity: {'path': '/test/report', 'label': 'Snapshot Grindr'}}}}
+        row = {'device_id': identity, 'timestamp_utc': now.isoformat(),
+               'details_json': '{"active_state":"failed","sub_state":"failed","result":"exit-code"}'}
+        report = {'observed_at': now.timestamp(), 'healthy': True, 'message': 'Chat complete: 78 su 84.'}
+        with mock.patch('fedora_system_monitor.capsules.service_health.Path.read_text', return_value=json.dumps(report)):
+            send_service_heartbeats(config, _DB([row]), now=now)
+        self.assertFalse(sender.call_args.kwargs['healthy'])
+        self.assertEqual(sender.call_args.kwargs['message'], report['message'])
+        report['observed_at'] -= 181
+        with mock.patch('fedora_system_monitor.capsules.service_health.Path.read_text', return_value=json.dumps(report)):
+            send_service_heartbeats(config, _DB([row]), now=now)
+        self.assertFalse(sender.call_args.kwargs['healthy'])
+        self.assertIn('resoconto aggiornato', sender.call_args.kwargs['message'])
+
+    def test_readable_report_configuration_loads_from_toml(self):
+        import tempfile
+        from pathlib import Path
+        from fedora_system_monitor.capsules.config import load_config
+        with tempfile.TemporaryDirectory() as root:
+            p = Path(root) / 'config.toml'
+            p.write_text('[services.health_reports."user:grindr-snapshot-health.service"]\npath="/private/snapshot-alert.json"\nlabel="Snapshot Grindr"\n')
+            config = load_config(p)
+            self.assertIn('user:grindr-snapshot-health.service', config['services']['health_reports'])
+
     def test_monitor_key_is_stable_and_toml_safe(self):
         key = service_monitor_key("user:chrome-codex-switcher.service")
         self.assertEqual(key, service_monitor_key("user:chrome-codex-switcher.service"))

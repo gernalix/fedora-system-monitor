@@ -478,6 +478,14 @@ def validate_config(config: Mapping[str, Any] | object) -> list[str]:
                     f"services.freshness_seconds.{identity} must be a positive number"
                 )
 
+    reports = _value(config, ("services", "health_reports"))
+    if not isinstance(reports, Mapping):
+        errors.append("services.health_reports must be a table")
+    else:
+        for identity, report in reports.items():
+            if not isinstance(report, Mapping) or not isinstance(report.get("path"), str) or not Path(report["path"]).is_absolute() or not isinstance(report.get("label"), str):
+                errors.append("services.health_reports entries require an absolute path and a label")
+
     if not isinstance(config.get("storage"), Mapping):
         errors.append("storage must be a table")
     for key in ("known_labels", "known_model_patterns", "expected_devices", "capacity_overrides", "capacity_alert_exempt_uuids"):
