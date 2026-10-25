@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import closing
-from datetime import datetime
+from datetime import datetime, timezone
 import fcntl
 import json
 import os
@@ -13,6 +13,8 @@ import re
 import sqlite3
 import subprocess
 import sys
+import tempfile
+from urllib.parse import urlsplit
 from typing import Callable
 
 SSH_HELPER = Path("/home/daniele/projects/vm_oracle/scripts/oracle_ssh.sh")
@@ -92,6 +94,124 @@ def fetch_events(cursor: int | None, helper: Path = SSH_HELPER) -> tuple[list[di
         events.append(event)
     events.sort(key=lambda e: e["heartbeat_id"])
     return events, watermark
+
+
+INVENTORY_REFRESH_SECONDS = 24 * 3600
+INVENTORY_RETRY_SECONDS = 3600
+INVENTORY_ATTEMPT_KEY = "kuma_inventory_attempt_utc"
+
+
+def _utc_timestamp(text: str | None) -> datetime | None:
+    if not text:
+        return None
+    try:
+        value = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return value.astimezone(timezone.utc) if value.tzinfo else None
+    except ValueError:
+        return None
+
+
+def fetch_monitor_inventory(helper: Path = SSH_HELPER) -> list[dict]:
+    """Retrieve only bounded monitor metadata; never persist raw URLs or tokens."""
+    sql = "SELECT id,name,type,active,hostname,port,url FROM monitor ORDER BY id"
+    command = 'sudo -n sqlite3 -readonly -json /opt/uptime-kuma/data/kuma.db "' + sql + '"'
+    try:
+        result = subprocess.run([str(helper), command], text=True, capture_output=True,
+                                timeout=35, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError("Kuma inventory source unavailable") from exc
+    if result.returncode or len(result.stdout) > 200_000:
+        raise RuntimeError("Kuma inventory source unavailable or oversized")
+    try:
+        source = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Kuma inventory payload invalid") from exc
+    if not isinstance(source, list) or not 1 <= len(source) <= 500:
+        raise RuntimeError("Kuma inventory count invalid")
+    clean, seen = [], set()
+    for row in source:
+        if not isinstance(row, dict) or not {"id", "name"} <= row.keys():
+            raise RuntimeError("Kuma monitor record invalid")
+        monitor_id = int(row["id"])
+        name = str(row["name"])
+        if monitor_id <= 0 or monitor_id in seen or not 1 <= len(name) <= 256:
+            raise RuntimeError("Kuma monitor identity invalid")
+        seen.add(monitor_id)
+        item = {"id": monitor_id, "name": name}
+        for key in ("type", "active"):
+            if row.get(key) is not None:
+                item[key] = row[key]
+        hostname = row.get("hostname")
+        if hostname and len(str(hostname)) <= 255:
+            item["hostname"] = str(hostname)
+            if row.get("port") is not None and 1 <= int(row["port"]) <= 65535:
+                item["port"] = int(row["port"])
+        if row.get("url"):
+            url = urlsplit(str(row["url"]))
+            if url.scheme.lower() in ("http", "https") and url.hostname:
+                host = url.hostname
+                host = "[" + host + "]" if ":" in host and not host.startswith("[") else host
+                item["url"] = url.scheme.lower() + "://" + host
+                if url.port is not None:
+                    item["url"] += ":" + str(url.port)
+        clean.append(item)
+    return clean
+
+
+def apply_monitor_inventory(rows: list[dict], executable: Path = MEGAVAULT,
+                            registry: Path = REGISTRY) -> None:
+    """Use existing MegaVault writer; never create another service or inventory."""
+    lock_path = Path.home() / ".local/state/megavault/canonical-update.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="kuma-inventory-") as tmp:
+        payload = Path(tmp) / "monitors.json"
+        payload.write_text(json.dumps({"monitors": rows}, ensure_ascii=False))
+        payload.chmod(0o600)
+        with lock_path.open("a+") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+            def owner(*args: str) -> None:
+                run = subprocess.run([sys.executable, str(executable), *args],
+                                     text=True, capture_output=True, timeout=60,
+                                     env=env, check=False)
+                if run.returncode:
+                    raise RuntimeError("MegaVault inventory reconciliation failed")
+            owner("kuma-sync-json", "--source-json", str(payload))
+            with closing(_readonly_db(registry)) as db:
+                status = db.execute("SELECT status FROM operational_inventory_meta "
+                                    "WHERE inventory_key='kuma_monitors'").fetchone()
+                count = db.execute("SELECT count(*) FROM kuma_monitors "
+                                   "WHERE seen_in_last_sync=1").fetchone()[0]
+            if not status or count != len(rows):
+                raise RuntimeError("Kuma inventory readback mismatch")
+            if status[0] == "READY_TO_FINALIZE":
+                owner("kuma-finalize")
+
+
+def refresh_inventory_if_due(state: Path = STATE, registry: Path = REGISTRY,
+                             fetch: Callable[[], list[dict]] = fetch_monitor_inventory,
+                             apply: Callable[[list[dict]], None] = apply_monitor_inventory,
+                             now: datetime | None = None) -> bool:
+    """Daily refresh on the existing incident timer; failed attempts retry hourly."""
+    current = now or datetime.now(timezone.utc)
+    with closing(_readonly_db(registry)) as db:
+        row = db.execute("SELECT last_synced_at FROM operational_inventory_meta "
+                         "WHERE inventory_key='kuma_monitors'").fetchone()
+    synced = _utc_timestamp(row[0]) if row else None
+    if synced and 0 <= (current - synced).total_seconds() < INVENTORY_REFRESH_SECONDS:
+        return False
+    with closing(sqlite3.connect(state, timeout=10)) as db:
+        row = db.execute("SELECT value FROM cursor_state WHERE key=?",
+                         (INVENTORY_ATTEMPT_KEY,)).fetchone()
+        attempted = _utc_timestamp(row[0]) if row else None
+        if attempted and 0 <= (current - attempted).total_seconds() < INVENTORY_RETRY_SECONDS:
+            return False
+        with db:
+            db.execute("INSERT INTO cursor_state(key,value) VALUES(?,?) "
+                       "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                       (INVENTORY_ATTEMPT_KEY, current.isoformat()))
+    apply(fetch())
+    return True
 
 
 def _schema(db: sqlite3.Connection) -> None:
@@ -300,6 +420,13 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     actions = run_once(args.state, dry_run=args.dry_run)
+    if not args.dry_run:
+        try:
+            if refresh_inventory_if_due(args.state):
+                print("KUMA_INVENTORY_SYNC=PASS", file=sys.stderr)
+        except Exception:
+            # A failed inventory refresh must not interrupt incident processing.
+            print("KUMA_INVENTORY_SYNC=RETRY_LATER", file=sys.stderr)
     print(json.dumps({"actions": actions}, ensure_ascii=False, sort_keys=True))
     return 0
 

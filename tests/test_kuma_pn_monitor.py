@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from contextlib import closing
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import sqlite3
@@ -154,6 +155,56 @@ class KumaPnMonitorTests(unittest.TestCase):
         self.tick([hb(100,0)])
         with sqlite3.connect(self.state) as db:
             self.assertEqual(db.execute('select pn_id,incident_id from monitor_checkpoint').fetchone(),('P45',501))
+
+    def test_inventory_daily_refresh_preserves_canonical_owner(self):
+        current = datetime(2026, 10, 26, tzinfo=timezone.utc)
+        with sqlite3.connect(self.state) as db:
+            monitor._schema(db)
+        with sqlite3.connect(self.registry) as db:
+            db.execute("CREATE TABLE operational_inventory_meta(inventory_key TEXT, last_synced_at TEXT)")
+            db.execute("INSERT INTO operational_inventory_meta VALUES('kuma_monitors',NULL)")
+        events = []
+        def apply(rows):
+            events.append(rows)
+            with sqlite3.connect(self.registry) as db:
+                db.execute("UPDATE operational_inventory_meta SET last_synced_at=?",
+                           (current.isoformat(),))
+        kwargs = dict(state=self.state, registry=self.registry,
+                      fetch=lambda: [{"id": 39, "name": "Fedora", "type": "push", "active": 1}],
+                      apply=apply)
+        self.assertTrue(monitor.refresh_inventory_if_due(now=current, **kwargs))
+        self.assertFalse(monitor.refresh_inventory_if_due(now=current + timedelta(hours=1), **kwargs))
+        self.assertEqual(1, len(events))
+        self.assertTrue(monitor.refresh_inventory_if_due(now=current + timedelta(hours=25), **kwargs))
+
+    def test_failed_inventory_attempt_is_hourly_throttled(self):
+        current = datetime(2026, 10, 26, tzinfo=timezone.utc)
+        with sqlite3.connect(self.state) as db:
+            monitor._schema(db)
+        with sqlite3.connect(self.registry) as db:
+            db.execute("CREATE TABLE operational_inventory_meta(inventory_key TEXT, last_synced_at TEXT)")
+            db.execute("INSERT INTO operational_inventory_meta VALUES('kuma_monitors',NULL)")
+        called = []
+        def reject(rows):
+            called.append(True)
+            raise RuntimeError("owner unavailable")
+        kwargs = dict(state=self.state, registry=self.registry,
+                      fetch=lambda: [{"id": 39, "name": "Fedora"}], apply=reject)
+        with self.assertRaisesRegex(RuntimeError, "owner unavailable"):
+            monitor.refresh_inventory_if_due(now=current, **kwargs)
+        self.assertFalse(monitor.refresh_inventory_if_due(now=current + timedelta(minutes=10), **kwargs))
+        self.assertEqual([True], called)
+
+    def test_inventory_strips_url_credentials_and_query(self):
+        remote = [{"id": 5, "name": "API", "type": "http", "active": 1,
+                   "url": "https://user:secret@example.org:8443/a?token=private"}]
+        fake = subprocess.CompletedProcess(["ssh"], 0, json.dumps(remote), "")
+        with patch.object(monitor.subprocess, "run", return_value=fake):
+            rows = monitor.fetch_monitor_inventory(Path("/existing/ssh-helper"))
+        self.assertEqual("https://example.org:8443", rows[0]["url"])
+        self.assertNotIn("secret", json.dumps(rows))
+        self.assertNotIn("private", json.dumps(rows))
+
 
 if __name__ == '__main__':
     unittest.main()
