@@ -9,6 +9,8 @@ import json
 import tomllib
 import urllib.parse
 import urllib.request
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -60,6 +62,17 @@ def _telegram_credentials_path(config: Mapping[str, Any]) -> Path:
 _DEFAULT_KUMA_PATH = Path('/home/daniele/.config/codex/secrets/fedora_system_monitor_uptime_kuma.toml')
 _KUMA_REFERENCE = 'FEDORA_SYSTEM_MONITOR_KUMA_ENV'
 _KUMA_FIELD = 'KUMA_TOML_BASE64'
+_KUMA_SNAPSHOT: ContextVar[dict[str, Any] | None] = ContextVar('kuma_snapshot', default=None)
+
+
+@contextmanager
+def kuma_snapshot():
+    """Use one vault read per collection; discard it when the collection ends."""
+    token = _KUMA_SNAPSHOT.set({})
+    try:
+        yield
+    finally:
+        _KUMA_SNAPSHOT.reset(token)
 
 
 def _vault_kuma_data() -> dict[str, Any]:
@@ -85,7 +98,17 @@ def _vault_kuma_data() -> dict[str, Any]:
 def _kuma_data(config: dict[str, Any]) -> dict[str, Any]:
     path = _credentials_path(config)
     if path == _DEFAULT_KUMA_PATH:
-        return _vault_kuma_data()
+        snapshot = _KUMA_SNAPSHOT.get()
+        if snapshot is None:
+            return _vault_kuma_data()
+        if 'data' not in snapshot and 'failed' not in snapshot:
+            try:
+                snapshot['data'] = _vault_kuma_data()
+            except ValueError:
+                snapshot['failed'] = True
+        if snapshot.get('failed'):
+            raise ValueError('Bitwarden Kuma credentials unavailable')
+        return snapshot['data']
     if path.stat().st_mode & 0o077:
         raise ValueError('credentials file permissions are unsafe')
     return tomllib.loads(path.read_text(encoding='utf-8'))
