@@ -82,3 +82,16 @@ git diff --check
 ```
 
 Versione: `1.3.1`. Attività: `482731`.
+
+### Oracle probe credentials from Bitwarden
+
+The Oracle probe unit requires the matching `fedora-system-monitor-oracle-credentials.service`
+template to finish successfully before `LoadCredential`. The existing Oracle
+`bws-files` runtime decodes only `ORACLE_PUSH_TOML_BASE64` from
+`ORACLE_SYSTEM_MONITOR_PROBE_ENV` into root-private temporary files under `/run`.
+The native parser and endpoint mapping remain unchanged. Each new job start
+refreshes the credential snapshot; jobs already running retain their startup
+credentials. A failed vault read blocks startup, with no fallback to the legacy
+TOML. Install the producer together with the consumer template after registering
+the reference in the Oracle runtime; preserve protected legacy configuration for
+rollback. Do not run probes or send Kuma heartbeats as an installation check.
