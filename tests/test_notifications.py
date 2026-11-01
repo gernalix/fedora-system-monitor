@@ -141,6 +141,41 @@ class NotificationTests(unittest.TestCase):
         self.assertTrue(mocked.call_args.kwargs["up"])
         self.assertEqual(mocked.call_args.kwargs["message"], "storage: collectors complete; active alerts=1")
 
+    def test_default_telegram_uses_vault_and_restores_environment(self) -> None:
+        seen = []
+        def read_vault():
+            self.assertNotIn('TELEGRAM_BOT_TOKEN', os.environ)
+            self.assertNotIn('TELEGRAM_NOTIFY_CONFIG', os.environ)
+            return 'vault-token', 'vault-chat'
+        def send(*args, **kwargs):
+            seen.append((os.environ.get('TELEGRAM_INSERT_BOT_NOISY_BOT_TOKEN'),
+                         os.environ.get('TELEGRAM_INSERT_BOT_NOISY_CHAT_ID')))
+            return 'suppressed'
+        helper = SimpleNamespace(config=SimpleNamespace(get_config=mock.Mock(side_effect=read_vault)),
+                                 load_config_files=mock.Mock(), validate_config=mock.Mock(),
+                                 send_alert=mock.Mock(side_effect=send))
+        with patch.dict(os.environ, {'TELEGRAM_BOT_TOKEN': 'stale',
+                                     'TELEGRAM_NOTIFY_CONFIG': 'old'}, clear=True), \
+                patch.dict(sys.modules, {'telegram_notify': helper}):
+            result = send_telegram_message({}, 'test')
+            self.assertEqual(os.environ['TELEGRAM_BOT_TOKEN'], 'stale')
+            self.assertEqual(os.environ['TELEGRAM_NOTIFY_CONFIG'], 'old')
+            self.assertNotIn('TELEGRAM_INSERT_BOT_NOISY_BOT_TOKEN', os.environ)
+        self.assertEqual(seen, [('vault-token', 'vault-chat')])
+        self.assertEqual(result.status, 'suppressed')
+
+    def test_default_telegram_fails_closed_when_vault_is_unavailable(self) -> None:
+        helper = SimpleNamespace(config=SimpleNamespace(get_config=mock.Mock(side_effect=RuntimeError('private details'))),
+                                 load_config_files=mock.Mock(), validate_config=mock.Mock(),
+                                 send_alert=mock.Mock())
+        with patch.dict(os.environ, {'TELEGRAM_BOT_TOKEN': 'stale'}, clear=True), \
+                patch.dict(sys.modules, {'telegram_notify': helper}):
+            result = send_telegram_message({}, 'test')
+        self.assertFalse(result.delivered)
+        self.assertEqual(result.status, 'RuntimeError')
+        self.assertNotIn('private details', repr(result))
+        helper.send_alert.assert_not_called()
+
     def test_telegram_prefers_systemd_credential_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             credential = Path(temp) / "telegram.env"
