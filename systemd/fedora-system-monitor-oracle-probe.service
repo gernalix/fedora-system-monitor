@@ -1,12 +1,13 @@
 [Unit]
 Description=Central Oracle runtime health probes for Uptime Kuma
-After=network-online.target
+After=network-online.target fedora-system-monitor-oracle-credentials.service
+Requires=fedora-system-monitor-oracle-credentials.service
 Wants=network-online.target
 
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/python3 /usr/local/libexec/fedora-system-monitor-oracle-probe.py --config /etc/fedora-system-monitor/oracle-probe.json
-LoadCredential=oracle_push.toml:/etc/fedora-system-monitor/oracle-probe-push.toml
+LoadCredential=oracle_push.toml:/run/bitwarden-files/ORACLE_SYSTEM_MONITOR_PROBE_ENV--b358045c532f/oracle_push_toml
 StateDirectory=fedora-system-monitor-oracle-probe
 NoNewPrivileges=true
 PrivateTmp=true
