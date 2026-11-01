@@ -49,6 +49,7 @@ from fedora_system_monitor.capsules.kuma_admin import DEFAULT_MONITORS, configur
 from fedora_system_monitor.capsules.notifications import (
     endpoint_key,
     integration_status,
+    kuma_snapshot,
     notify_filesystem_free_changes,
     send_category_heartbeat,
     send_named_heartbeat,
@@ -846,6 +847,11 @@ def _reconcile_megavault_service_runtime(config: dict[str, Any], db: Database) -
 
 
 def _collect_command(args: argparse.Namespace, config: dict[str, Any], db: Database) -> dict[str, Any]:
+    with kuma_snapshot():
+        return _collect_command_with_kuma_snapshot(args, config, db)
+
+
+def _collect_command_with_kuma_snapshot(args: argparse.Namespace, config: dict[str, Any], db: Database) -> dict[str, Any]:
     scopes: list[str]
     if args.scope == "fast":
         scopes = ["minute"]

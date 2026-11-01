@@ -45,8 +45,11 @@ Per i servizi systemd il percorso preferito per i segreti è
 da lì quando presenti, così le unità possono usare `LoadCredential=` o
 `LoadCredentialEncrypted=`. Il percorso predefinito Kuma usa ora `FEDORA_SYSTEM_MONITOR_KUMA_ENV`, campo
 `KUMA_TOML_BASE64`, attraverso il runtime Bitwarden Fedora root o desktop.
-Ogni lettura recupera la versione corrente dal vault, anche nel daemon; un errore
-non riattiva il vecchio file locale. Il TOML conserva categorie e politica di
+Ogni ciclo di raccolta legge il vault una volta e mantiene i campi solo in memoria
+fino alla fine del ciclo; il ciclo successivo usa la versione corrente. Le
+letture fuori dal ciclo, incluse quelle del daemon, recuperano la versione
+corrente a ogni richiesta. Un errore non riattiva il vecchio file locale. Il
+TOML conserva categorie e politica di
 trasporto. I file nativi systemd e i percorsi espliciti diversi dal vecchio
 predefinito restano provider intenzionali e devono essere `0600`.
 La copia precedente resta solo per il ripristino. Il runtime root richiede la

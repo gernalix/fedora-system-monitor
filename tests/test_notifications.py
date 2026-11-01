@@ -76,6 +76,46 @@ class NotificationTests(unittest.TestCase):
             self.assertEqual(vault.call_count, 2)
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_collection_snapshot_reads_once_then_refreshes_next_cycle(self) -> None:
+        from fedora_system_monitor.capsules import notifications as module
+        first = {'push': {'system': 'https://example.test/first'}}
+        second = {'push': {'system': 'https://example.test/second'}}
+        with patch.object(module, '_vault_kuma_data', side_effect=[first, second]) as vault:
+            with module.kuma_snapshot():
+                for _ in range(27):
+                    self.assertEqual(module._load_endpoints({})['system'], 'https://example.test/first')
+                self.assertEqual(vault.call_count, 1)
+            with module.kuma_snapshot():
+                self.assertEqual(module._load_endpoints({})['system'], 'https://example.test/second')
+            self.assertEqual(vault.call_count, 2)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_collection_snapshot_does_not_retry_or_fall_back_after_vault_failure(self) -> None:
+        from fedora_system_monitor.capsules import notifications as module
+        with patch.object(module, '_vault_kuma_data', side_effect=[ValueError('unavailable'),
+                          {'push': {'system': 'https://example.test/new'}}]) as vault:
+            with module.kuma_snapshot(), patch.object(Path, 'read_text', side_effect=AssertionError('local file read')):
+                self.assertEqual(module._load_endpoints({}), {})
+                self.assertEqual(module._load_endpoints({}), {})
+                self.assertEqual(vault.call_count, 1)
+            with module.kuma_snapshot():
+                self.assertEqual(module._load_endpoints({})['system'], 'https://example.test/new')
+            self.assertEqual(vault.call_count, 2)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_collector_opens_and_closes_snapshot(self) -> None:
+        from fedora_system_monitor.capsules import notifications as module
+        from fedora_system_monitor.capsules.runtime import coordinator
+        def collect(*args):
+            return [module._load_endpoints({}), module._load_endpoints({})]
+        with patch.object(module, '_vault_kuma_data', return_value={'push': {'system': 'https://example.test/x'}}) as vault, \
+             patch.object(coordinator, '_collect_command_with_kuma_snapshot', side_effect=collect):
+            self.assertEqual(len(coordinator._collect_command(None, {}, None)), 2)
+            self.assertEqual(vault.call_count, 1)
+            module._load_endpoints({})
+            self.assertEqual(vault.call_count, 2)
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_default_kuma_never_falls_back_when_vault_fails(self) -> None:
         from fedora_system_monitor.capsules import notifications as module
         with patch.object(module, '_vault_kuma_data', side_effect=ValueError('unavailable')):
