@@ -43,10 +43,14 @@ La configurazione operativa è `/etc/fedora-system-monitor/config.toml`.
 Per i servizi systemd il percorso preferito per i segreti è
 `$CREDENTIALS_DIRECTORY`: `uptime-kuma.toml` e `telegram.env` vengono letti
 da lì quando presenti, così le unità possono usare `LoadCredential=` o
-`LoadCredentialEncrypted=`. I vecchi file
-`/home/daniele/.config/codex/secrets/fedora_system_monitor_uptime_kuma.toml` e
-`/home/daniele/.config/codex/secrets/telegram.env` restano fallback di
-compatibilità durante la migrazione e devono essere `0600`.
+`LoadCredentialEncrypted=`. Il percorso predefinito Kuma usa ora `FEDORA_SYSTEM_MONITOR_KUMA_ENV`, campo
+`KUMA_TOML_BASE64`, attraverso il runtime Bitwarden Fedora root o desktop.
+Ogni lettura recupera la versione corrente dal vault, anche nel daemon; un errore
+non riattiva il vecchio file locale. Il TOML conserva categorie e politica di
+trasporto. I file nativi systemd e i percorsi espliciti diversi dal vecchio
+predefinito restano provider intenzionali e devono essere `0600`.
+La copia precedente resta solo per il ripristino. Il runtime root richiede la
+registrazione della stessa entry nella propria mappa dei riferimenti.
 L’invio Telegram passa esclusivamente dal helper condiviso `telegram_notify.py`,
 installato come pacchetto Python `telegram_notify`.
 Il timer di context indexing correla inoltre il DB locale con il mirror ActivityWatch e produce timeline/bundle incidenti bounded; la pubblicazione Git del repo derivato è opzionale e fail-closed. Vedere [Context Index](docs/human/context-index.md).

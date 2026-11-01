@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import os
+import base64
+import importlib.util
+import json
 import tomllib
 import urllib.parse
 import urllib.request
@@ -54,25 +57,51 @@ def _telegram_credentials_path(config: Mapping[str, Any]) -> Path:
     )
 
 
+_DEFAULT_KUMA_PATH = Path('/home/daniele/.config/codex/secrets/fedora_system_monitor_uptime_kuma.toml')
+_KUMA_REFERENCE = 'FEDORA_SYSTEM_MONITOR_KUMA_ENV'
+_KUMA_FIELD = 'KUMA_TOML_BASE64'
+
+
+def _vault_kuma_data() -> dict[str, Any]:
+    """Use the installed host runtime; never return SDK diagnostics or cache locally."""
+    try:
+        base = Path('/usr/local/lib/bitwarden-fedora') if os.geteuid() == 0 else Path.home() / '.local/lib/bitwarden'
+        config_path = Path('/etc/bws-fedora/references.json') if os.geteuid() == 0 else Path.home() / '.config/bws/references.json'
+        spec = importlib.util.spec_from_file_location('fsm_kuma_bws_runtime', base / 'credential_runtime.py')
+        if spec is None or spec.loader is None:
+            raise ValueError('runtime unavailable')
+        runtime = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(runtime)
+        config = json.loads(config_path.read_text())
+        values = runtime.load_reference(config, _KUMA_REFERENCE, {_KUMA_FIELD})
+        content = base64.b64decode(values[_KUMA_FIELD], validate=True)
+        if not content or len(content) > 16384:
+            raise ValueError('invalid credential size')
+        return tomllib.loads(content.decode('utf-8'))
+    except Exception:
+        raise ValueError('Bitwarden Kuma credentials unavailable') from None
+
+
+def _kuma_data(config: dict[str, Any]) -> dict[str, Any]:
+    path = _credentials_path(config)
+    if path == _DEFAULT_KUMA_PATH:
+        return _vault_kuma_data()
+    if path.stat().st_mode & 0o077:
+        raise ValueError('credentials file permissions are unsafe')
+    return tomllib.loads(path.read_text(encoding='utf-8'))
+
+
 def integration_status(config: dict[str, Any]) -> dict[str, Any]:
     """Return configuration state without returning any endpoint value."""
-    path = _credentials_path(config)
-    if not path.is_file():
-        return {"configured": False, "secure": False, "categories": [], "reason": "credentials file absent"}
     try:
-        if path.stat().st_mode & 0o077:
-            return {"configured": False, "secure": False, "categories": [], "reason": "credentials file permissions are unsafe"}
-        data = tomllib.loads(path.read_text(encoding="utf-8"))
+        data = _kuma_data(config)
     except PermissionError:
         return {
-            "configured": None,
-            "secure": None,
-            "protected": True,
-            "categories": [],
-            "reason": "credentials file is root-only; use sudo to verify integration",
+            "configured": None, "secure": None, "protected": True,
+            "categories": [], "reason": "credentials are root-only; use sudo to verify integration",
         }
-    except (OSError, tomllib.TOMLDecodeError):
-        return {"configured": False, "secure": False, "categories": [], "reason": "credentials file unreadable"}
+    except (OSError, ValueError):
+        return {"configured": False, "secure": False, "categories": [], "reason": "credentials unavailable"}
     endpoints = data.get("push", {}) if isinstance(data, dict) else {}
     allow_http = bool(data.get("transport", {}).get("allow_insecure_http", False)) if isinstance(data, dict) else False
     configured = sorted(key for key, value in endpoints.items() if isinstance(value, str) and value.strip())
@@ -87,13 +116,9 @@ def integration_status(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def _load_endpoints(config: dict[str, Any]) -> dict[str, str]:
-    path = _credentials_path(config)
     try:
-        mode = path.stat().st_mode & 0o777
-        if mode & 0o077:
-            return {}
-        data = tomllib.loads(path.read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError):
+        data = _kuma_data(config)
+    except (OSError, ValueError):
         return {}
     endpoints = data.get("push", {}) if isinstance(data, dict) else {}
     allow_http = bool(data.get("transport", {}).get("allow_insecure_http", False)) if isinstance(data, dict) else False

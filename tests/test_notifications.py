@@ -64,6 +64,54 @@ class NotificationTests(unittest.TestCase):
             config = {"notifications": {"uptime_kuma_credentials": str(path)}}
             self.assertFalse(integration_status(config)["configured"])
 
+    @patch.dict(os.environ, {}, clear=True)
+    def test_default_kuma_rotates_without_process_restart(self) -> None:
+        from fedora_system_monitor.capsules import notifications as module
+        with patch.object(module, '_vault_kuma_data', side_effect=[
+            {'push': {'system': 'https://example.test/first'}},
+            {'push': {'system': 'https://example.test/second'}},
+        ]) as vault:
+            self.assertEqual(module._load_endpoints({})['system'], 'https://example.test/first')
+            self.assertEqual(module._load_endpoints({})['system'], 'https://example.test/second')
+            self.assertEqual(vault.call_count, 2)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_default_kuma_never_falls_back_when_vault_fails(self) -> None:
+        from fedora_system_monitor.capsules import notifications as module
+        with patch.object(module, '_vault_kuma_data', side_effect=ValueError('unavailable')):
+            with patch.object(Path, 'read_text', side_effect=AssertionError('local file read')):
+                self.assertEqual(module._load_endpoints({}), {})
+                self.assertFalse(integration_status({})['configured'])
+
+    def test_kuma_vault_uses_selected_field_and_host_runtime(self) -> None:
+        import base64
+        from fedora_system_monitor.capsules import notifications as module
+        for uid in (0, 1000):
+            runtime = SimpleNamespace(load_reference=mock.Mock(return_value={
+                'KUMA_TOML_BASE64': base64.b64encode(b'[push]\nsystem="https://example.test/current"\n').decode()
+            }))
+            loader = SimpleNamespace(exec_module=mock.Mock())
+            spec = SimpleNamespace(loader=loader)
+            with self.subTest(uid=uid), patch.object(module.os, 'geteuid', return_value=uid), \
+                 patch.object(module.importlib.util, 'spec_from_file_location', return_value=spec) as get_spec, \
+                 patch.object(module.importlib.util, 'module_from_spec', return_value=runtime), \
+                 patch.object(Path, 'read_text', return_value='{"references":{}}'):
+                self.assertIn('system', module._vault_kuma_data()['push'])
+                runtime.load_reference.assert_called_once_with(
+                    {'references': {}}, 'FEDORA_SYSTEM_MONITOR_KUMA_ENV', {'KUMA_TOML_BASE64'})
+                expected = Path('/usr/local/lib/bitwarden-fedora') if uid == 0 else Path.home() / '.local/lib/bitwarden'
+                self.assertEqual(get_spec.call_args.args[1], expected / 'credential_runtime.py')
+
+    def test_native_kuma_file_precedes_default_vault(self) -> None:
+        from fedora_system_monitor.capsules import notifications as module
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / 'uptime-kuma.toml'
+            path.write_text('[push]\nsystem="https://example.test/native"\n')
+            path.chmod(0o600)
+            with patch.dict(os.environ, {'CREDENTIALS_DIRECTORY': temp}), \
+                 patch.object(module, '_vault_kuma_data', side_effect=AssertionError('unexpected vault')):
+                self.assertEqual(module._load_endpoints({})['system'], 'https://example.test/native')
+
     def test_endpoint_routing(self) -> None:
         self.assertEqual(endpoint_key("filesystem"), "storage")
         self.assertEqual(endpoint_key("service"), "services")
