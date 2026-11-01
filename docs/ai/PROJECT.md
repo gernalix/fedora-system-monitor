@@ -38,6 +38,7 @@ ARCH.database=All writes use transactions and every record contains UTC and Euro
 ARCH.alerting=Alert signals use persistent state, duration gates, hysteresis, cooldown, deduplication, recovery, and endpoint aggregation
 ARCH.notifications=Five Kuma category endpoints receive transitions and bounded heartbeats;Telegram receives cumulative per-filesystem free-space deltas at least 1GiB
 ARCH.telegram_transport=Import top-level telegram_notify package exposed by shared telegram_notify.py compatibility layer;do not implement direct Telegram HTTP in this project
+ARCH.telegram_credentials=Historical default path selects Fedora Bitwarden runtime at each filesystem alert;selected noisy token and destination are used only for that alert;vault failure does not interrupt collection or fall back to the old file;explicit custom files and native systemd credentials retain their own provider
 ARCH.observability=Dashboard,timeline,trends,service history,and Prometheus reuse bounded read-only reporting APIs over the existing database
 ARCH.privacy=No traffic content,browser data,arbitrary process arguments,remote MAC addresses,credentials,or personal file contents are stored;only bounded argv for fixed collector-owned diagnostics is allowed
 FLOW.minute=fast timer runs minute collection including composite memory pressure and conditionally overdue five-minute and fifteen-minute scopes in one wake-up;five-minute scope evaluates Telegram free-space deltas

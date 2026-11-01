@@ -131,13 +131,18 @@ def send_telegram_message(
     config: Mapping[str, Any], message: str, *, event_key: str = "filesystem", severity: str = "info"
 ) -> NotificationResult:
     credentials_path = _telegram_credentials_path(config)
+    # The historical shared file is no longer authoritative. Other explicitly
+    # configured files and native systemd credentials retain their own provider.
+    use_vault = credentials_path == Path('/home/daniele/.config/codex/secrets/telegram.env')
     try:
-        if credentials_path.stat().st_mode & 0o077:
+        if not use_vault and credentials_path.stat().st_mode & 0o077:
             return NotificationResult("telegram", "filesystem", False, False, "not configured")
     except OSError:
         return NotificationResult("telegram", "filesystem", False, False, "not configured")
-    previous_config = os.environ.get("TELEGRAM_NOTIFY_CONFIG")
-    os.environ["TELEGRAM_NOTIFY_CONFIG"] = str(credentials_path)
+    names = ("TELEGRAM_NOTIFY_CONFIG", "CREDENTIALS_DIRECTORY", "TELEGRAM_INSERT_BOT_NOISY_BOT_TOKEN",
+             "NOISY_TELEGRAM_BOT_TOKEN", "TELEGRAM_BOT_TOKEN", "TELEGRAM_INSERT_BOT_NOISY_CHAT_ID",
+             "NOISY_TELEGRAM_CHAT_ID", "TELEGRAM_CHAT_ID")
+    saved = {name: os.environ.get(name) for name in names}
     try:
         import telegram_notify
 
@@ -146,6 +151,14 @@ def send_telegram_message(
             return NotificationResult(
                 "telegram", "filesystem", False, False, "shared alert policy unavailable"
             )
+        if use_vault:
+            for name in names:
+                os.environ.pop(name, None)
+            token, chat_id = telegram_notify.config.get_config()
+            os.environ["TELEGRAM_INSERT_BOT_NOISY_BOT_TOKEN"] = token
+            os.environ["TELEGRAM_INSERT_BOT_NOISY_CHAT_ID"] = chat_id
+        else:
+            os.environ["TELEGRAM_NOTIFY_CONFIG"] = str(credentials_path)
         telegram_notify.load_config_files()
         telegram_notify.validate_config()
         state_directory = os.environ.get("STATE_DIRECTORY")
@@ -163,10 +176,11 @@ def send_telegram_message(
         accepted = False
         status = exc.__class__.__name__
     finally:
-        if previous_config is None:
-            os.environ.pop("TELEGRAM_NOTIFY_CONFIG", None)
-        else:
-            os.environ["TELEGRAM_NOTIFY_CONFIG"] = previous_config
+        for name, value in saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
     return NotificationResult(
         "telegram",
         "filesystem",
