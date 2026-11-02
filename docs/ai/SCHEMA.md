@@ -1,4 +1,4 @@
-META.schema_version=4
+META.schema_version=6
 META.engine=SQLite
 META.path=/var/lib/fedora-system-monitor/monitor.sqlite3
 DB.pragma=journal_mode WAL
