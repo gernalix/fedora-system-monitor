@@ -1338,7 +1338,8 @@ def main(argv: list[str] | None = None) -> int:
         print("Collector config permissions are too broad.", file=sys.stderr)
         return 2
     try:
-        config = load_env(config_path)
+        from telegram_api_credentials import with_vault_api
+        config = with_vault_api(load_env(config_path))
         if args.command == "discover":
             return asyncio.run(run_discover(config))
         if args.command == "watch":
