@@ -73,3 +73,15 @@ FEATURE.resource_rescue=Existing events daemon PSI/adaptive thread; user-owned e
 OPS.resource_rescue=fedora-system-monitor resource-rescue status --json
 LINK.resource_rescue=docs/human/resource-rescue.md
 FEATURE.chrome_rescue=Own least-privilege extension panel; Stable per-tab CPU/RSS/I/O unavailable; explicit confirmed tabs.discard/remove; one-message capabilities-only native host; manual Chrome UI activation required
+
+## Telegram archive API credentials
+
+`telegram_history_collector.py` and `telegram_autodelete_archiver.py` retrieve
+only `TELEGRAM_API_ID` and `TELEGRAM_API_HASH` from `FEDORA_TELEGRAM_API_ENV`
+through `bws-credential` at each process start, before creating a Telethon client.
+Deploy `scripts/telegram_api_credentials.py` alongside both archive scripts.
+Vault failure stops execution; API values in old config files are ignored.
+The remaining peer/archive paths and authenticated session files retain their
+native custody. Existing watchers retain their startup snapshot until a normal
+restart. Disabled timers stay disabled; verification must not initiate login,
+collect chat data or send messages. Fedora desktop keyring must be unlocked.

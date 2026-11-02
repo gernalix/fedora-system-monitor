@@ -339,7 +339,8 @@ def main(argv: list[str] | None = None) -> int:
         print("Collector config is missing.", file=sys.stderr)
         return 2
     try:
-        config = load_env(config_path)
+        from telegram_api_credentials import with_vault_api
+        config = with_vault_api(load_env(config_path))
         if config_path.stat().st_mode & 0o077:
             raise PermissionError("collector config permissions are too broad")
         required = ("TELEGRAM_API_ID", "TELEGRAM_API_HASH", "TELEGRAM_CHAT", "SESSION_FILE", "DATA_REPO")
