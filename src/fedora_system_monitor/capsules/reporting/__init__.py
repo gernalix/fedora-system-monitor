@@ -468,7 +468,8 @@ def render(data: Any, *, output_format: str = "text") -> str:
         fields = sorted({key for row in flattened for key in row})
         buffer = io.StringIO()
         writer = csv.DictWriter(buffer, fieldnames=fields)
-        writer.writerow({key: _csv_cell(key) for key in fields})
+        # Keep formula protection injective for already-quoted column names.
+        writer.writerow({key: "'" + key if key.startswith("'") else _csv_cell(key) for key in fields})
         writer.writerows({key: _csv_cell(value) for key, value in row.items()} for row in flattened)
         return buffer.getvalue().rstrip()
     return _render_text(sanitized)

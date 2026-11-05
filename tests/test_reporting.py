@@ -63,6 +63,18 @@ class ReportingTests(unittest.TestCase):
                 rows = list(csv.reader(io.StringIO(render([{value: value}], output_format="csv"))))
                 self.assertEqual(rows, [["'" + value], ["'" + value]])
 
+    def test_csv_headers_remain_unique_and_keep_their_values(self) -> None:
+        data = {"=x": "first", "'=x": "second", "''=x": "third",
+                "'ordinary": "fourth", "''ordinary": "fifth",
+                " \t=x": "sixth", "' \t=x": "seventh"}
+        output = render(data, output_format="csv")
+        reader = csv.DictReader(io.StringIO(output))
+        self.assertEqual(len(set(reader.fieldnames or [])), len(data))
+        self.assertEqual(next(reader), {"'=x": "first", "''=x": "second", "'''=x": "third",
+                                        "''ordinary": "fourth", "'''ordinary": "fifth",
+                                        "' \t=x": "sixth", "'' \t=x": "seventh"})
+        self.assertEqual(json.loads(render(data, output_format="json")), data)
+
     def test_csv_preserves_numbers_and_other_formats(self) -> None:
         data = {"label": "\t=1+1", "negative": -4.5, "positive": 2, "none": None, "ordinary": "disk"}
         rows = list(csv.DictReader(io.StringIO(render(data, output_format="csv"))))
