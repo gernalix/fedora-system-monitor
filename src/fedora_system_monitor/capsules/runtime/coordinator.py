@@ -17,7 +17,7 @@ from typing import Any, Iterable
 from zoneinfo import ZoneInfo
 
 from fedora_system_monitor import __version__
-from fedora_system_monitor.capsules.alerting import AlertSignal, evaluate_event_alerts, evaluate_metric_alerts
+from fedora_system_monitor.capsules.alerting import AlertSignal, evaluate_event_alerts, evaluate_metric_alerts, storage_alert_ignored
 from fedora_system_monitor.capsules.collectors import CADENCE_SECONDS, collect_scope
 from fedora_system_monitor.capsules.command import (
     LockUnavailable,
@@ -241,6 +241,8 @@ def _flush_transition_notifications(
 def _persist_signals(db: Database, signals: Iterable[AlertSignal], config: dict[str, Any]) -> list[AlertSignal]:
     transitions: list[AlertSignal] = []
     for signal in signals:
+        if signal.active and storage_alert_ignored(signal.category, signal.details or {}, config):
+            continue
         if signal.active:
             _, is_transition = db.open_alert_transition(
                 signal.key,
@@ -424,6 +426,23 @@ def _derived_recoveries(
             for row in io_rows
         )
     if collector_healthy:
+        if (config or {}).get("storage", {}).get("ignore_alert_mountpoints"):
+            ignored_rows = db.query(
+                "SELECT alert_key,category,name,severity,device_id,details_json FROM alerts "
+                "WHERE status='active' AND category IN ('hardware','storage','filesystem')"
+            )
+            for row in ignored_rows:
+                try:
+                    details = json.loads(row.get("details_json") or "{}")
+                except json.JSONDecodeError:
+                    continue
+                if storage_alert_ignored(row["category"], details, config or {}):
+                    recoveries.append(AlertSignal(
+                        key=row["alert_key"], category=row["category"], name=row["name"], severity=row["severity"],
+                        active=False, message="mount point excluded by operator configuration",
+                        source="configured_exclusion", device_id=row["device_id"] or "host",
+                        details={"recovery_source": "configured_mountpoint_exclusion", "mount_point": details["mount_point"]},
+                    ))
         unsafe_rows = db.query(
             "SELECT alert_key,category,name,severity,source,device_id,details_json FROM alerts "
             "WHERE status='active' AND name='unsafe_device_removal'"
@@ -437,11 +456,18 @@ def _derived_recoveries(
             if not mount_point:
                 continue
             mounted = run_command(
-                ["findmnt", "--json", "--target", mount_point],
+                ["findmnt", "--json", "--mountpoint", mount_point, "--output", "TARGET"],
                 timeout=4,
                 max_output=64_000,
             )
-            if mounted.ok:
+            try:
+                exact_mount = mounted.ok and any(
+                    item.get("target") == mount_point
+                    for item in json.loads(mounted.stdout).get("filesystems", [])
+                )
+            except (ValueError, TypeError, AttributeError):
+                exact_mount = False
+            if exact_mount:
                 recoveries.append(
                     AlertSignal(
                         key=row["alert_key"],

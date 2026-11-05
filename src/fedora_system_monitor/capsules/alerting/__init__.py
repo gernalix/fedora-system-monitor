@@ -310,6 +310,14 @@ def evaluate_metric_alerts(
     return output
 
 
+def storage_alert_ignored(category: str, details: dict[str, Any], config: dict[str, Any]) -> bool:
+    """Exclude only alerts attributable to an explicitly configured mount point."""
+    if category not in {"hardware", "storage", "filesystem"}:
+        return False
+    mount_point = details.get("mount_point")
+    return bool(mount_point and mount_point in config.get("storage", {}).get("ignore_alert_mountpoints", []))
+
+
 def evaluate_event_alerts(events: Iterable[dict[str, Any]]) -> list[AlertSignal]:
     """Turn critical point events into deduplicated active alerts."""
     alert_names = {
