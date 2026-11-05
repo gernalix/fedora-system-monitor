@@ -364,7 +364,7 @@ class AppTests(unittest.TestCase):
                 )
                 with patch(
                     "fedora_system_monitor.capsules.runtime.coordinator.run_command",
-                    return_value=Namespace(ok=True),
+                    return_value=Namespace(ok=True,stdout=json.dumps({"filesystems":[{"target":"/run/media/daniele/09FA16D309FA16D3"}]})),
                 ):
                     recoveries = _derived_recoveries(
                         database,

@@ -50,6 +50,8 @@ name_patterns = ["backup", "adb", "kuma", "megavault", "monitor"]
 "amici-fb.service" = 129600
 
 [storage]
+# Exact mount-point alert exclusions; events and metrics are still retained.
+ignore_alert_mountpoints = []
 known_labels = ["Ventoy", "VTOYEFI", "VEEAMRE", "Seagate Expansion Drive"]
 known_model_patterns = ["Samsung Portable SSD T7", "Seagate"]
 small_filesystem_max_gib = 5.0

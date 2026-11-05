@@ -121,3 +121,14 @@ Anche la tabella dei mount corrente deve confermare che quell’UUID è
 scrivibile. Un nome sdX riutilizzato, il disco assente o un registro silenzioso
 non bastano. La storia dell’incidente resta conservata; il recupero dello
 stato di mount non certifica l’integrità di tutti i dati o del backup.
+
+## Escludere VEEAMRE dagli allarmi
+
+In `[storage]`, `ignore_alert_mountpoints = ["/run/media/daniele/VEEAMRE"]`
+esclude gli allarmi attribuibili a quel punto di mount, sia periodici sia
+da eventi. Gli eventi e le metriche restano conservati. Gli allarmi già
+attivi vengono chiusi con motivo `configured_mountpoint_exclusion`. Il
+valore predefinito è vuoto; gli altri dischi e gli errori kernel senza
+un’attribuzione certa al punto escluso conservano le proprie segnalazioni.
+La riconciliazione delle rimozioni non sicure richiede un mount esatto:
+un filesystem padre restituito da `findmnt --target` non prova il recupero.
