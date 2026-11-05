@@ -16,7 +16,7 @@ SPEC.loader.exec_module(reconcile_smartd)
 
 
 class SmartdReconcileTests(unittest.TestCase):
-    def test_t7_by_id_is_monitored_before_devicescan_and_reconcile_is_idempotent(self) -> None:
+    def test_t7_by_id_is_ignored_before_devicescan_and_reconcile_is_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             config = root / "smartd.conf"
@@ -54,7 +54,7 @@ class SmartdReconcileTests(unittest.TestCase):
             self.assertFalse(second["changed"])
             self.assertEqual(text, config.read_text(encoding="utf-8"))
 
-    def test_managed_ignore_is_migrated_and_retained_when_drive_is_absent(self) -> None:
+    def test_legacy_probe_is_migrated_to_ignore_and_retained_when_drive_absent(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             config = root / "smartd.conf"
@@ -64,7 +64,7 @@ class SmartdReconcileTests(unittest.TestCase):
             stored = by_id / "usb-Samsung_PSSD_T7_Shield_SERIAL-0:0"
             config.write_text(
                 f"{reconcile_smartd.BEGIN}\n"
-                f"{stored} -d ignore\n"
+                f"{stored} -d sntasmedia -d removable -H -m root -M exec /usr/libexec/smartmontools/smartdnotify\n"
                 f"{reconcile_smartd.END}\n"
                 "DEVICESCAN -H\n",
                 encoding="utf-8",
@@ -81,7 +81,7 @@ class SmartdReconcileTests(unittest.TestCase):
                 f"{stored} {reconcile_smartd.T7_DIRECTIVES}",
                 config.read_text(encoding="utf-8"),
             )
-            self.assertNotIn("-d ignore", config.read_text(encoding="utf-8"))
+            self.assertNotIn("-d sntasmedia", config.read_text(encoding="utf-8"))
 
     def test_t7_first_seen_after_install_is_added_on_reconnect(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

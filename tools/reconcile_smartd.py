@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Monitor the T7 through its stable by-id path and ASMedia bridge type."""
+"""Exclude the T7 from automated SMART probing while preserving other disks."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ import tempfile
 BEGIN = "# BEGIN fedora-system-monitor managed SMART exclusions"
 END = "# END fedora-system-monitor managed SMART exclusions"
 DEFAULT_GLOBS = ("usb-Samsung_PSSD_T7_Shield_*-0:0",)
-T7_DIRECTIVES = "-d sntasmedia -d removable -H -m root -M exec /usr/libexec/smartmontools/smartdnotify"
+T7_DIRECTIVES = "-d ignore"
 
 
 def discover_paths(by_id_root: Path, patterns: tuple[str, ...]) -> list[str]:
