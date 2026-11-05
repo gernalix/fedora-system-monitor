@@ -111,3 +111,13 @@ L’unità Prometheus è intenzionalmente disabilitata per default.
 L’assenza di sensori o strumenti è tollerata. SMART dettagliato è giornaliero e
 la lettura oraria evita di svegliare dischi meccanici inattivi. Non eseguire
 `sensors-detect` in modo automatico o invasivo.
+
+## Allarme filesystem in sola lettura dopo una riconnessione
+
+Il collector a cinque minuti riconcilia entrambi gli allarmi kernel storici
+solo se il registro dello stesso avvio associa l’incidente al successivo
+smontaggio ext4 con UUID e registra poi un mount dello stesso UUID in r/w.
+Anche la tabella dei mount corrente deve confermare che quell’UUID è
+scrivibile. Un nome sdX riutilizzato, il disco assente o un registro silenzioso
+non bastano. La storia dell’incidente resta conservata; il recupero dello
+stato di mount non certifica l’integrità di tutti i dati o del backup.

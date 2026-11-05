@@ -368,6 +368,8 @@ def _derived_recoveries(
                         )
                     )
     if scope == "five_minute" and collector_healthy:
+        from .filesystem_recovery import readonly_recoveries
+        recoveries.extend(readonly_recoveries(db))
         observed_filesystems = {
             str(metric.get("device_id") or "")
             for metric in metrics
