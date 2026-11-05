@@ -104,6 +104,7 @@ class JournalClassificationTests(unittest.TestCase):
             {
                 "MESSAGE_ID": "fc2e22bc6ee647b6b90729ab34a250b1",
                 "SYSLOG_IDENTIFIER": "systemd-coredump",
+                "_SYSTEMD_UNIT": "systemd-coredump@42-1000-0.service",
                 "COREDUMP_EXE": "/home/daniele/bin/example",
                 "COREDUMP_SIGNAL_NAME": "SIGSEGV",
                 "COREDUMP_UNIT": "example.service",
@@ -143,6 +144,7 @@ class JournalClassificationTests(unittest.TestCase):
             {
                 "MESSAGE_ID": "fc2e22bc6ee647b6b90729ab34a250b1",
                 "SYSLOG_IDENTIFIER": "systemd-coredump",
+                "_SYSTEMD_UNIT": "systemd-coredump@42-1000-0.service",
                 "COREDUMP_EXE": "/usr/bin/gnome-shell",
                 "COREDUMP_SIGNAL_NAME": "SIGSEGV",
                 "_BOOT_ID": "boot-graphics",
@@ -194,6 +196,71 @@ class JournalClassificationTests(unittest.TestCase):
         assert vpn is not None
         self.assertEqual(vpn["name"], "vpn_connected")
         self.assertNotIn("Private profile", json.dumps(vpn))
+
+
+class JournalProvenanceTests(unittest.TestCase):
+    config = {"monitor": {"operator_user": "fixture-operator"}}
+
+    def test_name_only_and_unrelated_users_cannot_forge_any_producer(self):
+        records = [
+            {"SYSLOG_IDENTIFIER": "systemd", "MESSAGE": "firewalld.service: Failed with result 'exit-code'."},
+            {"SYSLOG_IDENTIFIER": "systemd-journald", "MESSAGE": "Journal file /tmp/x uncleanly shut down, renaming and replacing."},
+            {"SYSLOG_IDENTIFIER": "systemd-sleep", "MESSAGE": "Performing sleep operation 'suspend'..."},
+            {"SYSLOG_IDENTIFIER": "smartd", "MESSAGE": "Device: /dev/sdd [USB NVMe ASMedia], failed to read NVMe SMART/Health Information"},
+            {"SYSLOG_IDENTIFIER": "systemd-coredump", "MESSAGE_ID": eventing._COREDUMP_MESSAGE_ID, "COREDUMP_EXE": "/usr/bin/gnome-shell"},
+            {"SYSLOG_IDENTIFIER": "gnome-shell", "MESSAGE": "gnome-shell terminated by signal"},
+        ]
+        with patch("fedora_system_monitor.capsules.journal_provenance.operator_uid", return_value=1000):
+            for record in records:
+                for metadata in ({}, {"_UID": "1001", "_COMM": record["SYSLOG_IDENTIFIER"]}):
+                    with self.subTest(record=record, metadata=metadata):
+                        self.assertIsNone(classify_journal(dict(record, **metadata), self.config))
+
+    def test_real_sources_survive_without_syslog_identifiers(self):
+        records = [
+            ({"_PID": "1", "_UID": "0", "MESSAGE": "firewalld.service: Failed with result 'exit-code'."}, "systemd_unit_failed"),
+            ({"_SYSTEMD_UNIT": "systemd-journald.service", "MESSAGE": "Journal file /tmp/x uncleanly shut down, renaming and replacing."}, "unclean_shutdown_detected"),
+            ({"_SYSTEMD_UNIT": "systemd-suspend.service", "MESSAGE": "Performing sleep operation 'suspend'..."}, "system_suspend"),
+            ({"_SYSTEMD_UNIT": "systemd-coredump@42-12-0.service", "_UID": "981", "MESSAGE_ID": eventing._COREDUMP_MESSAGE_ID, "COREDUMP_EXE": "/usr/bin/fixture"}, "process_coredump"),
+        ]
+        for record, name in records:
+            with self.subTest(record=record):
+                event = classify_journal(record, self.config)
+                self.assertIsNotNone(event)
+                self.assertEqual(event["name"], name)
+
+    def test_operator_executable_identity_and_manager_are_required(self):
+        shell = {"_UID": "1000", "_EXE": "/usr/bin/gnome-shell", "MESSAGE": "gnome-shell terminated by signal"}
+        manager = {"_UID": "1000", "_EXE": "/usr/lib/systemd/systemd", "_SYSTEMD_UNIT": "user@1000.service", "MESSAGE": "fixture.service: Failed with result 'exit-code'."}
+        with patch("fedora_system_monitor.capsules.journal_provenance.operator_uid", return_value=1000):
+            for record in (shell, manager):
+                self.assertIsNotNone(classify_journal(record, self.config))
+                self.assertIsNone(classify_journal(dict(record, _UID="1001"), self.config))
+                self.assertIsNone(classify_journal(dict(record, _EXE="/usr/bin/logger"), self.config))
+            self.assertIsNone(classify_journal(dict(shell, _EXE="/usr/bin/logger", _COMM="gnome-shell", _SYSTEMD_USER_UNIT="org.gnome.Shell@wayland.service"), self.config))
+
+    def test_operator_account_is_resolved_from_config_and_missing_fails_closed(self):
+        from fedora_system_monitor.capsules.journal_provenance import operator_uid
+        from types import SimpleNamespace
+        with patch("fedora_system_monitor.capsules.journal_provenance.pwd.getpwnam", return_value=SimpleNamespace(pw_uid=4321)) as lookup:
+            self.assertEqual(operator_uid(self.config), 4321)
+            lookup.assert_called_once_with("fixture-operator")
+        with patch("fedora_system_monitor.capsules.journal_provenance.pwd.getpwnam", side_effect=KeyError):
+            self.assertIsNone(classify_journal({"_UID": "1000", "_EXE": "/usr/bin/gnome-shell", "MESSAGE": "fatal error"}, self.config))
+
+    def test_coredump_unit_is_anchored_and_missing_metadata_fails_closed(self):
+        record = {"MESSAGE_ID": eventing._COREDUMP_MESSAGE_ID, "SYSLOG_IDENTIFIER": "systemd-coredump", "COREDUMP_EXE": "/usr/bin/gnome-shell"}
+        for unit in ("systemd-coredump@fake", "systemd-coredump@fake.service.evil", "evil-systemd-coredump@fake.service", "systemd-coredump@.service"):
+            self.assertIsNone(classify_journal(dict(record, _SYSTEMD_UNIT=unit)))
+
+    def test_live_consumer_passes_config_and_never_enriches_forged_graphics(self):
+        database = _FakeDatabase()
+        record = {"SYSLOG_IDENTIFIER": "gnome-shell", "_UID": "1001", "_EXE": "/usr/bin/gnome-shell", "MESSAGE": "gnome-shell terminated by signal"}
+        with patch("fedora_system_monitor.capsules.journal_provenance.operator_uid", return_value=1000) as uid, patch.object(eventing, "enrich_graphics_incident") as enrich:
+            self.assertEqual(eventing._consume_journal_line(json.dumps(record), database, config=self.config), 0)
+            uid.assert_called_with(self.config)
+            enrich.assert_not_called()
+        self.assertEqual(database.events, [])
 
 
 class BuilderTests(unittest.TestCase):
