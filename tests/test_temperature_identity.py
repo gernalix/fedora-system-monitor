@@ -63,6 +63,12 @@ class TemperatureIdentityTests(unittest.TestCase):
         self.sensor("hwmon2", "bus-0050", 55)
         self.assertEqual(len(self.temperatures()), 1)
 
+    def test_two_chip_interfaces_on_same_device_do_not_alias(self):
+        self.sensor("hwmon1", "bus-0050", 55)
+        other = self.sensor("hwmon2", "bus-0050", 66)
+        (other / "name").write_text("other_driver\n")
+        self.assertEqual(set(self.temperatures().values()), {55, 66})
+
     def test_channels_with_equal_labels_on_same_chip_remain_distinct(self):
         node = self.sensor("hwmon1", "bus-0050", 55)
         (node / "temp1_label").write_text("DIMM\n")

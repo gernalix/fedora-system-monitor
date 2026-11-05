@@ -1088,12 +1088,12 @@ def collect_network_detail(scope: str, config: Mapping[str, Any], db: object) ->
     return result
 
 
-def _temperature_identity(hwmon: Path, index: str) -> str:
+def _temperature_identity(hwmon: Path, chip: str, index: str) -> str:
     # The class enumeration can change across boots. Prefer the actual device
     # path and channel, shared by aliases of the same physical sensor.
     device = hwmon / "device"
     physical = device.resolve() if device.is_dir() else hwmon.resolve()
-    return stable_hash(f"{physical}:temp{index}", "sensor")
+    return stable_hash(f"{physical}:{chip}:temp{index}", "sensor")
 
 
 def _temperature_series(db: object, legacy: str, sensor: str, owners: dict[str, str]) -> str:
@@ -1138,7 +1138,7 @@ def collect_temperatures(scope: str, config: Mapping[str, Any], db: object) -> C
             if temperature <= -100 or temperature > 250:
                 continue
             label = _read(hwmon / f"temp{index}_label").strip() or f"sensor_{index}"
-            identity = _temperature_identity(hwmon, index)
+            identity = _temperature_identity(hwmon, chip, index)
             if identity in seen:
                 continue
             seen.add(identity)
