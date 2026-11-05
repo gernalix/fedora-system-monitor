@@ -39,6 +39,20 @@ Esistono inoltre timer orario, giornaliero alle 03:15 e settimanale domenica all
 04:15, con tolleranza e ritardo casuale. Le modifiche alle directory software
 sono event-driven tramite una path unit.
 
+## Identità dei sensori di temperatura
+
+Chip ed etichetta possono essere uguali su più dispositivi, per esempio sui
+due moduli RAM. Il collettore distingue il percorso fisico sysfs e il canale,
+così registra entrambe le temperature e i relativi allarmi. Gli alias dello
+stesso canale fisico vengono invece letti una sola volta.
+
+La prima identità osservata mantiene la serie storica `chip:etichetta`; le
+altre ricevono un suffisso fisico. L'associazione è conservata nello stato
+SQLite già esistente e non cambia quando gli indici `hwmon` si riordinano o
+il primo sensore scompare temporaneamente. I dettagli includono `sensor_id`
+e `channel`. Le vecchie righe prive di questi dati restano invariate e non
+dimostrano quale modulo fosse stato letto quando le etichette coincidevano.
+
 Ogni cinque minuti il collector filesystem già esistente controlla tutti i
 filesystem locali reali montati. Quando lo spazio libero differisce di almeno
 1 GiB dall’ultima notifica consegnata, invia:
