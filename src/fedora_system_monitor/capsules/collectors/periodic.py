@@ -1088,6 +1088,28 @@ def collect_network_detail(scope: str, config: Mapping[str, Any], db: object) ->
     return result
 
 
+def _temperature_identity(hwmon: Path, index: str) -> str:
+    # The class enumeration can change across boots. Prefer the actual device
+    # path and channel, shared by aliases of the same physical sensor.
+    device = hwmon / "device"
+    physical = device.resolve() if device.is_dir() else hwmon.resolve()
+    return stable_hash(f"{physical}:temp{index}", "sensor")
+
+
+def _temperature_series(db: object, legacy: str, sensor: str, owners: dict[str, str]) -> str:
+    if legacy not in owners:
+        key = "temperature.identity." + stable_hash(legacy)
+        saved = state_get(db, key, {})
+        primary = saved.get("primary_sensor") if isinstance(saved, Mapping) else None
+        if not isinstance(primary, str) or not primary.startswith("sensor:"):
+            primary = sensor
+            state_set(db, key, {"primary_sensor": primary})
+        owners[legacy] = primary
+    # Pin the original series to its first observed physical channel. A second
+    # channel never takes it over, even if the primary temporarily disappears.
+    return legacy if owners[legacy] == sensor else f"{legacy}@{sensor}"
+
+
 def collect_temperatures(scope: str, config: Mapping[str, Any], db: object) -> CollectionResult:
     cadence = CADENCE_SECONDS[scope]
     result = CollectionResult(scope)
@@ -1099,7 +1121,8 @@ def collect_temperatures(scope: str, config: Mapping[str, Any], db: object) -> C
     cpu_duration = _threshold(config, (("thresholds", "temperature", "cpu_warning_duration_seconds"), ("thresholds", "cpu_temperature_c", "warning_duration_seconds")), 300)
     nvme_warning = _threshold(config, (("thresholds", "temperature", "nvme_warning_c"), ("thresholds", "nvme_temperature_c", "warning")), 70)
     nvme_critical = _threshold(config, (("thresholds", "temperature", "nvme_critical_c"), ("thresholds", "nvme_temperature_c", "critical")), 80)
-    seen: set[tuple[str, str]] = set()
+    seen: set[str] = set()
+    owners: dict[str, str] = {}
     for hwmon in sorted(hwmon_root.glob("hwmon*")):
         chip = _read(hwmon / "name").strip() or hwmon.name
         for input_path in sorted(hwmon.glob("temp*_input")):
@@ -1115,27 +1138,31 @@ def collect_temperatures(scope: str, config: Mapping[str, Any], db: object) -> C
             if temperature <= -100 or temperature > 250:
                 continue
             label = _read(hwmon / f"temp{index}_label").strip() or f"sensor_{index}"
-            identity = (chip, label)
+            identity = _temperature_identity(hwmon, index)
             if identity in seen:
                 continue
             seen.add(identity)
+            legacy = f"{chip}:{label}"
+            device_id = _temperature_series(db, legacy, identity, owners)
             alarm = _read(hwmon / f"temp{index}_alarm").strip() == "1" or _read(hwmon / f"temp{index}_max_alarm").strip() == "1"
             sensor_type = "temperature"
             severity = "warning" if alarm else "info"
             if chip == "k10temp" or label.lower() in {"tctl", "tdie", "cpu"}:
                 sensor_type = "temperature.cpu_c"
-                severity = sustained_severity(db, f"condition.temperature.{chip}.{label}", temperature, warning=cpu_warning, critical=cpu_critical, duration_seconds=cpu_duration)
+                condition = f"condition.temperature.{chip}.{label}" if device_id == legacy else f"condition.temperature.{device_id}"
+                severity = sustained_severity(db, condition, temperature, warning=cpu_warning, critical=cpu_critical, duration_seconds=cpu_duration)
             elif chip == "nvme" or "nvme" in chip:
                 sensor_type = "temperature.nvme_c"
                 severity = "critical" if temperature >= nvme_critical else "warning" if temperature >= nvme_warning else severity
             hardware_critical = _number(_read(hwmon / f"temp{index}_crit").strip(), math.nan) / 1000.0
-            details: dict[str, Any] = {"chip": chip, "sensor": label, "alarm": alarm}
+            details: dict[str, Any] = {"chip": chip, "sensor": label, "alarm": alarm,
+                                      "sensor_id": identity, "channel": index}
             if math.isfinite(hardware_critical):
                 details["hardware_critical_c"] = hardware_critical
                 if temperature >= hardware_critical:
                     severity = "critical"
-            result.metrics.append(record(cadence, "temperature", sensor_type, round(temperature, 3), "C", severity=severity, source="hwmon", device_id=f"{chip}:{label}", details=details))
-            result.metrics.append(record(cadence, "temperature", "sensor.alarm", 1 if alarm else 0, "boolean", severity="warning" if alarm else "info", source="hwmon", device_id=f"{chip}:{label}", details={"chip": chip, "sensor": label}))
+            result.metrics.append(record(cadence, "temperature", sensor_type, round(temperature, 3), "C", severity=severity, source="hwmon", device_id=device_id, details=details))
+            result.metrics.append(record(cadence, "temperature", "sensor.alarm", 1 if alarm else 0, "boolean", severity="warning" if alarm else "info", source="hwmon", device_id=device_id, details={"chip": chip, "sensor": label, "sensor_id": identity, "channel": index}))
     return result
 
 
