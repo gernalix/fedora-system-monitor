@@ -6,6 +6,9 @@ import argparse
 import asyncio
 import datetime as dt
 import hashlib
+import fcntl
+import shutil
+import tempfile
 import json
 import os
 import re
@@ -714,12 +717,84 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+class MediaLimitExceeded(Exception):
+    """Media is skipped while message metadata continues to be archived."""
+
+
+class MediaPolicy:
+    """Finite defaults apply even to direct library calls, not only the CLI."""
+
+    def __init__(self, max_file_bytes: int = 100 * 1024**2,
+                 max_archive_bytes: int = 10 * 1024**3,
+                 min_free_bytes: int = 1024**3,
+                 max_entries: int = 50_000, min_free_inodes: int = 1024):
+        values = (max_file_bytes, max_archive_bytes, min_free_bytes, max_entries, min_free_inodes)
+        if any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in values):
+            raise ValueError("media limits must be positive integers")
+        self.max_file_bytes, self.max_archive_bytes, self.min_free_bytes = values[:3]
+        self.max_entries, self.min_free_inodes = values[3:]
+
+    @classmethod
+    def from_config(cls, config: dict[str, str]) -> MediaPolicy:
+        return cls(
+            int(config.get("MEDIA_MAX_FILE_BYTES", str(100 * 1024**2))),
+            int(config.get("MEDIA_MAX_ARCHIVE_BYTES", str(10 * 1024**3))),
+            int(config.get("MEDIA_MIN_FREE_BYTES", str(1024**3))),
+            int(config.get("MEDIA_MAX_ENTRIES", "50000")),
+            int(config.get("MEDIA_MIN_FREE_INODES", "1024")),
+        )
+
+
+def _check_media_allocation(root: Path, policy: MediaPolicy, entries: int, needed: int = 0) -> None:
+    """Bound directory/file growth as well as bytes; some FS omit inode totals."""
+    if entries + needed > policy.max_entries:
+        raise MediaLimitExceeded()
+    usage = os.statvfs(root)
+    if usage.f_files > 0:
+        available = usage.f_favail if usage.f_favail >= 0 else usage.f_ffree
+        if available >= 0 and available - needed < policy.min_free_inodes:
+            raise MediaLimitExceeded()
+
+
+class _BoundedMediaSink:
+    """Telethon writes through this object; no underlying file descriptor escapes."""
+
+    def __init__(self, stream: Any, root: Path, policy: MediaPolicy, archive_bytes: int, archive_entries: int = 0):
+        self._stream = stream
+        self._root = root
+        self._policy = policy
+        self._archive_bytes = archive_bytes
+        self._written = 0
+        self._archive_entries = archive_entries
+        self.name = stream.name
+
+    def write(self, data: bytes) -> int:
+        size = len(data)
+        _check_media_allocation(self._root, self._policy, self._archive_entries)
+        if (self._written + size > self._policy.max_file_bytes
+                or self._archive_bytes + self._written + size > self._policy.max_archive_bytes
+                or shutil.disk_usage(self._root).free - size < self._policy.min_free_bytes):
+            raise MediaLimitExceeded()
+        written = self._stream.write(data)
+        self._written += written
+        if written != size:
+            raise OSError("short media write")
+        return written
+
+    def flush(self) -> None:
+        self._stream.flush()
+
+    def tell(self) -> int:
+        return self._written
+
+
 async def preserve_media(
     client: Any,
     message: Any,
     media_root: Path,
     peer_id: int,
     previous: sqlite3.Row | None,
+    media_policy: MediaPolicy | None = None,
 ) -> tuple[str | None, str | None]:
     kind, remote_id = media_identity(message)
     if kind is None:
@@ -732,18 +807,97 @@ async def preserve_media(
     ):
         return str(previous["media_path"]), previous["media_sha256"]
 
-    safe_remote = re.sub(r"[^A-Za-z0-9_.-]+", "_", remote_id or "media")
-    target_dir = media_root / str(peer_id) / str(int(message.id)) / safe_remote
-    target_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(target_dir, 0o700)
-    downloaded = await client.download_media(message, file=str(target_dir))
-    if not downloaded:
+    policy = media_policy or MediaPolicy()
+    partial: Path | None = None
+    lock = None
+    created_dirs: list[Path] = []
+    try:
+        # Bootstrap paths are fixed configuration, not per-message growth.
+        ancestor = media_root
+        missing_dirs: list[Path] = []
+        while not ancestor.exists():
+            missing_dirs.append(ancestor)
+            ancestor = ancestor.parent
+        _check_media_allocation(ancestor, policy, 0, len(missing_dirs) + int(not (media_root / ".media-quota.lock").exists()))
+        for directory in reversed(missing_dirs):
+            _check_media_allocation(directory.parent, policy, 0, 1)
+            directory.mkdir(mode=0o700)
+            created_dirs.append(directory)
+        os.chmod(media_root, 0o700)
+        # Serialize sync/watch processes too. A nonblocking lock skips media,
+        # rather than blocking the event loop and message metadata ingestion.
+        lock = (media_root / ".media-quota.lock").open("a+b")
+        os.chmod(lock.name, 0o600)
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return None, None
+        # Include retained revisions, orphaned files and partial downloads.
+        archive_bytes = archive_entries = 0
+        for path in media_root.rglob("*"):
+            archive_entries += 1
+            if archive_entries > policy.max_entries:
+                return None, None
+            if path.is_file():
+                archive_bytes += path.stat().st_size
+        _check_media_allocation(media_root, policy, archive_entries)
+        if (archive_bytes >= policy.max_archive_bytes
+                or shutil.disk_usage(media_root).free <= policy.min_free_bytes):
+            return None, None
+        advertised = getattr(getattr(message, "file", None), "size", None)
+        if advertised is None:
+            advertised = getattr(getattr(message, "document", None), "size", None)
+        if isinstance(advertised, int) and not isinstance(advertised, bool) and advertised >= 0:
+            if (advertised > policy.max_file_bytes
+                    or archive_bytes + advertised > policy.max_archive_bytes
+                    or shutil.disk_usage(media_root).free - advertised < policy.min_free_bytes):
+                return None, None
+        safe_remote = re.sub(r"[^A-Za-z0-9_.-]+", "_", remote_id or "media")
+        target_dir = media_root / str(peer_id) / str(int(message.id)) / safe_remote
+        for directory in (media_root / str(peer_id), media_root / str(peer_id) / str(int(message.id)), target_dir):
+            if not directory.exists():
+                _check_media_allocation(media_root, policy, archive_entries, 1)
+                directory.mkdir(mode=0o700)
+                created_dirs.append(directory)
+                archive_entries += 1
+        os.chmod(target_dir, 0o700)
+        extension = str(getattr(getattr(message, "file", None), "ext", None) or ".bin")
+        if not re.fullmatch(r"\.[A-Za-z0-9]{1,16}", extension):
+            extension = ".bin"
+        _check_media_allocation(media_root, policy, archive_entries, 1)
+        fd, temp_name = tempfile.mkstemp(prefix=".partial-", dir=target_dir)
+        archive_entries += 1
+        partial = Path(temp_name)
+        # Unbuffered writes make the reserve check reflect the bytes just written.
+        with os.fdopen(fd, "wb", buffering=0) as stream:
+            sink = _BoundedMediaSink(stream, media_root, policy, archive_bytes, archive_entries)
+            downloaded = await client.download_media(message, file=sink)
+            if not downloaded or sink.tell() == 0:
+                return None, None
+            stream.flush()
+            os.fsync(stream.fileno())
+        media_hash = sha256_file(partial)
+        target = target_dir / ("attachment-" + media_hash + extension)
+        os.replace(partial, target)
+        partial = None
+        return str(target.resolve()), media_hash
+    except Exception:
+        # Policy, I/O and transport failures must not discard text/revisions.
+        # Never log exception payloads from Telegram.
         return None, None
-    path = Path(downloaded)
-    if path.is_file():
-        os.chmod(path, 0o600)
-        return str(path.resolve()), sha256_file(path)
-    return None, None
+    finally:
+        try:
+            if partial is not None:
+                partial.unlink(missing_ok=True)
+        finally:
+            for directory in reversed(created_dirs):
+                try:
+                    directory.rmdir()
+                except OSError:
+                    # Preserve pre-existing/nonempty directories and history.
+                    pass
+            if lock is not None:
+                lock.close()
 
 
 def store_snapshot(
@@ -1027,6 +1181,7 @@ async def reconcile(
     media_root: Path,
     horizon_seconds: int,
     ttl_seconds: int = 86400,
+    media_policy: MediaPolicy | None = None,
 ) -> dict[str, int]:
     now = utc_now()
     seen_at = iso_utc(now)
@@ -1052,7 +1207,7 @@ async def reconcile(
             "SELECT * FROM messages WHERE peer_id=? AND message_id=?",
             (peer_id, int(snapshot["message_id"])),
         ).fetchone()
-        media_path, media_hash = await preserve_media(client, message, media_root, peer_id, previous)
+        media_path, media_hash = await preserve_media(client, message, media_root, peer_id, previous, media_policy)
         status = store_snapshot(conn, peer_id, snapshot, seen_at, media_path, media_hash)
         counts[status] += 1
 
@@ -1097,6 +1252,7 @@ async def run_discover(config: dict[str, str]) -> int:
 
 
 async def run_sync(config: dict[str, str]) -> int:
+    media_policy = MediaPolicy.from_config(config)
     archive_db = Path(config.get(
         "ARCHIVE_DB", "~/.local/share/fedora-telegram-autodelete/archive.sqlite3"
     )).expanduser()
@@ -1126,6 +1282,7 @@ async def run_sync(config: dict[str, str]) -> int:
             media_root,
             horizon_seconds,
             int(config.get("AUTO_DELETE_TTL_SECONDS", "86400")),
+            media_policy,
         )
         print(
             "Telegram auto-delete archive sync complete; "
@@ -1144,6 +1301,7 @@ async def ingest_message(
     media_root: Path,
     peer_id: int,
     message: Any,
+    media_policy: MediaPolicy | None = None,
 ) -> str:
     seen_at = iso_utc(utc_now())
     sender_name = await sender_name_for_message(message, {})
@@ -1153,7 +1311,7 @@ async def ingest_message(
         (peer_id, int(snapshot["message_id"])),
     ).fetchone()
     media_path, media_hash = await preserve_media(
-        client, message, media_root, peer_id, previous
+        client, message, media_root, peer_id, previous, media_policy
     )
     status = store_snapshot(
         conn, peer_id, snapshot, seen_at, media_path, media_hash
@@ -1163,6 +1321,7 @@ async def ingest_message(
 
 
 async def run_watch(config: dict[str, str]) -> int:
+    media_policy = MediaPolicy.from_config(config)
     from telethon import events
 
     archive_db = Path(config.get(
@@ -1192,7 +1351,7 @@ async def run_watch(config: dict[str, str]) -> int:
     async def on_new_message(event: Any) -> None:
         async with lock:
             status = await ingest_message(
-                client, conn, media_root, peer_id, event.message
+                client, conn, media_root, peer_id, event.message, media_policy
             )
         print(
             f"telegram-watch new message_id={event.message.id} status={status}",
@@ -1203,7 +1362,7 @@ async def run_watch(config: dict[str, str]) -> int:
     async def on_message_edited(event: Any) -> None:
         async with lock:
             status = await ingest_message(
-                client, conn, media_root, peer_id, event.message
+                client, conn, media_root, peer_id, event.message, media_policy
             )
         print(
             f"telegram-watch edit message_id={event.message.id} status={status}",
@@ -1274,6 +1433,7 @@ async def run_watch(config: dict[str, str]) -> int:
                     media_root,
                     horizon_seconds,
                     ttl_seconds,
+                    media_policy,
                 )
             if relationship_events or any(
                 counts[key] for key in ("inserted", "updated", "deleted")
@@ -1298,6 +1458,7 @@ async def run_watch(config: dict[str, str]) -> int:
                 media_root,
                 horizon_seconds,
                 ttl_seconds,
+                media_policy,
             )
         print(
             "Telegram auto-delete watcher ready; "

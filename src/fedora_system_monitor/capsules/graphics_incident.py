@@ -23,6 +23,7 @@ from typing import Any, Callable, Mapping
 
 from fedora_system_monitor.capsules.activitywatch import correlate_activitywatch
 from fedora_system_monitor.capsules.config import redact_text
+from fedora_system_monitor.capsules.journal_provenance import is_coredump_producer, is_shell_producer
 
 
 Event = dict[str, Any]
@@ -141,18 +142,9 @@ def _base_event(
     }
 
 
-def _is_shell_source(entry: Mapping[str, object]) -> bool:
-    identifier = str(entry.get("SYSLOG_IDENTIFIER") or "").lower()
-    comm = str(entry.get("_COMM") or "").lower()
-    unit = str(entry.get("_SYSTEMD_USER_UNIT") or "")
-    return (
-        identifier == "gnome-shell"
-        or comm == "gnome-shell"
-        or unit.startswith("org.gnome.Shell@")
-    )
-
-
 def classify_graphics_coredump(entry: Mapping[str, object]) -> Event | None:
+    if not is_coredump_producer(entry):
+        return None
     executable = Path(_clean(entry.get("COREDUMP_EXE") or entry.get("COREDUMP_COMM") or "", 320)).name
     if executable != "gnome-shell":
         return None
@@ -181,8 +173,8 @@ def classify_graphics_coredump(entry: Mapping[str, object]) -> Event | None:
     )
 
 
-def classify_gnome_journal(entry: Mapping[str, object], message: str) -> Event | None:
-    if not _is_shell_source(entry):
+def classify_gnome_journal(entry: Mapping[str, object], message: str, config: Mapping[str, object] | None = None) -> Event | None:
+    if not is_shell_producer(entry, config):
         return None
     if _SHELL_CRASH_RE.search(message):
         incident_id = _incident_id(entry, discriminator="gnome-shell-exit")
@@ -216,7 +208,8 @@ def classify_gnome_journal(entry: Mapping[str, object], message: str) -> Event |
 
 
 def classify_graphics_kernel(entry: Mapping[str, object], message: str) -> Event | None:
-    del entry
+    if entry.get("_TRANSPORT") != "kernel":
+        return None
     if _AMDGPU_FAULT_RE.search(message):
         signature = _clean(message)
         return _base_event(

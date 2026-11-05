@@ -15,6 +15,7 @@ from unittest.mock import patch
 
 from fedora_system_monitor.app import main
 from fedora_system_monitor.capsules.runtime.coordinator import (
+    _backfill,
     _derived_recoveries,
     _hook_command,
     _persist_signals,
@@ -193,6 +194,24 @@ class AppTests(unittest.TestCase):
             self.assertEqual(details["subprocess"]["returncode"], 2)
             self.assertTrue(details["subprocess"]["timed_out"])
             self.assertIn("[REDACTED]", details["subprocess"]["stderr"])
+
+    def test_backfill_authenticates_sources_with_configured_operator(self):
+        config = {"monitor": {"operator_user": "fixture-operator"}}
+        entries = [
+            {"SYSLOG_IDENTIFIER": "systemd", "_UID": "1001", "MESSAGE": "firewalld.service: Failed with result 'exit-code'."},
+            {"SYSLOG_IDENTIFIER": "gnome-shell", "_UID": "1001", "_EXE": "/usr/bin/gnome-shell", "MESSAGE": "fatal error"},
+            {"_UID": "1000", "_EXE": "/usr/bin/gnome-shell", "MESSAGE": "meta_window_actor assertion 'surface != NULL' failed"},
+        ]
+        result = CommandResult((), 0, "\n".join(json.dumps(entry) for entry in entries), "", 1)
+        with tempfile.TemporaryDirectory() as temp:
+            database = Database(Path(temp) / "monitor.sqlite3")
+            with patch("fedora_system_monitor.capsules.runtime.coordinator.run_command", return_value=result) as command, patch("fedora_system_monitor.capsules.runtime.coordinator._persist_signals", return_value=[]), patch("fedora_system_monitor.capsules.journal_provenance.operator_uid", return_value=1000) as uid:
+                report = _backfill(Namespace(since_hours=1), config, database)
+                self.assertEqual(report["matched"], 1)
+                self.assertEqual(report["inserted"], 1)
+                uid.assert_called_with(config)
+                self.assertIn("_EXE", command.call_args.args[0][4])
+            database.close()
 
     def test_device_units_pass_literal_systemd_instance(self) -> None:
         unit_directory = Path(__file__).resolve().parents[1] / "systemd"

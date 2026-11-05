@@ -23,6 +23,7 @@ class GraphicsIncidentTests(unittest.TestCase):
                 "_BOOT_ID": "boot-a",
                 "__CURSOR": "cursor-a",
                 "__REALTIME_TIMESTAMP": "1789849169000000",
+                "_SYSTEMD_UNIT": "systemd-coredump@42-1000-0.service",
                 "COREDUMP_EXE": "/usr/bin/gnome-shell",
                 "COREDUMP_SIGNAL_NAME": "SIGABRT",
                 "COREDUMP_UID": "1000",
@@ -39,9 +40,10 @@ class GraphicsIncidentTests(unittest.TestCase):
         self.assertNotIn("never-store", rendered)
         self.assertNotIn("COREDUMP_FILENAME", rendered)
 
-    def test_gnome_assertion_is_recorded_but_not_promoted_to_incident(self) -> None:
+    @patch("fedora_system_monitor.capsules.journal_provenance.operator_uid", return_value=1000)
+    def test_gnome_assertion_is_recorded_but_not_promoted_to_incident(self, _uid) -> None:
         event = classify_gnome_journal(
-            {"SYSLOG_IDENTIFIER": "gnome-shell"},
+            {"SYSLOG_IDENTIFIER": "gnome-shell", "_UID": "1000", "_EXE": "/usr/bin/gnome-shell"},
             "meta_window_actor assertion 'surface != NULL' failed",
         )
         self.assertIsNotNone(event)
@@ -58,6 +60,11 @@ class GraphicsIncidentTests(unittest.TestCase):
         assert event is not None
         self.assertEqual(event["name"], "gpu_driver_fault")
         self.assertEqual(event["severity"], "critical")
+
+    def test_exported_classifiers_reject_unauthenticated_input(self) -> None:
+        self.assertIsNone(classify_graphics_coredump({"COREDUMP_EXE": "/usr/bin/gnome-shell", "SYSLOG_IDENTIFIER": "systemd-coredump"}))
+        self.assertIsNone(classify_gnome_journal({"SYSLOG_IDENTIFIER": "gnome-shell"}, "fatal error"))
+        self.assertIsNone(classify_graphics_kernel({"SYSLOG_IDENTIFIER": "kernel"}, "amdgpu ring gfx timeout"))
 
     def test_pid_transition_is_high_confidence_incident(self) -> None:
         event = build_compositor_transition_event(

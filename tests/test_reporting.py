@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import csv
+import io
+import json
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -52,6 +55,22 @@ class ReportingTests(unittest.TestCase):
         output = render([{"name": "cpu", "value": 1.5}], output_format="csv")
         self.assertIn("name", output)
         self.assertIn("cpu", output)
+
+    def test_csv_formula_strings_and_headers_are_literal(self) -> None:
+        values = ["=1+1", "+SUM(A1)", "-2+3", "@SUM(A1)", "\t=1", "\r\n+1", " \x00\t-1", "\u2003\x00=1", "\ufeff@cmd", "=cmd,\"quoted\"\nline"]
+        for value in values:
+            with self.subTest(value=value):
+                rows = list(csv.reader(io.StringIO(render([{value: value}], output_format="csv"))))
+                self.assertEqual(rows, [["'" + value], ["'" + value]])
+
+    def test_csv_preserves_numbers_and_other_formats(self) -> None:
+        data = {"label": "\t=1+1", "negative": -4.5, "positive": 2, "none": None, "ordinary": "disk"}
+        rows = list(csv.DictReader(io.StringIO(render(data, output_format="csv"))))
+        self.assertEqual(rows[0]["negative"], "-4.5")
+        self.assertEqual(rows[0]["positive"], "2")
+        self.assertEqual(rows[0]["ordinary"], "disk")
+        self.assertEqual(json.loads(render(data, output_format="json")), data)
+        self.assertIn("label: \t=1+1", render(data, output_format="text"))
 
     def test_timeline_trends_service_history_and_prometheus(self) -> None:
         with TemporaryDirectory() as temp:
