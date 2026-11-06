@@ -1,12 +1,12 @@
 # Preavviso risorse e recupero interattivo (P247, NV 16)
 
 Il daemon FSM già esistente registra trigger PSI RAM/I/O e controlla metriche
-leggere ogni 10 secondi; durante un incidente usa 5 secondi. Se il kernel/sandbox
-non permette i trigger, rimane il controllo a 10 secondi nello stesso thread del
+leggere ogni 2 secondi nel profilo host aggiornato il 6 novembre 2026. Se il kernel/sandbox
+non permette i trigger, rimane il controllo periodico nello stesso thread del
 daemon esistente. Non si aggiungono demoni o timer. Il dialogo è un **oneshot**
 `fedora-system-monitor-resource-dialog@daniele.service`, solo quando necessario,
-con UID dell'utente e senza capability. Le protezioni del daemon, del kernel e
-di systemd-oomd restano invariate.
+con UID dell'utente e senza capability. Le protezioni del daemon e del kernel restano invariate; il profilo oomd
+opzionale descritto sotto anticipa le soglie del solo utente operatore.
 
 La sola RAM allocata, swap/zram occupato o CPU alta non provano rischio OOM.
 Il warning predefinito richiede MemAvailable <15% con PSI/reclaim/swap-out,
@@ -131,3 +131,46 @@ Non sono garanzie di overhead identico sotto pressione reale. Il renderer
 predefinito aveva mostrato circa 71 MiB privati; è stato sostituito solo nel
 processo del dialogo. I limiti Chrome richiedono un esito finale PARTIAL, non
 una promessa di diagnosi accurata per-tab.
+
+## Profilo host anti-OOM — 6 novembre 2026
+
+Il servizio eventi era operativo ma, senza capability PSI nel sandbox, usava il
+fallback ogni 10 s (5 s durante incidenti). I dialoghi delle 14:39:50 e 17:10:00
+CET sono partiti dopo i kernel OOM delle 14:39:49 e 17:09:53. Il dialogo richiede
+una decisione umana, non libera memoria automaticamente. Impostare nel config
+host esistente `[resource_rescue]` `idle_seconds = 2` e `active_seconds = 2`;
+validare con `fedora-system-monitor config-check`, poi riavviare soltanto
+`fedora-system-monitor-events.service`. I default del codice restano 10/5 per
+installazioni che non applicano questo profilo esplicito.
+
+`oomctl` mostrava pressione 80% per 20 s sul manager utente e nessun cgroup
+monitorato per swap. Alle 14:39 restavano circa 487 MiB di swap; alle 17:09 ne
+restavano 10,8 GiB: la sola soglia swap non copre entrambi gli eventi. Non esiste
+una serie PSI storica sufficientemente fine per ricostruire l'esatta soglia al
+momento dei kill. I processi Python che hanno richiesto l'allocazione non sono
+per questo dimostrati responsabili principali del consumo.
+
+Il file `config/oomd/60-fsm-memory-rescue.conf` è un drop-in esplicito del
+**system manager**, da installare per il solo operatore, qui UID 1000:
+
+```sh
+sudo install -d -m 0755 /etc/systemd/system/user@1000.service.d
+sudo install -m 0644 config/oomd/60-fsm-memory-rescue.conf /etc/systemd/system/user@1000.service.d/
+sudo systemctl daemon-reload
+oomctl
+```
+
+Non riavviare `user@1000.service`: terminerebbe la sessione. Verificare in
+`oomctl` il percorso user@1000.service sia nella sezione swap sia con pressione
+50% per 5 s. La soglia swap globale esistente resta 90%; il profilo non aggiunge
+servizi, timer, capability o notifiche. oomd può terminare **interi cgroup**:
+non garantisce che Chrome resti aperto, soprattutto se un launcher ha ospitato
+l'intero browser in un servizio. Il servizio chatgpt-exporter-dashboard aveva
+picchi registrati di 14,2 GiB RAM e 12,2 GiB swap (picchi non necessariamente
+simultanei). Non impostare limiti arbitrari o immunità OOM sul browser personale.
+
+Rollback: ripristinare il config host dal backup e il drop-in precedente (oppure
+rimuovere soltanto questo file se prima assente), daemon-reload e restart del
+solo daemon eventi. Nessuna prova deve saturare la RAM reale o chiudere schede.
+Le verifiche di configurazione attestano applicazione, non una garanzia contro
+picchi futuri. Registro canonico: incidente MegaVault, con riferimento al commit.
