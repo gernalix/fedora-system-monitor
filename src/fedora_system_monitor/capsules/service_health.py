@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import re
@@ -112,16 +113,20 @@ def send_service_heartbeats(
         ORDER BY p.device_id
         """
     )
-    results: list[NotificationResult] = []
+    selected: list[tuple[Mapping[str, Any], str, str]] = []
     for row in rows:
         state_id = str(row.get("device_id") or "").strip()
         if not state_id or state_id in config.get("services", {}).get("retired", []):
             continue
         endpoint = service_monitor_key(state_id)
-        if endpoint not in service_keys:
-            continue
-        # Earlier network sends may block while report producers keep updating.
-        # Evaluate each service against the clock at its own read/send boundary.
+        if endpoint in service_keys:
+            selected.append((row, state_id, endpoint))
+    if not selected:
+        return []
+
+    def send_one(candidate: tuple[Mapping[str, Any], str, str]) -> NotificationResult:
+        row, state_id, endpoint = candidate
+        # Evaluate freshness near each send, including after another request stalls.
         current = now or datetime.now(timezone.utc)
         if current.tzinfo is None:
             current = current.replace(tzinfo=timezone.utc)
@@ -155,16 +160,18 @@ def send_service_heartbeats(
             except (OSError, ValueError, KeyError, TypeError):
                 healthy = False
                 message = label + ": il controllo non fornisce un resoconto aggiornato. Verificare il servizio di monitoraggio."
-        results.append(
-            send_named_heartbeat(
-                config,
-                endpoint,
-                healthy=healthy,
-                message=message,
-                ping_ms=ping_ms,
-            )
+        return send_named_heartbeat(
+            config,
+            endpoint,
+            healthy=healthy,
+            message=message,
+            ping_ms=ping_ms,
         )
-    return results
+
+    # Endpoints are independent; bounded fan-out prevents slow HTTPS requests
+    # from consuming the entire minute collection interval.
+    with ThreadPoolExecutor(max_workers=min(8, len(selected))) as executor:
+        return list(executor.map(send_one, selected))
 
 
 __all__ = [

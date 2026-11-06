@@ -57,6 +57,28 @@ class ServiceHealthTests(unittest.TestCase):
         self.assertFalse(sender.call_args.kwargs['healthy'])
         self.assertIn('resoconto aggiornato', sender.call_args.kwargs['message'])
 
+    @mock.patch('fedora_system_monitor.capsules.service_health.configured_push_keys')
+    @mock.patch('fedora_system_monitor.capsules.service_health.send_named_heartbeat')
+    def test_independent_services_send_concurrently(self, sender, keys):
+        from threading import Barrier
+        identities = ('alpha.service', 'beta.service')
+        keys.return_value = {service_monitor_key(name) for name in identities}
+        now = datetime(2026, 11, 6, tzinfo=timezone.utc)
+        rows = [{'device_id': name, 'timestamp_utc': now.isoformat(),
+                 'details_json': '{"active_state":"active","result":"success"}'}
+                for name in identities]
+        both_started = Barrier(2)
+
+        def send(_config, endpoint, **kwargs):
+            both_started.wait(timeout=3)
+            return NotificationResult('uptime-kuma', endpoint, True, True, 'delivered')
+
+        sender.side_effect = send
+        result = send_service_heartbeats({}, _DB(rows), now=now)
+        self.assertEqual([r.category for r in result],
+                         [service_monitor_key(name) for name in identities])
+        self.assertEqual(sender.call_count, 2)
+
     def test_readable_report_configuration_loads_from_toml(self):
         import tempfile
         from pathlib import Path
