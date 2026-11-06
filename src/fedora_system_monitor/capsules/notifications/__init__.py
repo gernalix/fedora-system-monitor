@@ -440,16 +440,8 @@ def send_category_heartbeat(
             timeout=timeout,
         )
         return NotificationResult("uptime-kuma", category, True, delivered, status, "" if delivered else status)
-    if not healthy:
-        live_delivered, live_status = _push(
-            url,
-            up=True,
-            message=f"{category}: heartbeat live; alert state follows",
-            ping_ms=ping_ms,
-            timeout=timeout,
-        )
-        if not live_delivered:
-            return NotificationResult("uptime-kuma", category, True, False, live_status, live_status)
+    # A DOWN heartbeat itself proves the producer is alive. Sending a transient
+    # UP first produces a false recovery and reopens the same Kuma incident.
     delivered, status = _push(
         url,
         up=healthy,

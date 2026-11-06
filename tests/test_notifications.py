@@ -182,7 +182,7 @@ class NotificationTests(unittest.TestCase):
             self.assertNotIn(secret, repr(result))
 
     @patch("fedora_system_monitor.capsules.notifications._push", return_value=(True, "delivered"))
-    def test_unhealthy_category_heartbeat_keeps_push_liveness(self, mocked) -> None:
+    def test_unhealthy_category_heartbeat_does_not_claim_recovery(self, mocked) -> None:
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "kuma.toml"
             path.write_text('[push]\nstorage="https://example.test/api/push/value"\n', encoding="utf-8")
@@ -197,11 +197,9 @@ class NotificationTests(unittest.TestCase):
             )
 
         self.assertTrue(result.delivered)
-        self.assertEqual(mocked.call_count, 2)
-        self.assertTrue(mocked.call_args_list[0].kwargs["up"])
-        self.assertEqual(mocked.call_args_list[0].kwargs["message"], "storage: heartbeat live; alert state follows")
-        self.assertFalse(mocked.call_args_list[1].kwargs["up"])
-        self.assertEqual(mocked.call_args_list[1].kwargs["message"], "storage: collectors complete; active alerts=1")
+        mocked.assert_called_once()
+        self.assertFalse(mocked.call_args.kwargs["up"])
+        self.assertEqual(mocked.call_args.kwargs["message"], "storage: collectors complete; active alerts=1")
 
     @patch("fedora_system_monitor.capsules.notifications._push", return_value=(True, "delivered"))
     def test_inverted_category_reports_opposite_status_once(self, mocked) -> None:
