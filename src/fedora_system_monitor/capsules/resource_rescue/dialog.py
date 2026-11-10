@@ -8,8 +8,10 @@ import subprocess
 import threading
 import time
 
+from math import isfinite
+
 from .pressure import sample, classify, clearly_healthy
-from .chrome_host import read_recent_tabs, describe_tabs
+from .chrome_host import read_recent_tabs
 from .targets import candidates, terminate
 from .watch import session_unlocked
 
@@ -35,6 +37,59 @@ def singleton(runtime):
     return fd
 
 
+def percent(value):
+    return f'{value:.1f}%' if isinstance(value, (float, int)) and isfinite(value) else 'N/D'
+
+
+def size(value, *, rate=False):
+    if value is None or not isfinite(value) or value < 0:
+        return 'N/D'
+    unit = 'B'
+    for larger in ('KiB', 'MiB', 'GiB', 'TiB'):
+        if value < 1024:
+            break
+        value /= 1024
+        unit = larger
+    value_text = f'{value:.1f}' if unit != 'B' else f'{value:.0f}'
+    return f'{value_text} {unit}' + ('/s' if rate else '')
+
+
+def risk_title(risk):
+    return {
+        'io': 'Attese disco/I/O elevate',
+        'memory': 'Pressione RAM elevata',
+        'disk': 'Spazio disco insufficiente',
+        'healthy': 'Pressione in rientro',
+        'unknown': 'Misurazione incompleta',
+    }.get(risk.kind, 'Risorse da verificare')
+
+
+def resource_summary(s, risk):
+    ram = f'RAM disponibile: {percent(s.available)}'
+    io = f'PSI I/O full (10 s): {percent(s.io_full)}'
+    swap = f'Swap usata: {size(s.swap_used)}'
+    memory = f'PSI RAM some/full: {percent(s.memory_some)} / {percent(s.memory_full)}'
+    lead = (io, ram) if risk.kind == 'io' else (ram, io)
+    return '  ·  '.join(lead) + '\n' + '  ·  '.join((swap, memory))
+
+
+def technical_summary(s):
+    return (f'Swap-out: {size(s.swap_out, rate=True)}  ·  '
+            f'Reclaim: {s.reclaim:.0f} pag/s' if s.reclaim is not None else
+            f'Swap-out: {size(s.swap_out, rate=True)}  ·  Reclaim: N/D')
+
+
+def process_description(candidate, kind):
+    name = candidate.leader.name + (' (browser intero)' if candidate.leader.name.lower() == 'chrome' else '')
+    if kind == 'io':
+        metric = size(candidate.io_bps, rate=True) + ' lettura/scrittura disco osservata'
+    else:
+        metric = f'{candidate.estimated_bytes / 1024**2:.0f} MiB · {candidate.basis}'
+    return name, f'{metric}  ·  {len(candidate.members)} processi; non prova la causa'
+
+
+
+
 class Dialog:
     def __init__(self,config,*,fixture=False):
         import gi
@@ -44,7 +99,8 @@ class Dialog:
         self.app=Gtk.Application(application_id='com.gernalix.FSM.ResourceRescue')
         self.app.connect('activate',self.activate)
         self.window=None;self.previous=None;self.snapshot=None;self.busy=False;self.healthy=0
-        self.started=time.monotonic();self.outcome=2;self.actions=0;self.sources=[];self.frozen=None;self.io_previous={}
+        self.started=time.monotonic();self.outcome=2;self.actions=0;self.sources=[];self.io_previous={}
+        self.selected_number=None;self.ranked_kind=None;self.chrome_signature=None
 
     def activate(self,app):
         self.build()
@@ -54,24 +110,158 @@ class Dialog:
     def build(self,message=''):
         Gtk=self.Gtk
         if self.window: self.window.destroy()
+        self.selected_number=None;self.chrome_signature=None;self.snapshot=None
         self.window=Gtk.ApplicationWindow(application=self.app,title='FSM · Recupero risorse'+(' · TEST' if self.fixture else ''))
-        self.window.set_default_size(740,540)
+        self.window.set_default_size(690,440)
         self.window.connect('close-request',lambda *_: self.finish(2))
-        box=Gtk.Box(orientation=Gtk.Orientation.VERTICAL,spacing=12)
-        for edge in ('top','bottom','start','end'): getattr(box,'set_margin_'+edge)(18)
+        box=Gtk.Box(orientation=Gtk.Orientation.VERTICAL,spacing=9)
+        for edge in ('top','bottom','start','end'): getattr(box,'set_margin_'+edge)(16)
         self.window.set_child(box)
-        self.heading=Gtk.Label(wrap=True,xalign=0);box.append(self.heading)
-        self.metrics=Gtk.Label(wrap=True,xalign=0);box.append(self.metrics)
-        self.ranking=Gtk.Label(wrap=True,xalign=0,selectable=True)
-        scroll=Gtk.ScrolledWindow(vexpand=True);scroll.set_child(self.ranking);box.append(scroll)
-        self.entry=Gtk.Entry(placeholder_text='Numero applicazione, poi Invio (nessuna scelta automatica)')
-        self.entry.connect('activate',self.choose);box.append(self.entry)
-        self.status=Gtk.Label(label=message,wrap=True,xalign=0);box.append(self.status)
-        buttons=Gtk.Box(spacing=10);box.append(buttons)
-        self.choose_button=Gtk.Button(label='Richiedi chiusura');self.choose_button.connect('clicked',self.choose);buttons.append(self.choose_button)
-        snooze=Gtk.Button(label='Rimanda');snooze.connect('clicked',lambda *_:self.finish(2));buttons.append(snooze)
-        chrome=Gtk.Button(label='Schede Chrome');chrome.connect('clicked',self.chrome);buttons.append(chrome)
+
+        self.heading=Gtk.Label(xalign=0,wrap=True)
+        self.heading.add_css_class('title-3')
+        box.append(self.heading)
+        self.metrics=Gtk.Label(xalign=0,wrap=True,selectable=True)
+        box.append(self.metrics)
+        self.reason=Gtk.Label(xalign=0,wrap=True)
+        self.reason.add_css_class('dim-label')
+        box.append(self.reason)
+        tech=Gtk.Expander(label='Dettagli tecnici')
+        self.details=Gtk.Label(xalign=0,wrap=True,selectable=True)
+        tech.set_child(self.details);box.append(tech)
+
+        self.pages=Gtk.Notebook()
+        self.pages.set_vexpand(True)
+        box.append(self.pages)
+
+        process_page=Gtk.Box(orientation=Gtk.Orientation.VERTICAL,spacing=7)
+        self.process_note=Gtk.Label(xalign=0,wrap=True)
+        process_page.append(self.process_note)
+        self.process_list=Gtk.ListBox(selection_mode=Gtk.SelectionMode.SINGLE)
+        self.process_list.connect('row-selected',self.select_process)
+        process_scroll=Gtk.ScrolledWindow(vexpand=True)
+        process_scroll.set_policy(Gtk.PolicyType.NEVER,Gtk.PolicyType.AUTOMATIC)
+        process_scroll.set_child(self.process_list)
+        process_page.append(process_scroll)
+        self.pages.append_page(process_page,Gtk.Label(label='Processi'))
+
+        chrome_page=Gtk.Box(orientation=Gtk.Orientation.VERTICAL,spacing=8)
+        self.chrome_info=Gtk.Label(xalign=0,wrap=True)
+        chrome_page.append(self.chrome_info)
+        self.chrome_list=Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+        chrome_scroll=Gtk.ScrolledWindow(vexpand=True)
+        chrome_scroll.set_policy(Gtk.PolicyType.NEVER,Gtk.PolicyType.AUTOMATIC)
+        chrome_scroll.set_child(self.chrome_list)
+        chrome_page.append(chrome_scroll)
+        guidance=Gtk.Label(label='Per identificare i consumi: Task Manager Chrome (Maiusc+Esc). Per scaricare una scheda: icona «FSM Schede Chrome».',wrap=True,xalign=0)
+        guidance.add_css_class('dim-label')
+        chrome_page.append(guidance)
+        self.pages.append_page(chrome_page,Gtk.Label(label='Schede Chrome'))
+
+        self.status=Gtk.Label(label=message,wrap=True,xalign=0)
+        self.status.set_visible(bool(message))
+        box.append(self.status)
+        buttons=Gtk.Box(spacing=10)
+        box.append(buttons)
+        self.choose_button=Gtk.Button(label='Richiedi chiusura…')
+        self.choose_button.set_sensitive(False)
+        self.choose_button.connect('clicked',self.choose)
+        buttons.append(self.choose_button)
+        snooze=Gtk.Button(label='Rimanda 10 minuti')
+        snooze.connect('clicked',lambda *_: self.finish(2))
+        buttons.append(snooze)
         self.window.present()
+
+    def select_process(self,listbox,row):
+        self.selected_number=row.get_index()+1 if row is not None else None
+        self.choose_button.set_sensitive(bool(self.selected_number) and not self.busy)
+
+    def clear_processes(self,message):
+        self.process_list.unselect_all()
+        self.snapshot=None
+        self.ranked_kind=None
+        self.process_list.set_sensitive(False)
+        self.choose_button.set_sensitive(False)
+        self.process_note.set_text(message)
+        while row:=self.process_list.get_row_at_index(0):
+            self.process_list.remove(row)
+
+    def update_processes(self,kind):
+        Gtk=self.Gtk
+        # Once selected, the number->PID snapshot stays frozen (maximum 20s).
+        if self.selected_number and self.snapshot and kind==self.ranked_kind:
+            if time.monotonic()-self.snapshot.at<=20:
+                return
+        self.process_list.unselect_all()
+        self.selected_number=None
+        self.choose_button.set_sensitive(False)
+        self.snapshot=None
+        try:
+            if self.fixture:
+                from .targets import Snapshot,Candidate,Identity
+                i=Identity('fixture',999999999,1,os.getuid(),'Applicazione TEST','fixture',1024**3)
+                self.snapshot=Snapshot('fixture',time.monotonic(),(Candidate(i,(i,),1024**3,'simulata'),))
+            else:
+                self.snapshot=candidates(os.getuid(),io_previous=self.io_previous,kind=kind)
+                self.io_previous=dict(self.snapshot.io_counters)
+            self.ranked_kind=kind
+            self.process_note.set_text(
+                'Seleziona un processo e conferma. I valori sono indicativi, non una prova di responsabilità.'
+                if self.snapshot.candidates else
+                'Nessun processo attribuibile in sicurezza. Controlla l’attività disco prima di chiudere applicazioni.')
+            while row:=self.process_list.get_row_at_index(0):
+                self.process_list.remove(row)
+            for candidate in self.snapshot.candidates:
+                name,detail=process_description(candidate,kind)
+                item=Gtk.Box(orientation=Gtk.Orientation.VERTICAL,spacing=2)
+                item.set_margin_top(9);item.set_margin_bottom(9)
+                item.set_margin_start(12);item.set_margin_end(12)
+                title=Gtk.Label(label=name,xalign=0,wrap=True)
+                title.add_css_class('heading')
+                item.append(title)
+                sub=Gtk.Label(label=detail,xalign=0,wrap=True)
+                sub.add_css_class('dim-label')
+                item.append(sub)
+                row=Gtk.ListBoxRow()
+                row.set_child(item)
+                self.process_list.append(row)
+        except (OSError,ValueError,TimeoutError):
+            self.snapshot=None
+            self.process_note.set_text('Processi non verificabili: nessuna chiusura proposta.')
+            while row:=self.process_list.get_row_at_index(0):
+                self.process_list.remove(row)
+
+    def update_chrome(self):
+        Gtk=self.Gtk
+        from gi.repository import Pango
+        data=read_recent_tabs(Path(f'/run/user/{os.getuid()}')) if not self.fixture else None
+        if data is None:
+            self.chrome_info.set_text('Titoli non disponibili. Apri «FSM Schede Chrome» nel browser per aggiornare.')
+        else:
+            self.chrome_info.set_text(
+                f'{len(data["tabs"])}/{data["total"]} schede · dati di {data["age_seconds"]} s fa. '
+                'Non attribuibili ai singoli processi né ordinate per consumo.')
+        signature=(data['observed_at_utc'],data['total']) if data is not None else None
+        if signature==self.chrome_signature:
+            return
+        self.chrome_signature=signature
+        while row:=self.chrome_list.get_row_at_index(0):
+            self.chrome_list.remove(row)
+        if data is None: return
+        for tab in data['tabs']:
+            line=Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,spacing=8)
+            line.set_margin_top(6);line.set_margin_bottom(6)
+            line.set_margin_start(10);line.set_margin_end(10)
+            title=Gtk.Label(label=tab['title'],ellipsize=Pango.EllipsizeMode.END,xalign=0,hexpand=True,max_width_chars=68)
+            title.set_tooltip_text(tab['title'])
+            line.append(title)
+            state='Attiva' if tab['active'] else 'Scaricata' if tab['discarded'] else 'Inattiva'
+            flag=Gtk.Label(label=state,xalign=1)
+            flag.add_css_class('dim-label')
+            line.append(flag)
+            row=Gtk.ListBoxRow()
+            row.set_child(line)
+            self.chrome_list.append(row)
 
     def finish(self,code):
         self.outcome=code
@@ -91,67 +281,58 @@ class Dialog:
         if time.monotonic()-self.started>self.cfg['dialog_timeout_seconds']:
             self.finish(2);return False
         s=self.live();risk=classify(s,self.cfg)
-        self.metrics.set_text(f'RAM disponibile: {s.available if s.available is not None else "N/D"}% · PSI RAM some/full: {s.memory_some}/{s.memory_full}%\n'
-            f'Swap occupato: {s.swap_used} byte · swap-out: {s.swap_out} B/s · reclaim: {s.reclaim} pag/s · PSI I/O full: {s.io_full}%\n'+risk.explanation)
-        if self.busy: return True
+        self.heading.set_text(risk_title(risk))
+        self.metrics.set_text(resource_summary(s,risk))
+        self.reason.set_text(risk.explanation)
+        self.details.set_text(technical_summary(s))
+        self.update_chrome()
+        if self.busy:return True
         self.healthy=self.healthy+1 if risk.level==0 and clearly_healthy(s,self.cfg) else 0
         if self.healthy>=self.cfg['recovery_samples']:
-            self.heading.set_text('Risolto: pressione rientrata dopo verifica e isteresi.')
-            self.entry.set_sensitive(False);self.choose_button.set_sensitive(False)
+            self.heading.set_text('Pressione rientrata')
+            self.clear_processes('Pressione rientrata: nessuna chiusura necessaria.')
             self.GLib.timeout_add_seconds(4,lambda:self.finish(0));return False
         if risk.level<=0:
-            self.heading.set_text('Assestamento: attendo conferma del recupero.' if risk.level==0 else 'Dati mancanti: recupero non verificabile.')
-            self.choose_button.set_sensitive(False)
+            self.clear_processes('In attesa di conferma del recupero; nessuna chiusura proposta.')
             return True
-        self.heading.set_text('Risorse in esaurimento: termina una delle seguenti applicazioni il prima possibile' if risk.kind=='memory' else 'Risorse in esaurimento: verifica le azioni contestuali seguenti')
         if risk.kind=='disk':
-            self.entry.set_sensitive(False);self.choose_button.set_sensitive(False);self.snapshot=None
-            self.ranking.set_text('Disco/inode: apri Analizzatore utilizzo disco e scegli manualmente cosa conservare. Chiudere processi non garantisce spazio libero; nessuna cancellazione automatica.' if risk.kind=='disk' else 'I/O: verifica le operazioni attive nei report process-history. Attribuzione per-app non sufficientemente affidabile: nessuna chiusura proposta.')
+            self.clear_processes('Per liberare spazio usa Analizzatore utilizzo disco. FSM non elimina file.')
             return True
-        self.entry.set_sensitive(True);self.choose_button.set_sensitive(True)
-        # Freeze the displayed number→identity mapping while a number is being typed.
-        if not self.entry.get_text():
-            try:
-                if self.fixture:
-                    from .targets import Snapshot,Candidate,Identity
-                    i=Identity('fixture',999999999,1,os.getuid(),'Applicazione TEST','fixture',1024**3)
-                    self.snapshot=Snapshot('fixture',time.monotonic(),(Candidate(i,(i,),1024**3,'simulata'),))
-                    lines=['1. Applicazione TEST · 1024 MiB simulati · nessun segnale a processi reali']
-                else:
-                    self.snapshot=candidates(os.getuid(),io_previous=self.io_previous,kind=risk.kind)
-                    self.io_previous=dict(self.snapshot.io_counters)
-                    lines=[f'{n}. {c.leader.name}'+(' (processo, non scheda)' if c.leader.name.lower() == 'chrome' else '')+' · '+(f'{c.io_bps:.0f} B/s disco (delta osservato)' if risk.kind=='io' else f'{c.estimated_bytes/1024**2:.1f} MiB · {c.basis}')+f' · {len(c.members)} processi · osservata' for n,c in enumerate(self.snapshot.candidates,1)]
-                    if any(c.leader.name.lower() == 'chrome' for c in self.snapshot.candidates):
-                        lines.extend(['', describe_tabs(read_recent_tabs(Path(f'/run/user/{os.getuid()}')))])
-                self.ranking.set_text('\n'.join(lines) or 'Nessun target sicuro osservabile. Salva il lavoro e chiudi manualmente un’applicazione.')
-            except (OSError,ValueError,TimeoutError):
-                self.snapshot=None;self.ranking.set_text('Classifica non verificabile: nessuna azione abilitata.')
+        self.process_list.set_sensitive(True)
+        self.update_processes(risk.kind)
         return True
 
     def choose(self,*_):
-        if self.busy or self.snapshot is None: return
+        if self.busy or self.snapshot is None or self.selected_number is None: return
         try:
-            number=int(self.entry.get_text())
+            number=self.selected_number
             if not 1<=number<=len(self.snapshot.candidates) or time.monotonic()-self.snapshot.at>20:
                 raise ValueError()
         except ValueError:
-            self.entry.set_text('');self.refresh();self.status.set_text('Numero non valido o elenco scaduto. Scegli dalla nuova classifica.');return
+            self.process_list.unselect_all();self.refresh()
+            self.status.set_text('Selezione scaduta. Seleziona nuovamente il processo.')
+            self.status.set_visible(True)
+            return
         snapshot=self.snapshot;candidate=snapshot.candidates[number-1]
-        self.busy=True;self.entry.set_sensitive(False)
+        self.busy=True;self.choose_button.set_sensitive(False)
         # All apps require an additional informed confirmation, including editors/browser.
         Gtk=self.Gtk
         confirmation=Gtk.Window(application=self.app,transient_for=self.window,modal=True,title='Conferma chiusura')
         box=Gtk.Box(orientation=Gtk.Orientation.VERTICAL,spacing=12)
         for edge in ('top','bottom','start','end'): getattr(box,'set_margin_'+edge)(18)
         confirmation.set_child(box)
-        box.append(Gtk.Label(label=f'Richiedere la chiusura di {candidate.leader.name}?',wrap=True))
+        action_name=candidate.leader.name + (' (può chiudere l’intero browser)' if candidate.leader.name.lower() == 'chrome' else '')
+        box.append(Gtk.Label(label=f'Richiedere la chiusura di {action_name}?',wrap=True))
         box.append(Gtk.Label(label='Possibili dati non salvati e sessioni aperte. Prima salva il lavoro. Chiusura normale quando disponibile, altrimenti SIGTERM; nessun SIGKILL.',wrap=True,max_width_chars=65))
         cancel=Gtk.Button(label='Annulla');accept=Gtk.Button(label='Confermo: richiedi chiusura')
         box.append(cancel);box.append(accept)
         def response(dialog,response):
             dialog.destroy()
             if response!=Gtk.ResponseType.OK:
-                self.busy=False;self.entry.set_text('');self.refresh();self.status.set_text('Annullato: nessun segnale inviato.');return
+                self.busy=False;self.process_list.unselect_all();self.refresh()
+                self.status.set_text('Annullato: nessun segnale inviato.')
+                self.status.set_visible(True)
+                return
             def worker():
                 try:
                     if self.fixture: raise PermissionError('Test: azioni reali disabilitate.')
@@ -177,9 +358,7 @@ class Dialog:
         return False
 
     def chrome(self,*_):
-        # A separate user-requested extension popup performs tab API actions;
-        # this dialog never kills a shared Chrome renderer for a single tab.
-        self.status.set_text('Apri l’icona «FSM Schede Chrome» in Chrome per l’elenco completo. Titoli visibili nel dialogo se l’estensione è attiva; nessuna attribuzione ai PID. Per trovare il processo di una scheda usa il Task Manager Chrome (Maiusc+Esc).')
+        self.pages.set_current_page(1)
 
     def run(self):
         self.app.run([])

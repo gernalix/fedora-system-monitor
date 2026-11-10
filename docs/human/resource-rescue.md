@@ -39,7 +39,19 @@ al ritorno viene presentato, anche come riepilogo se nel frattempo rientrato.
 Nessuna interazione è tentata con il lock screen. GTK4 già installato usa il
 renderer Cairo del solo processo del dialogo, per evitare costose allocazioni GPU.
 
-Il pop-up mostra rischio, numeri e classifica di applicazioni GUI dell'utente.
+Il pop-up presenta ora un **riepilogo compatto del problema effettivo**:
+per pressione I/O mostra «Attese disco/I/O elevate», senza suggerire falsamente
+che la RAM sia esaurita. Percentuali e byte/s sono arrotondati a unità leggibili;
+i contatori secondari sono nel pannello «Dettagli tecnici».
+
+Le pagine «Processi» e «Schede Chrome» sono separate. La prima elenca solo
+processi candidati con una selezione a clic (senza digitare numeri), poi richiede
+una seconda conferma. La seconda mostra titoli Chrome in elenco scorrevole e
+stato, senza associare schede ai processi né presumere il loro consumo.
+Per scaricare una singola scheda si usa ancora il pannello dell'estensione.
+Selezione e identità congelate scadono dopo 20 s. Nessuna app o scheda viene
+chiusa automaticamente.
+
 Per RAM usa memoria privata USS quando leggibile; se incompleta lo segnala,
 altrimenti usa il massimo RSS di un processo come stima incerta, **mai la somma
 RSS dei processi condivisi**. Per I/O usa delta disco dei processi del gruppo
@@ -47,9 +59,9 @@ solo se osservabili con baseline completa; se non attribuibili non propone kill
 a caso. Disco/inode danno indicazioni di analisi manuale, senza promettere che
 chiudere un'app liberi spazio e senza cancellazioni automatiche.
 
-Digitare un numero e Invio richiede una seconda conferma sui dati non salvati.
-Nessuna selezione è implicita. Il mapping numeri/identità resta congelato mentre
-si digita e scade dopo 20 secondi. Boot, PID/starttime, cgroup e UID sono
+Selezionare la riga del processo e premere «Richiedi chiusura…» richiede
+una seconda conferma sui dati non salvati. Nessuna selezione è implicita.
+Il mapping riga/identità resta congelato fino alla scadenza di 20 secondi. Boot, PID/starttime, cgroup e UID sono
 ricontrollati. pidfd impedisce che il segnale vada a un PID sostituito. Root,
 altri utenti, GNOME Shell/sessione, FSM, shell/SSH/terminali e infrastrutture di
 lavoro/interpreti sono esclusi; se un gruppo contiene processi protetti non è
@@ -131,8 +143,9 @@ Incidenti, transizioni e heartbeat numerici usano `dedup_state`/`events` della
 SQLite già esistente, senza migrazioni. Nessun target o titolo browser persistito.
 
 Test: `test_resource_rescue.py`, `node tests/test_chrome_rescue.mjs` e suite repo.
+UI opt-in in sessione grafica isolata: `PYTHONPATH=src dbus-run-session -- xvfb-run -a env GDK_BACKEND=x11 GSK_RENDERER=cairo GTK_A11Y=none python3 tests/e2e_resource_dialog_x11.py`.
 E2E opt-in: `PYTHONPATH=src python3 tests/e2e_resource_dialog.py`: finestra
-Wayland reale con app simulata e segnali disabilitati, invalidazione numero,
+Wayland reale con app simulata e segnali disabilitati, selezione obbligatoria,
 annullamento, conferma, finestra unica e nuova classifica. I test PIDFD usano
 solo un child `sleep` creato dal test. Lock/unlock, PSI e pressione sono simulati;
 non si provoca OOM, né si bloccano sessioni o toccano app/schede dell'utente.

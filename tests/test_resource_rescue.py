@@ -100,6 +100,30 @@ class PressureTests(unittest.TestCase):
         self.assertEqual(g.step(metrics(106,memory_full=8),locked=False)[0],'open')
 
 
+class DialogCopyTests(unittest.TestCase):
+    def test_io_problem_is_not_mislabeled_as_exhausted_ram(self):
+        from fedora_system_monitor.capsules.resource_rescue.dialog import (
+            risk_title,resource_summary,technical_summary,process_description,size,percent
+        )
+        s=metrics(available=53.51016036865788,io_full=37.11,memory_some=.16,memory_full=.16,
+                  swap_used=10888839168.,swap_out=0,reclaim=0)
+        risk=classify(s,CFG)
+        self.assertEqual(risk.kind,'io')
+        self.assertEqual(risk_title(risk),'Attese disco/I/O elevate')
+        summary=resource_summary(s,risk)
+        self.assertIn('PSI I/O full (10 s): 37.1%',summary)
+        self.assertIn('RAM disponibile: 53.5%',summary)
+        self.assertNotIn('53.510160368',summary)
+        self.assertEqual(size(253013,rate=True),'247.1 KiB/s')
+        self.assertEqual(percent(None),'N/D')
+        self.assertIn('Reclaim: 0 pag/s',technical_summary(s))
+        i=target(name='chrome')
+        label,detail=process_description(Candidate(i,(i,),0,'unknown',253013),'io')
+        self.assertEqual(label,'chrome (browser intero)')
+        self.assertIn('247.1 KiB/s',detail)
+        self.assertIn('non prova la causa',detail)
+
+
 class TargetTests(unittest.TestCase):
     def test_protected_names_users_and_work_sessions(self):
         for name in ('gnome-shell','systemd','sshd','bash','zsh','tmux','codex','python3','node','fedora-system-monitor'):

@@ -26,10 +26,13 @@ def main():
                 assert dialog.snapshot and len(dialog.snapshot.candidates)==1
                 evidence['wayland_window_mapped']=True
                 evidence['sample_identity']=dialog.snapshot.token
-                dialog.entry.set_text('99');dialog.entry.emit('activate')
-                assert 'Numero non valido' in dialog.status.get_text()
-                evidence['invalid_number_rejected']=True
-                dialog.entry.set_text('1');dialog.entry.emit('activate')
+                assert not dialog.choose_button.get_sensitive()
+                dialog.choose()
+                assert not hasattr(dialog,'confirmation')
+                evidence['no_implicit_choice']=True
+                dialog.process_list.select_row(dialog.process_list.get_row_at_index(0))
+                assert dialog.choose_button.get_sensitive()
+                dialog.choose_button.emit('clicked')
                 assert dialog.confirmation.get_visible()
                 phase=1;return True
             if phase==1:
@@ -37,7 +40,8 @@ def main():
                 dialog.confirm_cancel.emit('clicked')
                 assert dialog.actions==0 and 'Annullato' in dialog.status.get_text()
                 evidence['confirmation_cancelled_no_action']=True
-                dialog.entry.set_text('1');dialog.entry.emit('activate')
+                dialog.process_list.select_row(dialog.process_list.get_row_at_index(0))
+                dialog.choose_button.emit('clicked')
                 dialog.confirm_accept.emit('clicked')
                 phase=2;return True
             if phase==2:
