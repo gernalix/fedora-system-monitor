@@ -1199,7 +1199,7 @@ def _daemon(config: dict[str, Any], db: Database) -> int:
 
 def _backfill(args: argparse.Namespace, config: dict[str, Any], db: Database) -> dict[str, Any]:
     consolidation = db.consolidate_journal_events()
-    fields = "MESSAGE,MESSAGE_ID,PRIORITY,_TRANSPORT,SYSLOG_IDENTIFIER,_SYSTEMD_UNIT,_SYSTEMD_USER_UNIT,UNIT,JOB_RESULT,RESULT,_PID,_COMM,_UID,COREDUMP_EXE,COREDUMP_COMM,COREDUMP_SIGNAL,COREDUMP_SIGNAL_NAME,COREDUMP_UNIT,COREDUMP_UID"
+    fields = "MESSAGE,MESSAGE_ID,PRIORITY,_TRANSPORT,SYSLOG_IDENTIFIER,_SYSTEMD_UNIT,_SYSTEMD_USER_UNIT,UNIT,JOB_RESULT,RESULT,_PID,_COMM,_EXE,_UID,COREDUMP_EXE,COREDUMP_COMM,COREDUMP_SIGNAL,COREDUMP_SIGNAL_NAME,COREDUMP_UNIT,COREDUMP_UID"
     command = [
         "journalctl",
         f"--since=-{max(1, args.since_hours)}h",
@@ -1238,7 +1238,7 @@ def _backfill(args: argparse.Namespace, config: dict[str, Any], db: Database) ->
             entry = json.loads(line)
         except json.JSONDecodeError:
             continue
-        event = classify_journal(entry)
+        event = classify_journal(entry, config)
         if event is None:
             continue
         _enrich_event_device(event)

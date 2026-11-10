@@ -22,6 +22,9 @@ from typing import Any, Callable, Mapping
 
 from fedora_system_monitor.capsules.activitywatch import correlate_activitywatch
 from fedora_system_monitor.capsules.config import redact_text
+from fedora_system_monitor.capsules.journal_provenance import (
+    is_coredump_producer, is_journald_producer, is_manager_producer, is_sleep_producer,
+)
 from fedora_system_monitor.capsules.graphics_incident import (
     classify_gnome_journal,
     classify_graphics_coredump,
@@ -567,7 +570,7 @@ def _is_network_manager(entry: Mapping[str, object]) -> bool:
 
 
 def _is_smartd(entry: Mapping[str, object]) -> bool:
-    return entry.get("_SYSTEMD_UNIT") == "smartd.service" or entry.get("SYSLOG_IDENTIFIER") == "smartd"
+    return entry.get("_SYSTEMD_UNIT") == "smartd.service"
 
 
 def _classify_smartd(message: str) -> Event | None:
@@ -727,9 +730,8 @@ def _classify_kernel(entry: Mapping[str, object], message: str) -> Event | None:
     return None
 
 
-def _classify_systemd(entry: Mapping[str, object], message: str) -> Event | None:
-    identifier = entry.get("SYSLOG_IDENTIFIER")
-    if identifier != "systemd" and str(entry.get("_PID", "")) != "1":
+def _classify_systemd(entry: Mapping[str, object], message: str, config: Mapping[str, object] | None = None) -> Event | None:
+    if not is_manager_producer(entry, config):
         return None
 
     unit = _clean_unit(entry.get("UNIT", ""))
@@ -986,16 +988,13 @@ def _classify_coredump(entry: Mapping[str, object]) -> Event:
     )
 
 
-def classify_journal(entry: Mapping[str, object] | object) -> Event | None:
+def classify_journal(entry: Mapping[str, object] | object, config: Mapping[str, object] | None = None) -> Event | None:
     """Classify one journal JSON mapping without retaining its raw payload."""
 
     if not isinstance(entry, Mapping):
         return None
     message_id = str(entry.get("MESSAGE_ID", ""))
-    coredump_source = entry.get("SYSLOG_IDENTIFIER") == "systemd-coredump" or str(
-        entry.get("_SYSTEMD_UNIT", "")
-    ).startswith("systemd-coredump@")
-    if message_id == _COREDUMP_MESSAGE_ID and coredump_source:
+    if message_id == _COREDUMP_MESSAGE_ID and is_coredump_producer(entry):
         graphics_event = classify_graphics_coredump(entry)
         return graphics_event or _classify_coredump(entry)
 
@@ -1004,7 +1003,7 @@ def classify_journal(entry: Mapping[str, object] | object) -> Event | None:
         return None
     message = _CONTROL_RE.sub(" ", raw_message).strip()
 
-    graphics_event = classify_gnome_journal(entry, message)
+    graphics_event = classify_gnome_journal(entry, message, config)
     if graphics_event:
         return graphics_event
     if _is_kernel(entry):
@@ -1023,10 +1022,7 @@ def classify_journal(entry: Mapping[str, object] | object) -> Event | None:
         if event:
             return event
 
-    comm = entry.get("_COMM")
-    identifier = entry.get("SYSLOG_IDENTIFIER")
-    sleep_source = comm == "systemd-sleep" or identifier == "systemd-sleep"
-    if sleep_source:
+    if is_sleep_producer(entry):
         match = _SLEEP_START_RE.match(message)
         if match:
             return build_lifecycle_event(match.group("mode"))
@@ -1036,7 +1032,7 @@ def classify_journal(entry: Mapping[str, object] | object) -> Event | None:
             event["details"]["sleep_mode"] = match.group("mode")
             return event
 
-    if identifier == "systemd-journald" and _UNCLEAN_JOURNAL_RE.match(message):
+    if is_journald_producer(entry) and _UNCLEAN_JOURNAL_RE.match(message):
         return _event(
             category="system",
             name="unclean_shutdown_detected",
@@ -1048,7 +1044,7 @@ def classify_journal(entry: Mapping[str, object] | object) -> Event | None:
             dedup_key=f"system:unclean-shutdown:{entry.get('_BOOT_ID', '')}",
         )
 
-    return _classify_systemd(entry, message)
+    return _classify_systemd(entry, message, config)
 
 
 def _config_number(config: Mapping[str, object] | object, paths: tuple[tuple[str, ...], ...], default: int) -> int:
@@ -1111,6 +1107,7 @@ def _journal_command(cursor: str, lookback_seconds: int) -> list[str]:
             "RESULT",
             "_PID",
             "_COMM",
+            "_EXE",
             "_UID",
             "_KERNEL_SUBSYSTEM",
             "_UDEV_SYSNAME",
@@ -1572,7 +1569,7 @@ def _consume_journal_line(
         entry = json.loads(line)
     except (json.JSONDecodeError, TypeError):
         return 0
-    event = classify_journal(entry)
+    event = classify_journal(entry, config)
     if event is None:
         return 0
     journal_identity = _journal_identity(entry)
