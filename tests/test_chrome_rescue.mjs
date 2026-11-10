@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {webcrypto} from 'node:crypto';
 globalThis.crypto??=webcrypto;
-import {snapshot,validate,discardable,apply} from '../chrome/resource-rescue/model.js';
+import {snapshot,validate,discardable,apply,tabTitleSnapshot} from '../chrome/resource-rescue/model.js';
 const tab={id:42,windowId:1,url:'https://example.test',title:'Private test title',lastAccessed:1,active:false,audible:false,pinned:false,discarded:false,autoDiscardable:true};
 const s=snapshot([tab,{...tab,id:43}], 'session',1000);
 assert.equal(s.rows.length,2);assert.equal(s.rows[0].rss,null);assert.equal(s.rows[0].linuxPid,null);
@@ -22,4 +22,18 @@ await assert.rejects(()=>apply(api,s,1,'session','discard',async()=>{state.url='
 assert.equal(calls.length,0);
 state={...tab};await assert.rejects(()=>apply(api,s,1,'session','discard',async()=>true,()=>true,()=>1001));
 assert.equal(calls.length,0);
+const titlePacket=tabTitleSnapshot([
+  ...Array.from({length:20},(_,i)=>({...tab,id:100+i,active:false,lastAccessed:i+1})),
+  {...tab,id:40,active:true,title:'Scheda <attiva>\n aggiornata',lastAccessed:100},
+  {...tab,id:60,incognito:true,title:'NON ESPORRE'}
+],crypto.randomUUID());
+assert.equal(titlePacket.kind,'tabs');
+assert.equal(titlePacket.total,21);
+assert.equal(titlePacket.tabs.length,16);
+assert.equal(titlePacket.tabs[0].title,'Scheda <attiva>  aggiornata');
+assert.equal(titlePacket.tabs[0].active,true);
+assert.equal(titlePacket.tabs.some(t=>t.title.includes('NON ESPORRE')),false);
+assert.equal(JSON.stringify(titlePacket).includes('https://'),false);
+assert.equal(JSON.stringify(titlePacket).includes('windowId'),false);
+assert.equal(JSON.stringify(titlePacket).includes('linuxPid'),false);
 console.log('Chrome rescue: snapshot/session/reuse/confirmation/shared-memory/privacy/degraded tests PASS');

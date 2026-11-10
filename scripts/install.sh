@@ -57,7 +57,7 @@ if find "$ROOT/chrome/resource-rescue" -type l -print -quit | grep -q .; then
     exit 1
 fi
 install -d -m 0755 "$STAGE/chrome-resource-rescue"
-for asset in manifest.json popup.html popup.css popup.js model.js; do
+for asset in manifest.json popup.html popup.css popup.js model.js background.js; do
     install -m 0644 -o root -g root "$ROOT/chrome/resource-rescue/$asset" "$STAGE/chrome-resource-rescue/$asset"
 done
 install -d -m 0755 "$STAGE/scripts"
@@ -87,7 +87,7 @@ import json,sys,os
 from pathlib import Path
 origin='chrome-extension://'+Path(sys.argv[1]).read_text().strip()+'/'
 p=Path('/etc/opt/chrome/native-messaging-hosts/com.gernalix.fsm_resource_rescue.json')
-value={'name':'com.gernalix.fsm_resource_rescue','description':'FSM capabilities-only one-shot host','path':'/usr/local/bin/fsm-chrome-capabilities','type':'stdio','allowed_origins':[origin]}
+value={'name':'com.gernalix.fsm_resource_rescue','description':'FSM one-shot capabilities and volatile Chrome tab titles','path':'/usr/local/bin/fsm-chrome-capabilities','type':'stdio','allowed_origins':[origin]}
 if p.exists() and json.loads(p.read_text()).get('path')!=value['path']:
     raise SystemExit('Refusing unrelated native host')
 p.parent.mkdir(parents=True,exist_ok=True)

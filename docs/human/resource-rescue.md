@@ -77,17 +77,31 @@ RAM totale, non si divide arbitrariamente il totale Chrome fra schede e non si
 termina un renderer condiviso. In questa integrazione quelle metriche e il
 mapping a PID Linux sono **N/D**. La classifica è per inattività, non per consumo.
 
-Il pulsante nel dialogo indica il pannello «FSM Schede Chrome» dell'estensione
-FSM, separato dal totale browser. Il pannello è user-driven, senza polling in
-background. Titoli/URL restano nella memoria della sua finestra; nessuna history,
-contenuto di pagina o metrica personale passa al DB FSM. Un host nativo **oneshot**
-accetta soltanto versione, session nonce e booleani di capability, scrive una
-receipt 0600 in `/run/user/UID/fsm-chrome-capabilities.json` ed esce. Non riceve
-né registra tabId, titoli o URL; niente secondo database o browser agent.
+Il dialogo GTK ora mostra direttamente **titoli effimeri di schede Chrome**
+in una sezione distinta dai processi. I nomi non sono attribuiti ai PID: per
+identificare il processo di una scheda e le relative metriche aprire il Task
+Manager Chrome (Maiusc+Esc, colonna PID). Se l'estensione non è attiva, il
+dialogo dichiara che i titoli non sono disponibili anziché inventarli.
+
+L'estensione FSM aggiorna un piccolo snapshot senza polling, solo su eventi
+delle schede, all'avvio o quando si apre il suo pannello. Lo snapshot mostra
+fino a 16 titoli (scheda attiva per prima, poi le inattive da meno recentemente
+usate), stato e conteggio totale; nessuna classifica di consumo per tab.
+L'host nativo **oneshot** riceve esclusivamente titoli limitati e flag
+attiva/scaricata, senza URL, tabId o PID, e li conserva in un file 0600 nella
+tmpfs privata `/run/user/UID/fsm-chrome-tabs.json`, leggibile per 30 minuti
+dall'ultimo evento. Sono scartati payload malformati o troppo grandi.
+L'host mantiene anche la receipt di capability
+`/run/user/UID/fsm-chrome-capabilities.json`. Nessuna history, contenuto di
+pagina, titolo o metrica personale passa al DB FSM o ai log, e non si crea un
+secondo daemon, poller o database. Un browser senza modifiche alle schede per
+oltre 30 minuti può richiedere di aprire il pannello estensione per aggiornare
+l'elenco.
 
 L'estensione richiede `tabs` e `nativeMessaging` solo per questo host, senza
 host permissions, debugger, content script o accesso alle pagine. Ha ID stabile
 `obbebjalncbgeghmpnpanmhidlejapbi`; il relativo host accetta solo tale origine.
+Il service worker dell'estensione deve essere ricaricato dopo l'aggiornamento della cartella installata.
 Ogni scaricamento/chiusura richiede numero e conferma ulteriore. Dopo la conferma
 ricontrolla sessione, tabId, finestra e navigazione; cambiamenti invalidano
 l'elenco. Scaricamento rifiutato per schede attive/audio/fissate/protette.
