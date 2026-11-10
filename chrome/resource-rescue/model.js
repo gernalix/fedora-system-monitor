@@ -40,3 +40,15 @@ export async function apply(api,s,number,session,action,confirmChoice,invalidate
   try { await api.get(t.id); } catch (_) { return {outcome:'closed',ramFreed:null}; }
   throw Error('La scheda risulta ancora presente.');
 }
+
+// Only the minimal display data crosses native messaging, in a bounded snapshot.
+export function tabTitleSnapshot(tabs,session) {
+  const visible=tabs.filter(t=>!t.incognito);
+  visible.sort((a,b)=>Number(b.active)-Number(a.active) ||
+    (a.lastAccessed||0)-(b.lastAccessed||0));
+  const safeTitle=t=>String(t.title||'Scheda senza titolo')
+    .replace(/[\u0000-\u001f\u007f-\u009f]/g,' ').trim().slice(0,120) || 'Scheda senza titolo';
+  return {kind:'tabs',session,total:visible.length,tabs:visible.slice(0,16).map(t=>({
+    title:safeTitle(t),active:!!t.active,discarded:!!t.discarded
+  }))};
+}

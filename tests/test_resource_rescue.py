@@ -217,6 +217,46 @@ class IntegrationTests(unittest.TestCase):
             self.assertEqual(p.stat().st_mode&0o777,0o600)
             self.assertNotIn('private',p.read_text())
 
+    def test_ephemeral_browser_titles_are_bounded_private_and_not_pid_mapped(self):
+        import struct
+        from fedora_system_monitor.capsules.resource_rescue.chrome_host import (
+            receive, persist_tabs, read_recent_tabs, describe_tabs
+        )
+        message={'kind':'tabs','session':'b'*32,'total':2,'tabs':[
+            {'title':'Titolo scheda originale','active':True,'discarded':False},
+            {'title':'Seconda scheda','active':False,'discarded':False}]}
+        def frame(value):
+            raw=json.dumps(value).encode()
+            return io.BytesIO(struct.pack('<I',len(raw))+raw)
+        self.assertEqual(receive(frame(message)),message)
+        for bad in ({**message,'url':'https://secret.test'},
+                    {**message,'tabs':[{'title':'secret','active':True,'discarded':False,'pid':17}]},
+                    {**message,'tabs':[{'title':'bad\nnewline','active':False,'discarded':False}]},
+                    {**message,'total':0},
+                    {**message,'tabs':[{'title':'x'*121,'active':False,'discarded':False}]}):
+            with self.subTest(bad=bad),self.assertRaises(ValueError):
+                receive(frame(bad))
+        with tempfile.TemporaryDirectory() as tmp:
+            saved=persist_tabs(message,tmp)
+            p=Path(tmp)/'fsm-chrome-tabs.json'
+            self.assertEqual(p.stat().st_mode & 0o777,0o600)
+            self.assertNotIn('url',p.read_text())
+            self.assertNotIn('pid',p.read_text())
+            current=read_recent_tabs(tmp,now=saved['observed_at_utc']+10)
+            self.assertEqual(current['tabs'][0]['title'],'Titolo scheda originale')
+            text=describe_tabs(current)
+            self.assertIn('Titolo scheda originale',text)
+            self.assertIn('NON corrispondono',text)
+            self.assertIn('10 s fa',text)
+            self.assertIsNone(read_recent_tabs(tmp,now=saved['observed_at_utc']+1801))
+            p.chmod(0o644)
+            self.assertIsNone(read_recent_tabs(tmp,now=saved['observed_at_utc']+10))
+            p.unlink()
+            (Path(tmp)/'elsewhere').write_text(json.dumps(saved))
+            p.symlink_to(Path(tmp)/'elsewhere')
+            self.assertIsNone(read_recent_tabs(tmp,now=saved['observed_at_utc']+10))
+            self.assertIn('Titoli non disponibili',describe_tabs(None))
+
     def test_normal_close_does_not_fall_back_to_signal(self):
         i=target();snap=Snapshot('token',100,(Candidate(i,(i,),1,'fixture'),))
         close=Mock(return_value=True)
@@ -273,7 +313,7 @@ class IntegrationTests(unittest.TestCase):
         root=Path(__file__).resolve().parents[1]/'chrome/resource-rescue'
         manifest=json.loads((root/'manifest.json').read_text())
         self.assertEqual(manifest['permissions'],['tabs','nativeMessaging']);self.assertNotIn('host_permissions',manifest)
-        source=(root/'popup.js').read_text()+(root/'model.js').read_text()
+        source=(root/'popup.js').read_text()+(root/'model.js').read_text()+(root/'background.js').read_text()
         self.assertNotIn('chrome.storage',source);self.assertNotIn('localStorage',source)
         self.assertNotIn('fetch(',source);self.assertNotIn('chrome.debugger',source)
 

@@ -9,6 +9,7 @@ import threading
 import time
 
 from .pressure import sample, classify, clearly_healthy
+from .chrome_host import read_recent_tabs, describe_tabs
 from .targets import candidates, terminate
 from .watch import session_unlocked
 
@@ -119,7 +120,9 @@ class Dialog:
                 else:
                     self.snapshot=candidates(os.getuid(),io_previous=self.io_previous,kind=risk.kind)
                     self.io_previous=dict(self.snapshot.io_counters)
-                    lines=[f'{n}. {c.leader.name} · '+(f'{c.io_bps:.0f} B/s disco (delta osservato)' if risk.kind=='io' else f'{c.estimated_bytes/1024**2:.1f} MiB · {c.basis}')+f' · {len(c.members)} processi · osservata' for n,c in enumerate(self.snapshot.candidates,1)]
+                    lines=[f'{n}. {c.leader.name}'+(' (processo, non scheda)' if c.leader.name.lower() == 'chrome' else '')+' · '+(f'{c.io_bps:.0f} B/s disco (delta osservato)' if risk.kind=='io' else f'{c.estimated_bytes/1024**2:.1f} MiB · {c.basis}')+f' · {len(c.members)} processi · osservata' for n,c in enumerate(self.snapshot.candidates,1)]
+                    if any(c.leader.name.lower() == 'chrome' for c in self.snapshot.candidates):
+                        lines.extend(['', describe_tabs(read_recent_tabs(Path(f'/run/user/{os.getuid()}')))])
                 self.ranking.set_text('\n'.join(lines) or 'Nessun target sicuro osservabile. Salva il lavoro e chiudi manualmente un’applicazione.')
             except (OSError,ValueError,TimeoutError):
                 self.snapshot=None;self.ranking.set_text('Classifica non verificabile: nessuna azione abilitata.')
@@ -176,7 +179,7 @@ class Dialog:
     def chrome(self,*_):
         # A separate user-requested extension popup performs tab API actions;
         # this dialog never kills a shared Chrome renderer for a single tab.
-        self.status.set_text('Apri l’icona «FSM Schede Chrome» in Chrome. Titoli solo effimeri, metriche per-tab non disponibili su questa integrazione Stable; ogni scaricamento/chiusura richiede conferma.')
+        self.status.set_text('Apri l’icona «FSM Schede Chrome» in Chrome per l’elenco completo. Titoli visibili nel dialogo se l’estensione è attiva; nessuna attribuzione ai PID. Per trovare il processo di una scheda usa il Task Manager Chrome (Maiusc+Esc).')
 
     def run(self):
         self.app.run([])

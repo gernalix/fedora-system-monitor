@@ -1,10 +1,11 @@
-import {snapshot,apply} from './model.js';
+import {snapshot,apply,tabTitleSnapshot} from './model.js';
 const session=crypto.randomUUID();let current=null,invalidated=false,busy=false;
 const el=id=>document.getElementById(id);
 const status=text=>{el('status').textContent=text;};
 async function refresh() {
   if (busy) return;
-  current=snapshot(await chrome.tabs.query({}),session);invalidated=false;el('number').value='';
+  const tabs=await chrome.tabs.query({});
+  current=snapshot(tabs,session);invalidated=false;el('number').value='';
   el('tabs').replaceChildren(...current.rows.map(t=>{
     const li=document.createElement('li');
     li.textContent=`#${t.id} · ${t.title} · ${t.active?'attiva':t.discarded?'scaricata':'inattiva'} · RAM/CPU/I/O: N/D · affidabilità: ${t.reliability}`;
@@ -18,6 +19,8 @@ async function refresh() {
       session,processes_exposed:typeof chrome.processes==='object',
       tabs_available:typeof chrome.tabs?.query==='function',browser_major:major
     });
+    await chrome.runtime.sendNativeMessage(
+      'com.gernalix.fsm_resource_rescue',tabTitleSnapshot(tabs,session));
   } catch(_) {status('Elenco disponibile; host locale non connesso. Nessun dato personale inviato.');}
 
 }
