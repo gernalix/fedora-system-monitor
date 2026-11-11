@@ -4,6 +4,7 @@ CADENCE.fifteen_minute=Disk I/O and rates,recent kernel I/O errors,VPN,network s
 CADENCE.hourly=Software/update snapshot,DNF and Flatpak history deltas,manual metadata deltas,database and journal size,non-waking SMART summary,uptime,boot,reboot advice,and kernel comparison
 CADENCE.daily=Full inventories,detailed SMART/NVMe,battery health,Btrfs device and scrub health,directory sizes,DB integrity,backup,retention,daily summary,and unit validation
 CADENCE.weekly=Full self-validation,systemd verify,database growth,index and integrity checks,retention,inventory comparison,configuration validation,and source availability
+CADENCE.fast_lock=Minute collection and its Kuma heartbeats never wait for a maintenance-held slow lock. Due five/fifteen-minute work is explicitly deferred without advancing last-success and retried by the next fast tick; existing alerts remain active. Explicit slow jobs retain normal locking and failures.
 EVENT.device=Block and USB add,change,remove,mount,unmount,mount failure,unsafe removal,read-only transition,I/O error,USB reset,and known-label presence
 EVENT.network=Wi-Fi connect/disconnect,SSID/interface/IP/default route changes,gateway and Internet transitions,VPN,NetworkManager state,suspend,and resume
 EVENT.system=Boot,clean shutdown,reboot,suspend,resume,unclean boot,panic,oops,OOM,failed units,coredumps,hardware errors,critical thermal,and read-only remount
