@@ -148,7 +148,7 @@ class ProcessHistoryTests(unittest.TestCase):
         with self.db._transaction() as c:
             for table in ('process_samples','process_identities','process_scans','process_hourly'):
                 c.execute(f'DROP TABLE {table}')
-            c.execute('DELETE FROM schema_versions WHERE version=6')
+            c.execute('DELETE FROM schema_versions WHERE version>=6')
         self.db.initialize()
         backups=list(self.db.path.parent.glob('db.pre-v6-*.bak'));self.assertEqual(len(backups),1)
         with closing(sqlite3.connect(backups[0])) as c:

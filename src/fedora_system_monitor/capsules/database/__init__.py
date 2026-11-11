@@ -28,7 +28,7 @@ from .retention import RetentionStorageMixin, DEFAULT_METRIC_RETENTION_DAYS, _pe
 from .shared import StorageError, _json_dumps, _json_loads, _SEVERITY_RANK
 
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 DEFAULT_TIMEZONE = "Europe/Copenhagen"
 
 
@@ -43,6 +43,7 @@ _EXPECTED_INDEXES = {
     "idx_events_collector_run",
     "idx_metrics_time",
     "idx_metrics_name_time",
+    "idx_metrics_service_latest",
     "idx_metrics_cadence_time",
     "idx_events_time",
     "idx_events_name_time",
@@ -500,6 +501,12 @@ _MIGRATION_5_STATEMENTS = (
     "CREATE INDEX IF NOT EXISTS idx_events_collector_run ON events(collector_run_id)",
 )
 
+_MIGRATION_7_STATEMENTS = (
+    "CREATE INDEX IF NOT EXISTS idx_metrics_service_latest "
+    "ON periodic_metrics(device_id, id DESC) "
+    "WHERE name='service.active' AND device_id IS NOT NULL",
+)
+
 
 class Database(AlertStorageMixin, RetentionStorageMixin):
     """Own and query a versioned Fedora System Monitor SQLite database."""
@@ -582,6 +589,8 @@ class Database(AlertStorageMixin, RetentionStorageMixin):
                 version = probe.execute("SELECT MAX(version) FROM schema_versions").fetchone()[0] if exists else 0
             if version and version < 6:
                 self.backup(self.path.parent / f"{self.path.name}.pre-v6-{uuid4().hex}.bak")
+            elif version == 6:
+                self.backup(self.path.parent / f"{self.path.name}.pre-v7-{uuid4().hex}.bak")
         with self._transaction() as connection:
             connection.execute(
                 """
@@ -649,6 +658,11 @@ class Database(AlertStorageMixin, RetentionStorageMixin):
                     raise StorageError("process history migration checks failed")
                 utc, _ = self._timestamps()
                 connection.execute("INSERT INTO schema_versions VALUES(?,?,?)", (6,utc,"compact per-process history"))
+            if current < 7:
+                for statement in _MIGRATION_7_STATEMENTS:
+                    connection.execute(statement)
+                utc, _ = self._timestamps()
+                connection.execute("INSERT INTO schema_versions VALUES(?,?,?)", (7, utc, "indexed current service health lookup"))
         if str(self.path) != ":memory:":
             try:
                 os.chmod(self.path, 0o640)

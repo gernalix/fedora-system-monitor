@@ -47,6 +47,46 @@ class DatabaseTests(unittest.TestCase):
         )
         self.assertTrue(self.db.check_indexes()["ok"])
 
+    def test_service_latest_index_and_v6_upgrade(self) -> None:
+        query = (
+            "SELECT device_id,MAX(id) AS id FROM periodic_metrics "
+            "WHERE name='service.active' AND device_id IS NOT NULL "
+            "GROUP BY device_id"
+        )
+        plan = " ".join(row["detail"] for row in self.db.query("EXPLAIN QUERY PLAN " + query))
+        self.assertIn("idx_metrics_service_latest", plan)
+        self.assertNotIn("USE TEMP B-TREE FOR GROUP BY", plan)
+
+        self.db.insert_metrics(
+            {"category": "service", "name": "service.active", "value": 1,
+             "device_id": "user:test.service", "details": {"active_state": "active"}},
+            cadence_seconds=60,
+        )
+        self.db.insert_metrics(
+            {"category": "service", "name": "service.active", "value": 0,
+             "device_id": "user:test.service", "details": {"active_state": "inactive"}},
+            cadence_seconds=60,
+        )
+        previous = self.db.query(query)
+        self.db.close()
+        with sqlite3.connect(self.database_path) as connection:
+            connection.execute("DROP INDEX idx_metrics_service_latest")
+            connection.execute("DELETE FROM schema_versions WHERE version=7")
+        upgraded = Database(self.database_path)
+        try:
+            self.assertEqual(upgraded.initialize(), 7)
+            self.assertEqual(upgraded.query(query), previous)
+            self.assertTrue(upgraded.check_indexes()["ok"])
+            backups = list(self.database_path.parent.glob("monitor.sqlite3.pre-v7-*.bak"))
+            self.assertEqual(len(backups), 1)
+            with sqlite3.connect(backups[0]) as backup:
+                self.assertEqual(backup.execute("SELECT max(version) FROM schema_versions").fetchone()[0], 6)
+                self.assertEqual(backup.execute("PRAGMA quick_check").fetchone()[0], "ok")
+            upgraded.initialize()
+            self.assertEqual(len(list(self.database_path.parent.glob("monitor.sqlite3.pre-v7-*.bak"))), 1)
+        finally:
+            upgraded.close()
+
     def test_schema_v1_is_migrated_in_place(self) -> None:
         legacy_path = Path(self.temporary_directory.name) / "legacy.sqlite3"
         legacy = Database(legacy_path)
