@@ -26,6 +26,33 @@ class _DB:
 
 
 class ServiceHealthTests(unittest.TestCase):
+    def test_concurrent_senders_share_one_vault_read_and_refresh_next_collection(self):
+        from threading import Barrier
+        from fedora_system_monitor.capsules import notifications
+        identities = ('alpha.service', 'beta.service')
+        keys = [service_monitor_key(name) for name in identities]
+        now = datetime(2026, 11, 11, tzinfo=timezone.utc)
+        rows = [{'device_id': name, 'timestamp_utc': now.isoformat(),
+                 'value': 1, 'details_json': '{"active_state":"active","result":"success"}'}
+                for name in identities]
+        providers = [{'push': {key: f'https://example.test/{cycle}/{index}'
+                              for index, key in enumerate(keys)}} for cycle in ('first', 'second')]
+        barrier = Barrier(2)
+        def push(url, **kwargs):
+            barrier.wait(timeout=3)
+            return True, 'delivered'
+        with mock.patch.object(notifications, '_credentials_path', return_value=notifications._DEFAULT_KUMA_PATH), \
+             mock.patch.object(notifications, '_vault_kuma_data', side_effect=providers) as vault, \
+             mock.patch.object(notifications, '_push', side_effect=push) as transport:
+            for cycle in range(2):
+                with notifications.kuma_snapshot():
+                    result = send_service_heartbeats({}, _DB(rows), now=now)
+                self.assertEqual(vault.call_count, cycle + 1)
+                self.assertTrue(all(item.delivered for item in result))
+            self.assertEqual(transport.call_count, 4)
+            self.assertEqual({call.args[0] for call in transport.call_args_list},
+                             {url for provider in providers for url in provider['push'].values()})
+
     @mock.patch('fedora_system_monitor.capsules.service_health.configured_push_keys')
     @mock.patch('fedora_system_monitor.capsules.service_health.send_named_heartbeat')
     def test_retired_service_never_sends_from_historical_sample(self, sender, keys):
