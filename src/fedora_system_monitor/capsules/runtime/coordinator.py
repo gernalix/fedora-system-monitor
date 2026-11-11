@@ -899,11 +899,20 @@ def _collect_command_with_kuma_snapshot(args: argparse.Namespace, config: dict[s
         # behind a slow daily run. SQLite still serializes each short write.
         lock_group = "minute" if scope == "minute" else "slow"
         scope_lock = lock_path.with_name(f"{lock_path.name}.{lock_group}")
-        with exclusive_lock(scope_lock, timeout=55):
-            result = _run_isolated_scope(args, scope, config, db)
-            results.append(result)
-            if result["outcome"] in {"ok", "partial"}:
-                db.set_state(f"last-success:{scope}", time.time())
+        opportunistic = args.scope == "fast" and lock_group == "slow"
+        try:
+            with exclusive_lock(scope_lock, timeout=0 if opportunistic else 55):
+                result = _run_isolated_scope(args, scope, config, db)
+                results.append(result)
+                if result["outcome"] in {"ok", "partial"}:
+                    db.set_state(f"last-success:{scope}", time.time())
+        except LockUnavailable:
+            if not opportunistic:
+                raise
+            # Minute samples are already committed. A concurrent maintenance
+            # job must not prevent their heartbeat or claim slow work succeeded.
+            results.append({"scope": scope, "outcome": "deferred", "duration_ms": 0,
+                            "reason": "slow collector already running"})
     active_alerts = db.active_alerts()
     active_by_endpoint: dict[str, int] = {}
     for alert in active_alerts:
