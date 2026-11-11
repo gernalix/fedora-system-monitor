@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 import hashlib
 import json
 import re
@@ -171,7 +172,12 @@ def send_service_heartbeats(
     # Endpoints are independent; bounded fan-out prevents slow HTTPS requests
     # from consuming the entire minute collection interval.
     with ThreadPoolExecutor(max_workers=min(8, len(selected))) as executor:
-        return list(executor.map(send_one, selected))
+        # Capture in the coordinator thread, after configured_push_keys loaded
+        # its per-collection vault snapshot. Each worker needs its own Context,
+        # sharing the already resolved immutable credential mapping in memory.
+        futures = [executor.submit(copy_context().run, send_one, candidate)
+                   for candidate in selected]
+        return [future.result() for future in futures]
 
 
 __all__ = [
