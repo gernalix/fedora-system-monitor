@@ -1,0 +1,14 @@
+[Unit]
+Description=Notify once when a verified outgoing Telegram message is read
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=%h/.local/state/telegram-read-receipt-watch/target.json
+
+[Service]
+Type=oneshot
+UMask=0077
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/flock -n %h/.cache/fedora-telegram-history/session.lock %h/.local/bin/bws-credential --ref FEDORA_TELEGRAM_API_ENV --var TELEGRAM_API_ID --var TELEGRAM_API_HASH -- %h/.local/bin/bws-credential --ref FEDORA_TELEGRAM_ENV --var TELEGRAM_BOT_TOKEN --var TELEGRAM_INSERT_BOT_ALLOWED_USER_ID -- /usr/bin/env PYTHONPATH=%h/.local/lib/python3.14/site-packages /usr/bin/python3 -B %h/projects/fedora-system-monitor/scripts/telegram_read_receipt_watch.py
+TimeoutStartSec=60
+NoNewPrivileges=true
+PrivateTmp=true

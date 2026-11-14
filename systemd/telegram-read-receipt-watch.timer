@@ -1,0 +1,11 @@
+[Unit]
+Description=Check verified outgoing Telegram message read receipt
+
+[Timer]
+OnBootSec=1min
+OnUnitInactiveSec=1min
+AccuracySec=10s
+Unit=telegram-read-receipt-watch.service
+
+[Install]
+WantedBy=timers.target
