@@ -36,6 +36,17 @@ class FilesystemRecoveryTests(unittest.TestCase):
         reuse = entry(950000, f'EXT4-fs (sdc1): mounted filesystem {OTHER} r/w')
         self.assertIsNone(recovered_uuid(DETAILS, records + [reuse], BOOT))
 
+    def test_read_only_while_mounted_uses_the_mount_in_effect_at_failure(self):
+        details = dict(DETAILS, monotonic_usec='20000000')
+        records = [
+            entry(1000000, f'EXT4-fs (sdc1): mounted filesystem {UUID} r/w'),
+            entry(30000000, f'EXT4-fs (sdc1): unmounting filesystem {UUID}.'),
+            entry(40000000, f'EXT4-fs (sde1): mounted filesystem {UUID} r/w'),
+        ]
+        self.assertEqual(recovered_uuid(details, records, BOOT), UUID)
+        earlier_unmount = entry(3000000, f'EXT4-fs (sdc1): unmounting filesystem {UUID}.')
+        self.assertIsNone(recovered_uuid(details, records + [earlier_unmount], BOOT))
+
     def test_recovers_across_reboot_only_with_same_uuid_in_current_boot(self):
         current_boot = 'b' * 32
         old_boot = [entry(900000, f'EXT4-fs (sdc1): unmounting filesystem {UUID}.')]

@@ -13,11 +13,11 @@ _LIFECYCLE = re.compile(r"EXT4-fs \(([^)]+)\): (unmounting|mounted) filesystem (
 
 
 def recovered_uuid(details, entries, boot, current_entries=()):
-    """Bind the incident to its immediate unmount, then require a later rw mount.
+    """Bind the incident to its filesystem, then require a later rw mount.
 
     A reused sdX name, a missing device or a quiet journal cannot establish
-    recovery. The kernel's unmount record within five seconds supplies the
-    UUID, including when the final journal write fails during unmount.
+    recovery. A mount still in effect at incident time identifies the UUID.
+    A nearby unmount also identifies failures while flushing the journal.
     """
     identity = details.get("journal_identity") or {}
     incident_boot = identity.get("boot_id") or details.get("boot_id")
@@ -42,7 +42,7 @@ def recovered_uuid(details, entries, boot, current_entries=()):
         if mono <= incident_mono:
             if node == device:
                 uuid = (observed_uuid.lower()
-                        if action == "unmounting" and incident_mono - mono <= 5_000_000 else None)
+                        if action == "mounted" or incident_mono - mono <= 5_000_000 else None)
             continue
         if uuid is None:
             if node == device and action == "unmounting" and mono - incident_mono <= 5_000_000:
