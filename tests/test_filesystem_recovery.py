@@ -29,6 +29,22 @@ class FilesystemRecoveryTests(unittest.TestCase):
     def test_same_uuid_survives_kernel_name_change(self):
         self.assertEqual(recovered_uuid(DETAILS, lifecycle(node='sde1'), BOOT), UUID)
 
+    def test_read_only_during_unmount(self):
+        records = [entry(900000, f'EXT4-fs (sdc1): unmounting filesystem {UUID}.'),
+                   lifecycle(node='sde1')[1]]
+        self.assertEqual(recovered_uuid(DETAILS, records, BOOT), UUID)
+        reuse = entry(950000, f'EXT4-fs (sdc1): mounted filesystem {OTHER} r/w')
+        self.assertIsNone(recovered_uuid(DETAILS, records + [reuse], BOOT))
+
+    def test_recovers_across_reboot_only_with_same_uuid_in_current_boot(self):
+        current_boot = 'b' * 32
+        old_boot = [entry(900000, f'EXT4-fs (sdc1): unmounting filesystem {UUID}.')]
+        current = [entry(100, f'EXT4-fs (dm-1): mounted filesystem {UUID} r/w', current_boot)]
+        self.assertEqual(recovered_uuid(DETAILS, old_boot, current_boot, current), UUID)
+        self.assertIsNone(recovered_uuid(DETAILS, [], current_boot, current))
+        self.assertIsNone(recovered_uuid(DETAILS, old_boot, current_boot, current + [
+            entry(200, f'EXT4-fs (dm-1): unmounting filesystem {UUID}.', current_boot)]))
+
     def test_requires_identity_timing_boot_and_later_writable_mount(self):
         for records in ([], lifecycle(uuid=OTHER), lifecycle(mode='r/o'),
                         lifecycle()[1:], [entry(7000000, f'EXT4-fs (sdc1): unmounting filesystem {UUID}.')]+lifecycle()[1:],
