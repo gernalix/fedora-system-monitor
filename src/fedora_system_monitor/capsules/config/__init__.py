@@ -456,13 +456,15 @@ def validate_config(config: Mapping[str, Any] | object) -> list[str]:
                 errors.append(f"services.health_reports.{identity} must be a table")
                 continue
             for field in report:
-                if field not in {"path", "label"}:
+                if field not in {"path", "label", "standalone"}:
                     errors.append(f"unknown configuration key: services.health_reports.{identity}.{field}")
             path = report.get("path")
             if not isinstance(path, str) or not Path(path).is_absolute():
                 errors.append(f"services.health_reports.{identity}.path must be an absolute path")
             if "label" in report and (not isinstance(report["label"], str) or not report["label"].strip()):
                 errors.append(f"services.health_reports.{identity}.label must be a non-empty string")
+            if "standalone" in report and not isinstance(report["standalone"], bool):
+                errors.append(f"services.health_reports.{identity}.standalone must be a boolean")
     freshness = _value(config, ("services", "freshness_seconds"))
     if not isinstance(freshness, Mapping):
         errors.append("services.freshness_seconds must be a table")

@@ -71,7 +71,9 @@ def readonly_recoveries(db):
         boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip().replace("-", "")
     except OSError:
         return []
-    mounts = run_command(["findmnt", "--json", "--list", "--output", "UUID,OPTIONS"], timeout=4, max_output=128_000)
+    # ProtectSystem makes mounts read-only in the collector namespace.
+    mounts = run_command(["findmnt", "--task", "1", "--json", "--list", "--output", "UUID,OPTIONS"],
+                         timeout=4, max_output=128_000)
     if not mounts.ok:
         return []
     try:
@@ -88,10 +90,13 @@ def readonly_recoveries(db):
             journal = run_command(["journalctl", "--no-pager", "-q", "-o", "json", "_TRANSPORT=kernel",
                                    "_BOOT_ID=" + boot_id,
                                    "--grep=EXT4-fs.*(unmounting|mounted) filesystem"], timeout=5, max_output=1_000_000)
-            lifecycle_by_boot[boot_id] = (
-                [json.loads(line) for line in journal.stdout.splitlines()]
-                if journal.ok and len(journal.stdout.encode()) < 1_000_000 else []
-            )
+            entries = []
+            if journal.ok and len(journal.stdout.encode()) < 1_000_000:
+                try:
+                    entries = [json.loads(line) for line in journal.stdout.splitlines()]
+                except ValueError:
+                    pass
+            lifecycle_by_boot[boot_id] = entries if all(isinstance(entry, dict) for entry in entries) else []
         return lifecycle_by_boot[boot_id]
 
     recoveries = []

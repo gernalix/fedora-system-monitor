@@ -12,6 +12,23 @@ from fedora_system_monitor.capsules.runtime import coordinator
 
 
 class FastHeartbeatTests(unittest.TestCase):
+    def test_standalone_report_is_excluded_from_category_notifications(self):
+        identity = 'user:grindr-snapshot-health.service'
+        config = {'services': {'health_reports': {identity: {'standalone': True}}}}
+        db = Mock()
+        db.active_alerts.return_value = [
+            {'category': 'service', 'device_id': identity, 'alert_key': 'snapshot',
+             'severity': 'warning'},
+            {'category': 'service', 'device_id': 'other.service', 'alert_key': 'other',
+             'severity': 'critical', 'message': 'Other service failed'},
+        ]
+        signature, _ = coordinator._endpoint_alert_snapshot(db, 'services', config)
+        self.assertEqual(signature['alerts'], [('other', 'critical')])
+        transition = Mock(category='service', device_id='systemd-unit:' + identity)
+        with patch.object(coordinator, 'send_category_heartbeat') as send:
+            coordinator._flush_transition_notifications(db, [transition], config)
+            send.assert_not_called()
+
     def test_busy_slow_collection_defers_without_losing_heartbeat_or_clearing_alerts(self):
         with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
             root = Path(directory)

@@ -179,9 +179,20 @@ def _alert_transition_events(signals: Iterable[AlertSignal]) -> list[dict[str, A
     ]
 
 
-def _endpoint_alert_snapshot(db: Database, endpoint: str) -> tuple[dict[str, Any], str]:
+def _category_alert_endpoint(category: str, device_id: str | None, config: dict[str, Any]) -> str | None:
+    endpoint = endpoint_key(category)
+    if endpoint == "services":
+        identity = (device_id or "").removeprefix("systemd-unit:")
+        report = config.get("services", {}).get("health_reports", {}).get(identity, {})
+        if report.get("standalone") is True:
+            return None
+    return endpoint
+
+
+def _endpoint_alert_snapshot(db: Database, endpoint: str, config: dict[str, Any]) -> tuple[dict[str, Any], str]:
     rows = [
-        row for row in db.active_alerts() if endpoint_key(str(row["category"])) == endpoint
+        row for row in db.active_alerts()
+        if _category_alert_endpoint(str(row["category"]), row.get("device_id"), config) == endpoint
     ]
     signature = {
         "healthy": not rows,
@@ -202,15 +213,18 @@ def _flush_transition_notifications(
     transitions: list[AlertSignal],
     config: dict[str, Any],
 ) -> None:
-    endpoints = sorted({endpoint_key(signal.category) for signal in transitions})
+    endpoints = {_category_alert_endpoint(signal.category, signal.device_id, config) for signal in transitions}
+    endpoints.discard(None)
+    if not endpoints:
+        return
     lock_directory = Path(str(config.get("monitor", {}).get("lock_path", db.path))).parent
     if not os.access(lock_directory, os.W_OK):
         lock_directory = db.path.parent
     try:
         with exclusive_lock(lock_directory / "notifications.lock", timeout=0.25):
-            for endpoint in endpoints:
+            for endpoint in sorted(endpoints):
                 for _ in range(3):
-                    signature, message = _endpoint_alert_snapshot(db, endpoint)
+                    signature, message = _endpoint_alert_snapshot(db, endpoint, config)
                     previous = db.get_state(
                         f"endpoint:{endpoint}", {}, namespace="notification"
                     )
@@ -228,9 +242,9 @@ def _flush_transition_notifications(
                         f"endpoint:{endpoint}", signature, namespace="notification"
                     )
                     for signal in transitions:
-                        if endpoint_key(signal.category) == endpoint:
+                        if _category_alert_endpoint(signal.category, signal.device_id, config) == endpoint:
                             db.mark_alert_notification(signal.key, "delivered")
-                    current, _ = _endpoint_alert_snapshot(db, endpoint)
+                    current, _ = _endpoint_alert_snapshot(db, endpoint, config)
                     if current == signature:
                         break
     except LockUnavailable:
@@ -916,8 +930,9 @@ def _collect_command_with_kuma_snapshot(args: argparse.Namespace, config: dict[s
     active_alerts = db.active_alerts()
     active_by_endpoint: dict[str, int] = {}
     for alert in active_alerts:
-        key = endpoint_key(alert["category"])
-        active_by_endpoint[key] = active_by_endpoint.get(key, 0) + 1
+        key = _category_alert_endpoint(alert["category"], alert.get("device_id"), config)
+        if key is not None:
+            active_by_endpoint[key] = active_by_endpoint.get(key, 0) + 1
     heartbeat_categories: set[str] = set()
     if "minute" in scopes:
         heartbeat_categories.update(("system", "network", "services", "storage"))
@@ -941,7 +956,7 @@ def _collect_command_with_kuma_snapshot(args: argparse.Namespace, config: dict[s
         )
         heartbeats.append(heartbeat.__dict__)
         if heartbeat.delivered:
-            signature, _ = _endpoint_alert_snapshot(db, category)
+            signature, _ = _endpoint_alert_snapshot(db, category, config)
             db.set_state(f"endpoint:{category}", signature, namespace="notification")
     if "minute" in scopes and hasattr(db, "query"):
         minute_failed = any(

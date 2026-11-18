@@ -170,3 +170,8 @@ e una `label`. Il producer aggiorna `observed_at` (Unix timestamp), `healthy`
 centrale usa il testo solo se recente: un resoconto mancante o scaduto resta
 DOWN e un messaggio positivo non può nascondere un servizio guasto. Gli altri
 monitor mantengono il comportamento esistente.
+
+Per un servizio che ha già un proprio endpoint attivo, `standalone = true`
+nella stessa tabella mantiene gli alert nello storico Fedora e li esclude
+dal monitor aggregato Fedora Services. Il monitor dedicato continua a ricevere
+lo stato dell'unità e il resoconto.

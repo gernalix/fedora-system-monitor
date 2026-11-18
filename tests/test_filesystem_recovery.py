@@ -69,8 +69,10 @@ class FilesystemRecoveryTests(unittest.TestCase):
                     mounts=SimpleNamespace(ok=True,stdout=json.dumps({'filesystems':[{'uuid':mounted_uuid,'options':options}]}))
                     journal=SimpleNamespace(ok=journal_ok,stdout='\n'.join(json.dumps(r) for r in lifecycle()) if valid else '{')
                     with patch('fedora_system_monitor.capsules.runtime.filesystem_recovery.Path.read_text',return_value=BOOT), \
-                         patch('fedora_system_monitor.capsules.runtime.filesystem_recovery.run_command',side_effect=[mounts,journal,journal]):
-                        return readonly_recoveries(db)
+                         patch('fedora_system_monitor.capsules.runtime.filesystem_recovery.run_command',side_effect=[mounts,journal]) as command:
+                        recovered = readonly_recoveries(db)
+                        self.assertEqual(command.call_args_list[0].args[0][:3], ['findmnt', '--task', '1'])
+                        return recovered
                 self.assertEqual(len(run()),2)
                 self.assertEqual(run(mounted_uuid=OTHER),[])
                 self.assertEqual(run(options='ro,relatime'),[])
