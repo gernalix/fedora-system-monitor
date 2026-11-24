@@ -37,6 +37,7 @@ name_patterns = ["backup", "adb", "kuma", "megavault", "monitor"]
 # so one slow run does not flap. The live reconciliation task must verify actual
 # installed unit names/cadences before provisioning dedicated Kuma monitors.
 [services.freshness_seconds]
+"x-repost-downloader.service" = 1800
 "user:sqlite-to-obsidian.service" = 600
 "user:github-autosync.service" = 300
 "user:repo-integrator.service" = 300
