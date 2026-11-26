@@ -270,9 +270,21 @@ def project_for_monitor(monitor_id: int, registry: Path = REGISTRY) -> int:
     return int(owner[0])
 
 
-def record_transition(event: dict, project_id: int, incident_id=None, executable: Path = MEGAVAULT) -> int:
+def record_transition(event: dict, project_id: int, incident_id=None, executable: Path = MEGAVAULT,
+                      *, registry: Path = REGISTRY) -> int:
     # Transfer only bounded metadata; heartbeat messages may contain credentials.
     safe = {key: event[key] for key in ('monitor_id','heartbeat_id','status','active','time','monitor_name')}
+    if incident_id is not None:
+        # Project mappings can change during an outage. Later transitions
+        # belong to the incident opened for this monitor.
+        with closing(_readonly_db(registry)) as db:
+            owner = db.execute(
+                "SELECT project_id FROM incidents WHERE incident_id=? AND systems=?",
+                (incident_id, f"INT0002:{int(event['monitor_id'])}"),
+            ).fetchone()
+        if owner is None or owner[0] is None:
+            raise RuntimeError("Canonical incident does not match this monitor")
+        project_id = int(owner[0])
     argv = [sys.executable, str(executable), 'kuma-event', '--project-id', str(project_id)]
     if incident_id is not None:
         argv += ['--incident-id', str(incident_id)]
@@ -284,6 +296,8 @@ def record_transition(event: dict, project_id: int, incident_id=None, executable
         receipt = json.loads(result.stdout)
         if receipt.get('status') != 'RECORDED' or type(receipt.get('incident_id')) is not int:
             raise ValueError('invalid receipt')
+        if incident_id is not None and receipt['incident_id'] != incident_id:
+            raise ValueError('unexpected incident')
         return receipt['incident_id']
     except (ValueError, TypeError) as exc:
         raise RuntimeError('Canonical incident receipt failed verification') from exc

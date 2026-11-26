@@ -148,6 +148,20 @@ class KumaPnMonitorTests(unittest.TestCase):
         with patch.object(monitor.subprocess,'run',side_effect=call):
             self.assertEqual(monitor.register_incident(event,15),501)
 
+    def test_reassigned_monitor_recovers_original_incident(self):
+        with closing(sqlite3.connect(self.registry)) as db, db:
+            db.execute("CREATE TABLE incidents(incident_id INTEGER, project_id INTEGER, systems TEXT)")
+            db.execute("INSERT INTO incidents VALUES (501, 98, 'INT0002:40')")
+        receipt = subprocess.CompletedProcess([], 0, '{"status":"RECORDED","incident_id":501}', '')
+        with patch.object(monitor.subprocess, 'run', return_value=receipt) as writer:
+            self.assertEqual(monitor.record_transition(hb(101, 1), 103, 501, registry=self.registry), 501)
+            argv = writer.call_args.args[0]
+            self.assertEqual(argv[argv.index('--project-id') + 1], '98')
+            self.assertEqual(argv[argv.index('--incident-id') + 1], '501')
+            with self.assertRaisesRegex(RuntimeError, "does not match"):
+                monitor.record_transition(hb(102, 1, monitor_id=41), 103, 501, registry=self.registry)
+            writer.assert_called_once()
+
     def test_checkpoint_migration_preserves_old_pn(self):
         with sqlite3.connect(self.state) as db:
             db.execute('create table monitor_checkpoint(monitor_id integer primary key, monitor_name text, last_heartbeat_id integer, is_down integer, pn_id text, down_heartbeat_id integer, recovered_at text)')

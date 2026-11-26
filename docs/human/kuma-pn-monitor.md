@@ -4,7 +4,9 @@ The existing unit name and private checkpoint remain compatible. DOWN/UP
 transitions now feed MegaVault incidents and incident_events through the canonical
 kuma-event writer. No Pn is created or launched. Existing Pn references remain
 in the checkpoint as history. Short flaps reuse the incident and record both
-transitions; a sustained recovery allows a new episode.
+transitions. A sustained recovery allows a new episode. If a monitor moves to
+another project during an outage, its recovery updates the original incident.
+The next independent outage uses the current project mapping.
 
 The writer deduplicates heartbeat identities before the collector advances its
 cursor. A failed write remains retryable without losing the event or duplicating
