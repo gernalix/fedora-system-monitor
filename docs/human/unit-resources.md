@@ -17,8 +17,12 @@ Il riepilogo conserva copertura, uptime, disponibilità dei contatori e primi
 cinque per misura. Cento per cento CPU equivale a un core. Le operazioni al
 minuto sono letture e scritture del livello a blocchi, incluso zram quando
 contabilizzato. Un dispositivo cifrato e il suo disco sono contati una volta.
-La memoria è la carica del cgroup, cache inclusa. La CPU di un job concluso è
-attribuita all'intera esecuzione. Una scansione interrotta, un contatore
+La memoria è la carica del cgroup, cache inclusa. Per i job conclusi il journal fornisce
+la CPU dell’intera esecuzione e, quando disponibile, il picco di RAM. Se più
+esecuzioni della stessa unità terminano in un minuto, FSM conserva il picco
+maggiore. Due finestre con picchi di almeno 2.048 MiB aprono un avviso.
+Il limite per unità si imposta con `completed_memory_peak_mib`. Il rientro
+richiede due finestre con un picco osservato sotto l’80% del limite. Una scansione interrotta, un contatore
 mancante, un cambio di boot o di cgroup interrompono il confronto pertinente.
 
 Valori iniziali per l'indagine: 80% di un core, 6.000 operazioni al minuto,

@@ -159,7 +159,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         },
     },
     "unit_resources": {"cpu_percent": 80, "io_ops_min": 6000, "io_mib_s": 50, "memory_mib": 2048,
-                       "starts_min": 30, "restarts_min": 3, "failed_runs": 1, "completed_cpu_seconds": 180, "units": {}, "repairs": {}},
+                       "starts_min": 30, "restarts_min": 3, "failed_runs": 1, "completed_cpu_seconds": 180,
+                       "completed_memory_peak_mib": 2048, "units": {}, "repairs": {}},
     "resource_rescue": {
         "enabled": True, "idle_seconds": 10, "active_seconds": 5,
         "warning_available": 15, "emergency_available": 5, "support_psi_percent": 1,

@@ -65,6 +65,25 @@ class UnitResources(unittest.TestCase):
                            if m["name"] == "service.resource.failed_runs"])
         self.assertEqual(active, [[], [], [], [True], [], [True], [False]])
 
+    def test_short_job_memory_peak_excludes_unavailable_counters_and_keeps_highest_run(self):
+        base = {"_PID": "1", "MESSAGE_ID": scanner.USAGE, "UNIT": "batch.service"}
+        events = [{**base, "MEMORY_PEAK": value} for value in
+                  (str(2200 * 1048576), str(2500 * 1048576), str(2**64 - 1), "[not set]")]
+        reply = SimpleNamespace(ok=True, stdout="\n".join(map(json.dumps, events)))
+        with patch.object(scanner, "external", return_value=reply):
+            unit = "system:batch.service"
+            usage = scanner.journal_window({}, 1000, 1060)
+            self.assertEqual(usage[unit], {"completed_memory_peak_mib": 2500})
+        state = {}
+        observed = []
+        low = {unit: {"completed_memory_peak_mib": 800}}
+        for minute, journal in enumerate(({}, usage, {}, usage, low, {}, low)):
+            result, state = scanner.assess({}, state, {}, journal, boot="b", now=minute*60,
+                                           wall=minute*60+1000, skipped=0)
+            observed.append([row["details"]["active"] for row in result.metrics
+                             if row["name"] == "service.resource.completed_memory_peak_mib"])
+        self.assertEqual(observed, [[], [], [], [True], [True], [], [False]])
+
     def test_walk_separates_users_and_counts_leaf_disks_once(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "cgroup"

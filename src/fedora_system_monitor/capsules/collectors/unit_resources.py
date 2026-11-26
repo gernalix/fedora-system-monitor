@@ -20,6 +20,7 @@ USAGE = "ae8f7b866b0347b9af31fe1c80b127c0"
 STARTED = "39f53479d3a045ac8e11786248231fbf"
 FAILED = "d9b373ed55a64feb8242e02dbe79a49c"
 LIMITS = {k: v for k, v in DEFAULT_CONFIG["unit_resources"].items() if isinstance(v, (int, float))}
+COMPLETION_METRICS = ("completed_cpu_seconds", "completed_memory_peak_mib")
 RELATIVE_FLOORS = {"cpu_percent": 20, "io_ops_min": 1500, "io_mib_s": 10, "memory_mib": 512}
 
 
@@ -81,8 +82,16 @@ def read_cgroups(root=CGROUP, devices=DEVICES):
     return samples, skipped
 
 
+def _usage_counter(event, field):
+    try:
+        value = int(event[field])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return value if 0 <= value < 2**64 - 1 else None
+
+
 def journal_window(config, since, until):
-    fields = "MESSAGE_ID,UNIT,USER_UNIT,_UID,_PID,_SYSTEMD_USER_UNIT,CPU_USAGE_NSEC"
+    fields = "MESSAGE_ID,UNIT,USER_UNIT,_UID,_PID,_SYSTEMD_USER_UNIT,CPU_USAGE_NSEC,MEMORY_PEAK"
     cmd = ["journalctl", "-b", "--no-pager", "-q", "-o", "json",
            f"--output-fields={fields}", f"--since=@{since:.6f}", f"--until=@{until:.6f}",
            "--lines=4097", "_COMM=systemd", f"MESSAGE_ID={USAGE}", f"MESSAGE_ID={RESTART}",
@@ -105,8 +114,13 @@ def journal_window(config, since, until):
             continue
         counters = units.setdefault(identity, Counter())
         kind = event["MESSAGE_ID"]
-        if kind == USAGE and "CPU_USAGE_NSEC" in event:
-            counters["completed_cpu_seconds"] += int(event["CPU_USAGE_NSEC"]) / 1e9
+        if kind == USAGE:
+            cpu = _usage_counter(event, "CPU_USAGE_NSEC")
+            if cpu is not None:
+                counters["completed_cpu_seconds"] += cpu / 1e9
+            peak = _usage_counter(event, "MEMORY_PEAK")
+            if peak is not None:
+                counters["completed_memory_peak_mib"] = max(counters["completed_memory_peak_mib"], peak / 1048576)
         elif kind == FAILED:
             counters["failed_runs"] += 1
         elif kind == RESTART:
@@ -155,8 +169,9 @@ def assess(config, previous, samples, journal, *, boot, now, wall, skipped):
                 values["failed_runs"] = activity.get("failed_runs", 0)
             # Completion charges belong to the whole invocation; never add
             # these to the interval CPU rate of a still-running invocation.
-            if "completed_cpu_seconds" in activity:
-                values["completed_cpu_seconds"] = activity["completed_cpu_seconds"]
+            for key in COMPLETION_METRICS:
+                if key in activity:
+                    values[key] = activity[key]
         overrides = policy.get("units", {}).get(unit, {})
         # A missing service is not evidence of a healthy restart. Journal
         # silence counts only alongside a live unit or a completion record.
@@ -181,7 +196,7 @@ def assess(config, previous, samples, journal, *, boot, now, wall, skipped):
             if value is not None and value > 0:
                 peaks[key].append((round(value, 2), unit))
             opened = old.get("open", False)
-            if key == "completed_cpu_seconds" and value is None:
+            if key in COMPLETION_METRICS and value is None:
                 # Oneshots may finish several minutes apart. Compare successive
                 # completions and expire unconfirmed suspicions after one day.
                 if opened or (old and same_boot and wall - old.get("seen", 0) < 86400):
@@ -202,7 +217,7 @@ def assess(config, previous, samples, journal, *, boot, now, wall, skipped):
             sustained = min(3, max(-3, run))
             # Three restarts / many starts in one complete minute are already repeated
             # observations. For completed jobs require a second expensive completion.
-            required = 1 if key in ("restarts_min", "starts_min") else 2 if key == "completed_cpu_seconds" else 3
+            required = 1 if key in ("restarts_min", "starts_min") else 2 if key in COMPLETION_METRICS else 3
             active = sustained >= required or (opened and sustained > -2)
             if active or hot:
                 findings.setdefault(unit, {})[key] = {"run": sustained, "open": active, "seen": wall}
