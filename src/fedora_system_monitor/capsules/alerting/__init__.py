@@ -250,6 +250,13 @@ def evaluate_metric_alerts(
         name = str(metric.get("name", ""))
         device_id = str(metric.get("device_id") or "host")
         key = f"{name}:{device_id}"
+        if name.startswith("service.resource.") and metric.get("source") == "unit_resource_scanner":
+            details = dict(metric["details"], value=metric["value"], unit=metric["unit"])
+            message = f"{device_id} {name.split('.')[-1]}={metric['value']:g} (limit {details['limit']:g})"
+            output.append(AlertSignal(key=key, category="service", name=name, severity="warning",
+                                      active=details["active"], message=message, source=metric["source"],
+                                      device_id=device_id, details=details))
+            continue
         state_key = f"alert-condition:{key}"
         state = get_state(state_key, {}) or {}
         active_level = str(state.get("active_level") or "")

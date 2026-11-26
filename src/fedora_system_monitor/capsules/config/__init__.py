@@ -158,6 +158,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "restart_loop_window_minutes": 15,
         },
     },
+    "unit_resources": {"cpu_percent": 80, "io_ops_min": 6000, "io_mib_s": 50, "memory_mib": 2048,
+                       "starts_min": 30, "restarts_min": 3, "completed_cpu_seconds": 180, "units": {}, "repairs": {}},
     "resource_rescue": {
         "enabled": True, "idle_seconds": 10, "active_seconds": 5,
         "warning_available": 15, "emergency_available": 5, "support_psi_percent": 1,
@@ -619,6 +621,29 @@ def validate_config(config: Mapping[str, Any] | object) -> list[str]:
     ):
         _require_positive(config, path, errors)
 
+    limits = DEFAULT_CONFIG["unit_resources"].keys() - {"units", "repairs"}
+    for key in limits:
+        _require_positive(config, ("unit_resources", key), errors)
+    units = _value(config, ("unit_resources", "units"))
+    if not isinstance(units, Mapping):
+        errors.append("unit_resources.units must be a table")
+    else:
+        for identity, overrides in units.items():
+            if not isinstance(overrides, Mapping) or set(overrides) - limits:
+                errors.append(f"invalid resource thresholds for {identity}")
+                continue
+            for key in overrides:
+                _require_positive(config, ("unit_resources", "units", identity, key), errors)
+    repairs = _value(config, ("unit_resources", "repairs"))
+    if not isinstance(repairs, Mapping):
+        errors.append("unit_resources.repairs must be a table")
+    else:
+        for identity, rules in repairs.items():
+            if not isinstance(rules, Mapping) or set(rules) - limits or any(
+                not isinstance(unit, str) or not re.fullmatch(r"[a-zA-Z0-9_.@-]+-repair\.service", unit)
+                for unit in rules.values()
+            ):
+                errors.append(f"invalid owner repair recipe for {identity}")
     _require_bool(config, ("resource_rescue", "enabled"), errors)
     for key in DEFAULT_CONFIG["resource_rescue"]:
         if key != "enabled": _require_positive(config, ("resource_rescue",key), errors)

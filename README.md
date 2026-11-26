@@ -6,6 +6,8 @@ inventari, gestisce alert con isteresi e recovery e invia lo stato a cinque Push
 Monitor Uptime Kuma. Il collector filesystem esistente invia inoltre su Telegram
 le variazioni cumulative di spazio libero di almeno 1 GiB.
 
+Lo scanner dei [consumi delle unità systemd](docs/human/unit-resources.md) gira nel collector al minuto.
+
 ## Uso rapido
 
 ```bash
