@@ -59,3 +59,27 @@ Applicare solo ricette verificate del progetto proprietario. Gli scope degli
 altri UID sono osservati. Le riparazioni utente passano per il manager
 dell'operatore configurato. Il normale deploy del runtime FSM attiva la parte
 scanner al successivo tick del timer fast.
+
+## Chrome
+
+La metrica `chrome.resource_assessment` riutilizza i campioni per processo del
+collector FSM. Riporta la somma della CPU osservata, la velocità I/O osservata
+e il massimo RSS di un singolo processo Chrome dell'operatore, con i rispettivi
+conteggi di copertura. Include tutti i profili identificabili dal nome processo.
+Il massimo RSS evita di sommare pagine condivise. L'aggregazione registra il
+proprio tempo CPU e di parete in microsecondi, inclusa la lettura indicizzata
+dello stato precedente. La persistenza usa una riga per campione.
+
+Tre campioni consecutivi completi sopra soglia per la stessa misura producono
+l'evento `chrome_sustained_resources`. L'operatore può allora scegliere
+un'estensione, confrontare lo stesso carico prima e dopo una modifica manuale,
+e ripristinarla prima di provarne un'altra. L'evento misura il browser nel suo
+insieme. La scelta e la disattivazione dell'estensione spettano all'utente.
+
+Misura locale del 26 novembre 2026, riproducibile con
+`PYTHONPATH=src python3 -B tests/benchmark_chrome_assessment.py`. Su 20 campioni
+Fedora già registrati (mediana 747 processi), 80 coppie con/senza controllo
+hanno aggiunto in mediana 1,25 ms CPU e 1,27 ms di parete per campione. La
+scansione /proc originale durava in mediana 129,86 ms. Il confronto include
+aggregazione, rilettura dello stato, scrittura in SQLite temporanea e valutazione
+delle metriche. Il costo sul database di produzione può variare.

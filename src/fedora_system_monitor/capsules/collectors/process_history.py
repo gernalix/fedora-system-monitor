@@ -6,6 +6,7 @@ import time
 import uuid
 
 from .model import CollectionResult
+from .chrome_assessment import append_assessment
 from ..database.process_history import previous
 
 
@@ -113,6 +114,12 @@ def scan_processes(db, options, *, root=Path('/proc'), clock=None, wall=None):
 def collect_process_history(scope, config, db):
     result = CollectionResult(scope)
     result.process_snapshot = scan_processes(db, config['process_history'])
+    if result.process_snapshot:
+        try:
+            append_assessment(result, config, db)
+        except Exception as exc:
+            # The derived view must never discard a completed process scan.
+            result.errors.append(f'Chrome assessment unavailable: {type(exc).__name__}')
     if result.process_snapshot and not result.process_snapshot['complete']:
         result.errors.append('process_history: scan deadline exceeded; coverage incomplete')
     return result
