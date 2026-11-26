@@ -18,11 +18,14 @@ repository:
   branch_policy: Canonical repository follows origin/main; make changes in isolated
     repo-task worktrees and integrate through the guarded single-writer lane.
 architecture:
-  summary: Bounded collector/coordinator capsules feed SQLite monitoring, alerting
-    and read-only reporting. Database facade delegates alerts, retention and process
-    history to separate modules. Optional execution_archive owns private manifests,
-    compressed originals and rebuildable FTS; resource_rescue separates pressure policy,
-    conservative target identity, dialog and explicitly confirmed app/Chrome actions.
+  summary: >-
+    Bounded collector/coordinator capsules feed SQLite monitoring, alerting and read-only
+    reporting. Database facade delegates alerts, retention and process history to separate
+    modules. Optional execution_archive owns private manifests, compressed originals and
+    rebuildable FTS; resource_rescue separates pressure policy, conservative target identity,
+    dialog and explicitly confirmed app/Chrome actions. The existing collector owns the
+    database and recovery paths. The opt-in read receipt timer and service track a specific
+    outgoing Telegram message with separate state and fixtures.
   entrypoints:
   - src/fedora_system_monitor/app.py
   - scripts/install.sh
@@ -41,6 +44,7 @@ architecture:
   - src/fedora_system_monitor/capsules/capacity_policy.py
   - chrome/resource-rescue
   - packaging
+  - scripts/telegram_read_receipt_watch.py
 dependencies:
 - name: Python standard library
   purpose: Runtime, SQLite persistence, CLI, and tests.
@@ -63,24 +67,22 @@ data:
     do not edit or replace the live database during source validation.
 runtime:
   services:
-  - fedora-system-monitor-lifecycle.service (source definition; installed state not
-    asserted)
-  - fedora-system-monitor-collect@.service (source definition; installed state not
-    asserted)
-  - fedora-system-monitor-prometheus.service (source definition; installed state not
-    asserted)
+  - fedora-system-monitor-lifecycle.service (source definition; installed state not asserted)
+  - fedora-system-monitor-collect@.service (source definition; installed state not asserted)
+  - fedora-system-monitor-prometheus.service (source definition; installed state not asserted)
   - fedora-system-monitor-events.service (source definition; installed state not asserted)
-  - fedora-system-monitor-oracle-credentials.service precedes the Oracle probe consumer;
-    selected files stay under /run.
-  - Optional user resource dialog and historical Kuma projection units are source
-    inventory only; no new activation or lifecycle dispatch is part of verification.
+  - fedora-system-monitor-oracle-credentials.service precedes the Oracle probe consumer; selected
+    files stay under /run.
+  - Optional user resource dialog and historical Kuma projection units are source inventory only;
+    no new activation or lifecycle dispatch is part of verification.
+  - telegram-read-receipt-watch.service (opt-in read receipt source definition)
   timers:
   - fedora-system-monitor-fast.timer (source definition; installed state not asserted)
   - fedora-system-monitor-hourly.timer (source definition; installed state not asserted)
   - fedora-system-monitor-daily.timer (source definition; installed state not asserted)
   - fedora-system-monitor-weekly.timer (source definition; installed state not asserted)
-  - fedora-system-monitor-context-index.timer (source definition; installed state
-    not asserted)
+  - fedora-system-monitor-context-index.timer (source definition; installed state not asserted)
+  - telegram-read-receipt-watch.timer (opt-in source definition)
   containers: []
 devices:
 - Fedora host sensors and storage are inspected by bounded collectors; never identify
@@ -228,7 +230,7 @@ references:
   megavault: /home/daniele/MegaVault/megavault.sqlite
   c2: Historical-only reference; no dispatch or lifecycle writes.
 freshness:
-  reviewed_commit: 9042957356cafdb06ad66454f4eae6393ec780e5
+  reviewed_commit: 6aba80a84c50497c5d1e73dbf2f4a1f3dd0510bd
   watch_paths:
   - src
   - tests
