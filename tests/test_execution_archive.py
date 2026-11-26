@@ -1,4 +1,5 @@
 """Execution archive gates use temporary storage and public synthetic canaries."""
+import contextlib
 import hashlib
 import json
 import os
@@ -134,6 +135,20 @@ class ArchiveTest(unittest.TestCase):
             self.a._maintain()
         self.assertFalse((self.a.events / sealed["id"]).exists())
         self.assertTrue((self.a.events / live["id"]).exists())
+
+    def test_retention_cache_and_reindex_preserve_original_event(self):
+        event = self.event()
+        with self.a.lock():
+            self.a._maintain()
+            with mock.patch("json.load", side_effect=AssertionError("reopened sealed manifest")):
+                self.a._maintain()
+            self.a._index(event)
+            self.assertEqual(len(self.a.query("public")), 1)
+            with contextlib.closing(self.a.connect()) as conn, conn:
+                conn.execute("UPDATE sealed_times SET ended=0 WHERE id=?", (event["id"],))
+            self.a._maintain()
+        self.assertTrue((self.a.events / event["id"] / "manifest.json").exists())
+        self.assertEqual(len(self.a.query("public")), 1)
 
     def test_filters_and_tamper_fail_closed(self):
         m = self.event()

@@ -173,6 +173,8 @@ class Archive:
           label TEXT NOT NULL, manifest TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS event_filter ON events(source,started);
         CREATE VIRTUAL TABLE IF NOT EXISTS search USING fts5(id UNINDEXED,text);
+        CREATE TABLE IF NOT EXISTS sealed_times(
+          id TEXT PRIMARY KEY, stamp TEXT NOT NULL, ended REAL NOT NULL);
         """)
         for p in (db, self.root / "index.sqlite3-wal", self.root / "index.sqlite3-shm"):
             if p.exists():
@@ -371,11 +373,15 @@ class Archive:
         conn = self.connect()
         try:
             with conn:
+                # New IDs have no prior FTS row. Its id column is UNINDEXED,
+                # so an unconditional deletion reads the whole text archive.
+                existing = conn.execute("SELECT 1 FROM events WHERE id=?", (m["id"],)).fetchone()
                 conn.execute("INSERT OR REPLACE INTO events VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                              tuple(m[k] for k in ("id", "kind", "source", "host", "parent",
                                    "correlation", "pid", "started", "ended", "exit_code", "state",
                                    "coverage", "label")) + (f"events/{m['id']}/manifest.json",))
-                conn.execute("DELETE FROM search WHERE id=?", (m["id"],))
+                if existing:
+                    conn.execute("DELETE FROM search WHERE id=?", (m["id"],))
                 conn.execute("INSERT INTO search(id,text) VALUES(?,?)", (m["id"], text))
         finally:
             conn.close()
@@ -434,26 +440,62 @@ class Archive:
         return count
 
     def usage(self) -> int:
-        return sum(p.stat().st_size for p in self.root.rglob("*") if p.is_file() and not p.is_symlink())
+        total = 0
+        directories = [self.root]
+        while directories:
+            with os.scandir(directories.pop()) as entries:
+                for entry in entries:
+                    if entry.is_dir(follow_symlinks=False):
+                        directories.append(entry.path)
+                    elif entry.is_file(follow_symlinks=False):
+                        total += entry.stat(follow_symlinks=False).st_size
+        return total
 
     def _maintain(self) -> None:
         sealed = []
-        for path in self.events.iterdir():
-            if path.is_symlink() or not (path / "manifest.json").exists():
-                continue
-            m = json.loads((path / "manifest.json").read_text())
-            if m["state"] != "active":
-                sealed.append((m["ended"], m["id"], path))
+        with contextlib.closing(self.connect()) as conn:
+            known = {row[0]: (row[1], row[2]) for row in conn.execute("SELECT id,stamp,ended FROM sealed_times")}
+            updates = []
+            with os.scandir(self.events) as entries:
+                for entry in entries:
+                    if not entry.is_dir(follow_symlinks=False):
+                        continue
+                    manifest = os.path.join(entry.path, "manifest.json")
+                    try:
+                        info = os.stat(manifest)
+                    except FileNotFoundError:
+                        continue
+                    stamp = f"{info.st_dev}/{info.st_ino}/{info.st_size}/{info.st_mtime_ns}/{info.st_ctime_ns}"
+                    previous = known.get(entry.name)
+                    if previous and previous[0] == stamp:
+                        sealed.append((previous[1], entry.name, entry.path))
+                        continue
+                    with open(manifest, encoding="utf-8") as stream:
+                        m = json.load(stream)
+                    if m["state"] != "active":
+                        sealed.append((m["ended"], m["id"], entry.path))
+                        if m["id"] == entry.name:
+                            updates.append((entry.name, stamp, m["ended"]))
+            if updates:
+                with conn:
+                    conn.executemany("INSERT OR REPLACE INTO sealed_times VALUES(?,?,?)", updates)
         cutoff = time.time() - self.config["retention_days"] * 86400
         for ended, event_id, path in sorted(sealed):
             if ended >= cutoff and self.usage() <= self.config["quota_bytes"]:
                 break
+            # The cache is rebuildable. Only the original authorizes deletion.
+            with open(os.path.join(path, "manifest.json"), encoding="utf-8") as stream:
+                original = json.load(stream)
+            if (original["id"] != event_id or original["state"] == "active"
+                    or original["ended"] != ended):
+                continue
             # Delete derived rows before originals. A crash may reindex; never
             # leave index rows pointing at a deleted manifest after successful prune.
             conn = self.connect()
             try:
                 with conn:
                     conn.execute("DELETE FROM events WHERE id=?", (event_id,))
+                    conn.execute("DELETE FROM sealed_times WHERE id=?", (event_id,))
                     conn.execute("DELETE FROM search WHERE id=?", (event_id,))
             finally:
                 conn.close()
