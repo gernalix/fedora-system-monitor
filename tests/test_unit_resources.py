@@ -84,6 +84,17 @@ class UnitResources(unittest.TestCase):
                              if row["name"] == "service.resource.completed_memory_peak_mib"])
         self.assertEqual(observed, [[], [], [], [True], [True], [], [False]])
 
+    def test_idle_leaf_does_not_hide_a_busy_disk(self):
+        devices = {"8:0", "8:16"}
+        active = "8:0 rios=6100 wios=1 rbytes=4096 wbytes=128"
+        for idle in ("8:16", "8:16 use_delay=1 delay_nsec=42"):
+            with self.subTest(idle=idle):
+                ops, size = scanner.block_counters(f"{active}\n{idle}\n", devices)
+                self.assertEqual(ops, {"8:0": 6101, "8:16": 0})
+                self.assertEqual(size, {"8:0": 4224, "8:16": 0})
+        with self.assertRaises(KeyError):
+            scanner.block_counters("8:0 rios=1", devices)
+
     def test_walk_separates_users_and_counts_leaf_disks_once(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "cgroup"

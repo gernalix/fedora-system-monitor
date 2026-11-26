@@ -30,6 +30,11 @@ def block_counters(raw, physical):
         device, *entries = line.split()
         if device in physical:
             values = dict(entry.split("=") for entry in entries)
+            # Linux omits this entire group of four fields when all are zero.
+            # Device identity and optional controller statistics can still appear.
+            if not values.keys() & {"rios", "wios", "rbytes", "wbytes"}:
+                ops[device] = size[device] = 0
+                continue
             ops[device] = int(values["rios"]) + int(values["wios"])
             size[device] = int(values["rbytes"]) + int(values["wbytes"])
     return ops, size
