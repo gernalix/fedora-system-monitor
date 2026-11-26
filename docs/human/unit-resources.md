@@ -23,7 +23,10 @@ mancante, un cambio di boot o di cgroup interrompono il confronto pertinente.
 
 Valori iniziali per l'indagine: 80% di un core, 6.000 operazioni al minuto,
 50 MiB/s oppure 2.048 MiB per tre campioni, tre riavvii o 30 avvii in un minuto, oppure due
-finestre con job conclusi per almeno 180 secondi CPU ciascuna. Dopo 15 campioni lo scanner considera anche una crescita di quattro
+finestre con job conclusi per almeno 180 secondi CPU ciascuna. Tre finestre
+consecutive con almeno un’esecuzione fallita generano un avviso anche per un
+timer leggero che continua a ripetere lo stesso lavoro. Il rientro richiede due
+finestre con avvii osservati e senza ulteriori fallimenti. Dopo 15 campioni lo scanner considera anche una crescita di quattro
 volte rispetto alla media mobile della singola unità, con soglie minime di
 20% CPU, 1.500 I/O al minuto, 10 MiB/s e 512 MiB. I limiti espliciti
 per unità prevalgono sulla soglia relativa. Un operatore

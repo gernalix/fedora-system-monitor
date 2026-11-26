@@ -18,6 +18,7 @@ STATE = "service.resource_assessment.v1"
 RESTART = "5eb03494b6584870a536b337290809b3"
 USAGE = "ae8f7b866b0347b9af31fe1c80b127c0"
 STARTED = "39f53479d3a045ac8e11786248231fbf"
+FAILED = "d9b373ed55a64feb8242e02dbe79a49c"
 LIMITS = {k: v for k, v in DEFAULT_CONFIG["unit_resources"].items() if isinstance(v, (int, float))}
 RELATIVE_FLOORS = {"cpu_percent": 20, "io_ops_min": 1500, "io_mib_s": 10, "memory_mib": 512}
 
@@ -85,7 +86,7 @@ def journal_window(config, since, until):
     cmd = ["journalctl", "-b", "--no-pager", "-q", "-o", "json",
            f"--output-fields={fields}", f"--since=@{since:.6f}", f"--until=@{until:.6f}",
            "--lines=4097", "_COMM=systemd", f"MESSAGE_ID={USAGE}", f"MESSAGE_ID={RESTART}",
-           f"MESSAGE_ID={STARTED}"]
+           f"MESSAGE_ID={STARTED}", f"MESSAGE_ID={FAILED}"]
     result = external(config, cmd, timeout=5, max_output=4_000_000)
     lines = result.stdout.splitlines()
     if not result.ok or len(lines) > 4096 or len(result.stdout) >= 4_000_000:
@@ -106,6 +107,8 @@ def journal_window(config, since, until):
         kind = event["MESSAGE_ID"]
         if kind == USAGE and "CPU_USAGE_NSEC" in event:
             counters["completed_cpu_seconds"] += int(event["CPU_USAGE_NSEC"]) / 1e9
+        elif kind == FAILED:
+            counters["failed_runs"] += 1
         elif kind == RESTART:
             counters["restarts"] += 1
         elif kind == STARTED:
@@ -146,6 +149,10 @@ def assess(config, previous, samples, journal, *, boot, now, wall, skipped):
             activity = journal.get(unit, {})
             values.update({key + "_min": activity.get(key, 0) * 60 / elapsed
                            for key in ("starts", "restarts")})
+            # A completed start or failure is positive evidence for a short-lived
+            # unit. A silent window cannot certify that a failed job recovered.
+            if activity.get("failed_runs") or activity.get("starts"):
+                values["failed_runs"] = activity.get("failed_runs", 0)
             # Completion charges belong to the whole invocation; never add
             # these to the interval CPU rate of a still-running invocation.
             if "completed_cpu_seconds" in activity:

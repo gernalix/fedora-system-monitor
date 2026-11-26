@@ -54,6 +54,17 @@ class UnitResources(unittest.TestCase):
                                            wall=minute*60+1000, skipped=0)
         self.assertTrue(any(m["name"] == "service.resource.completed_cpu_seconds" for m in result.metrics))
 
+    def test_repeating_failed_jobs_recover_only_after_observed_starts(self):
+        state = {}
+        active = []
+        for minute, journal in enumerate(({}, {"failed_runs": 2}, {"failed_runs": 2}, {"failed_runs": 1},
+                                          {}, {"starts": 1}, {"starts": 1})):
+            result, state = scanner.assess({}, state, {}, {self.unit: journal} if journal else {},
+                                           boot="b", now=minute*60, wall=minute*60+1000, skipped=0)
+            active.append([m["details"]["active"] for m in result.metrics
+                           if m["name"] == "service.resource.failed_runs"])
+        self.assertEqual(active, [[], [], [], [True], [], [True], [False]])
+
     def test_walk_separates_users_and_counts_leaf_disks_once(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "cgroup"
@@ -75,8 +86,9 @@ class UnitResources(unittest.TestCase):
                  "USER_UNIT": "web.service"}
         untrusted = {**event, "_SYSTEMD_USER_UNIT": "web.service"}
         with patch.object(scanner, "external", return_value=SimpleNamespace(ok=True,
-                          stdout="\n".join(map(json.dumps, (event, untrusted))))) as call:
-            self.assertEqual(scanner.journal_window({}, 1000, 1060)[self.unit]["restarts"], 1)
+                          stdout="\n".join(map(json.dumps, (event, untrusted, {**event, "MESSAGE_ID": scanner.FAILED}))))) as call:
+            counters = scanner.journal_window({}, 1000, 1060)[self.unit]
+            self.assertEqual((counters["restarts"], counters["failed_runs"]), (1, 1))
             self.assertIn("--lines=4097", call.call_args.args[1])
 
 
