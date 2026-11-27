@@ -44,6 +44,19 @@ class ResourceTriageTests(unittest.TestCase):
         self.assertEqual([r["pid"] for r in result["rows"]], [2, 1])
         self.assertEqual(result["rows"][0]["write_bytes"], 110)
 
+    def test_targeted_pid_io_uses_live_members_when_history_has_no_baseline(self):
+        stale = [dict(pid=1, name="exited")]
+        live = {("2", 100): ("active", 12, 8), ("3", 101): ("leaving", 13, 30)}
+        with patch.object(triage.resource_pid_trace, "group_path", return_value=(Path("/scope"), "/scope")), \
+             patch.object(triage.resource_pid_trace, "snapshot", return_value=(live, 0)), \
+             patch.object(triage, "pid_io_reading", side_effect=[None, (44, 20), None]) as read, \
+             patch.object(triage.time, "sleep"):
+            result = triage.process_io(stale, UNIT, 10, 10)
+        self.assertEqual(result["candidate_source"], "cgroup")
+        self.assertEqual(result["candidates"], 2)
+        self.assertEqual(result["rows"], [dict(pid=2, name="active", read_bytes=32, write_bytes=12)])
+        self.assertEqual(read.call_args_list[1].args[0]["start_ticks"], 100)
+
     def test_private_receipt_keeps_latest_verification_separate_by_metric(self):
         with tempfile.TemporaryDirectory() as temp, patch.dict("os.environ", {"XDG_STATE_HOME": temp}):
             data = dict(unit=UNIT, metric="cpu_percent", status="NON_RIENTRATO")

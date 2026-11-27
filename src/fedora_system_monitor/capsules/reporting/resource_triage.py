@@ -16,7 +16,7 @@ from ..collectors import unit_repairs
 from ..collectors.common import operator_identity
 from ..collectors.unit_resources import BOOT, LIMITS, MEMORY_ADJUSTED, RELATIVE_FLOORS, STATE, rates, split_unit
 from ..config import load_config
-from . import _connection
+from . import _connection, resource_pid_trace
 
 METRICS = tuple(RELATIVE_FLOORS)
 DEFAULT_DB = "/var/lib/fedora-system-monitor/monitor.sqlite3"
@@ -301,6 +301,19 @@ def pid_io_reading(row, unit):
 def process_io(rows, unit, seconds, limit):
     start = time.monotonic()
     first = {r["pid"]: pid_io_reading(r, unit) for r in rows}
+    source = "process_history"
+    if not any(counts is not None for counts in first.values()):
+        source = "unavailable"
+        try:
+            directory, relative = resource_pid_trace.group_path(unit)
+            current, _ = resource_pid_trace.snapshot(directory, relative)
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            current = {}
+        if current:
+            source = "cgroup"
+            rows = [dict(pid=int(pid), start_ticks=start_ticks, name=counts[0])
+                    for (pid, start_ticks), counts in current.items()]
+            first = {int(pid): counts[1:] for (pid, _), counts in current.items()}
     measured = []
     if any(counts is not None for counts in first.values()):
         time.sleep(seconds)
@@ -315,7 +328,7 @@ def process_io(rows, unit, seconds, limit):
             if read >= 0 and written >= 0:
                 measured.append(dict(pid=row["pid"], name=row["name"], read_bytes=read, write_bytes=written))
     measured.sort(key=lambda r: (-(r["read_bytes"] + r["write_bytes"]), r["pid"]))
-    return dict(elapsed_seconds=round(time.monotonic() - start, 3), candidates=len(rows),
+    return dict(elapsed_seconds=round(time.monotonic() - start, 3), candidate_source=source, candidates=len(rows),
                 measured=len(measured), rows=measured[:limit])
 
 
