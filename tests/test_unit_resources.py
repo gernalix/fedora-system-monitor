@@ -54,6 +54,43 @@ class UnitResources(unittest.TestCase):
                                            wall=minute*60+1000, skipped=0)
         self.assertTrue(any(m["name"] == "service.resource.completed_cpu_seconds" for m in result.metrics))
 
+    def test_running_failure_recovery_requires_continuous_invocation_and_journal(self):
+        state = {"findings": {self.unit: {"failed_runs": {"open": True}}}}
+        evidence = []
+        # Replacement, journal gap, and failure each interrupt a recovery.
+        observations = [("a", {}), ("b", {}), ("b", {}), ("b", None),
+                        ("b", {"failed_runs": 1}), ("c", {}), ("c", {}), ("c", {})]
+        for minute, (invocation, activity) in enumerate(observations):
+            snapshot = {"inode": 1}
+            if activity == {}:
+                snapshot["running_invocation"] = invocation * 32
+            journal = None if activity is None else {self.unit: activity}
+            result, state = scanner.assess({}, state, {self.unit: snapshot}, journal,
+                                          boot="test", now=minute*60, wall=1000+minute*60, skipped=0)
+            evidence.append([m["details"]["active"] for m in result.metrics
+                             if m["name"] == "service.resource.failed_runs"])
+        self.assertEqual(evidence, [[], [], [True], [], [True], [], [True], [False]])
+
+    def test_probe_queries_only_open_quiet_services_in_their_manager(self):
+        names = ["web.service", "job.service", "dead.service", "invalid.service", "busy.service", "ok.service"]
+        samples = {"user:1000:" + name: {} for name in names}
+        findings = {unit: {"failed_runs": {"open": not unit.endswith(":ok.service")}} for unit in samples}
+        journal = {"user:1000:busy.service": {"restarts": 1}}
+        running = ("Id=web.service\nActiveState=active\nSubState=running\nType=notify\n"
+                   "MainPID=42\nResult=success\nInvocationID=" + "a"*32)
+        response = "\n\n".join([running, running.replace("web.service", "job.service").replace("notify", "oneshot"),
+                                running.replace("web.service", "dead.service").replace("MainPID=42", "MainPID=0"),
+                                running.replace("web.service", "invalid.service").replace("a"*32, "bad")])
+        with patch.object(scanner, "external", return_value=SimpleNamespace(ok=True, stdout=response)) as query:
+            scanner.observe_running_services({}, findings, samples, journal)
+        command = query.call_args.args[1]
+        self.assertIn("--machine=1000@.host", command)
+        self.assertEqual(command[command.index("--")+1:], names[:4])
+        self.assertEqual([unit for unit, s in samples.items() if s.get("running_invocation")], [self.unit])
+        with patch.object(scanner, "external") as query:
+            scanner.observe_running_services({}, {}, samples, {})
+            query.assert_not_called()
+
     def test_repeating_failed_jobs_recover_only_after_observed_starts(self):
         state = {}
         active = []

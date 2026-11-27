@@ -3,13 +3,14 @@ from __future__ import annotations
 
 import json
 import time
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
 
 from . import unit_repairs
 from ..config import DEFAULT_CONFIG
 from .common import external
 from .model import CollectionResult, record
+from .periodic import _parse_systemctl_show
 
 CGROUP = Path("/sys/fs/cgroup")
 DEVICES = Path("/sys/dev/block")
@@ -151,6 +152,36 @@ def rates(sample, previous, seconds):
     return values
 
 
+def observe_running_services(config, findings, samples, journal):
+    """Query only live services with an open failure and a quiet manager window."""
+    managers = defaultdict(list)
+    for unit, metrics in findings.items():
+        manager, _, name = unit.rpartition(":")
+        activity = journal.get(unit, {})
+        if (metrics.get("failed_runs", {}).get("open") and unit in samples
+                and name.endswith(".service") and not any(activity.get(k) for k in ("failed_runs", "starts", "restarts"))):
+            managers[manager].append(name)
+    for manager, names in managers.items():
+        command = ["systemctl"]
+        if manager.startswith("user:") and manager[5:].isdecimal():
+            command.extend(["--user", f"--machine={manager[5:]}@.host"])
+        elif manager != "system":
+            continue
+        command.extend(["show", "--property=Id,Type,ActiveState,SubState,Result,MainPID,InvocationID", "--", *names])
+        result = external(config, command, timeout=3)
+        if not result.ok:
+            continue
+        for row in _parse_systemctl_show(result.stdout):
+            name = row.get("Id")
+            invocation = row.get("InvocationID", "")
+            if (name in names and row.get("ActiveState") == "active" and row.get("SubState") == "running"
+                    and row.get("Result") == "success" and row.get("Type") not in (None, "", "oneshot")
+                    and row.get("MainPID", "").isdecimal() and int(row["MainPID"]) > 0
+                    and len(invocation) == 32 and all(c in "0123456789abcdef" for c in invocation)
+                    and invocation != "0" * 32):
+                samples[f"{manager}:{name}"]["running_invocation"] = invocation
+
+
 def assess(config, previous, samples, journal, *, boot, now, wall, skipped):
     same_boot = boot == previous.get("boot")
     elapsed = now - previous.get("mono", now)
@@ -172,6 +203,11 @@ def assess(config, previous, samples, journal, *, boot, now, wall, skipped):
             # unit. A silent window cannot certify that a failed job recovered.
             if activity.get("failed_runs") or activity.get("starts"):
                 values["failed_runs"] = activity.get("failed_runs", 0)
+            elif (snapshot.get("running_invocation") and not activity.get("restarts")
+                  and snapshot.get("inode") == prior.get(unit, {}).get("inode")
+                  and snapshot["running_invocation"] == prior.get(unit, {}).get("running_invocation")):
+                # Same running daemon at both ends of a complete, failure-free window.
+                values["failed_runs"] = 0
             # Completion charges belong to the whole invocation; never add
             # these to the interval CPU rate of a still-running invocation.
             for key in COMPLETION_METRICS:
@@ -262,6 +298,8 @@ def collect_unit_resources(scope, config, db):
     expected = previous.get("boot") == boot and 20 <= elapsed <= 180 and abs(wall - since - elapsed) < 2
     if expected:
         journal = journal_window(config, since + .000001, wall)
+        if journal is not None:
+            observe_running_services(config, prior_findings, samples, journal)
     result, state = assess(config, previous, samples, journal, boot=boot, now=now, wall=wall, skipped=skipped)
     if not samples or (expected and journal is None):
         result.errors.append("unit resource accounting incomplete: cgroups or manager journal unavailable")

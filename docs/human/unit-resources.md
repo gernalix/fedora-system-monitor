@@ -30,7 +30,11 @@ Valori iniziali per l'indagine: 80% di un core, 6.000 operazioni al minuto,
 finestre con job conclusi per almeno 180 secondi CPU ciascuna. Tre finestre
 consecutive con almeno un’esecuzione fallita generano un avviso anche per un
 timer leggero che continua a ripetere lo stesso lavoro. Il rientro richiede due
-finestre con avvii osservati e senza ulteriori fallimenti. Dopo 15 campioni lo scanner considera anche una crescita di quattro
+finestre con avvii osservati e senza ulteriori fallimenti. Per un servizio che resta
+in esecuzione, FSM può anche verificare due intervalli completi con la stessa
+invocazione attiva, il processo principale presente e il journal senza fallimenti
+o riavvii. Interroga il manager soltanto per i servizi con questo avviso aperto.
+Dopo 15 campioni lo scanner considera anche una crescita di quattro
 volte rispetto alla media mobile della singola unità, con soglie minime di
 20% CPU, 1.500 I/O al minuto, 10 MiB/s e 512 MiB. I limiti espliciti
 per unità prevalgono sulla soglia relativa. Un operatore
