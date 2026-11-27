@@ -102,6 +102,13 @@ delle metriche. Il costo sul database di produzione può variare.
 
 ## Classifica e verifica da terminale
 
+`fsm-resources journal --minutes 8 --json` raggruppa per produttore il journal
+accessibile con una sola lettura. Mostra conteggi, byte osservati, priorità,
+trasporto e ripetizioni esatte senza riportare messaggi. Con `--unit` limita
+la lettura al produttore richiesto. Il cursore riprende la lettura successiva
+e resta fermo quando il limite delle righe ha tagliato la finestra. I byte
+si riferiscono ai messaggi disponibili nell'output JSON di journald.
+
 Dal checkout Fedora, `scripts/fsm-resources rank` mostra le unità dell’ultimo
 campione ordinate per operazioni I/O al minuto. Il riepilogo storico contiene
 i primi cinque per metrica. Un punto interrogativo indica un valore fuori

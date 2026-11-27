@@ -351,6 +351,9 @@ def last_verification(unit, metric):
 
 
 def run(args):
+    if args.command == "journal":
+        from .resource_journal import report
+        return report(args)
     if args.command == "changes":
         from .resource_followup import changes
         return changes(args)
@@ -422,6 +425,13 @@ def main(argv=None):
     changes.add_argument("--cursor")
     changes.add_argument("--minutes", type=int, default=15)
     changes.add_argument("--limit", type=int, default=50)
+    journal = commands.add_parser("journal", help="raggruppa le fonti del journal con una sola lettura")
+    journal.add_argument("--unit", help="limita la lettura al produttore con questa identità FSM")
+    journal.add_argument("--cursor", help="riprende dopo un cursore del journal")
+    journal.add_argument("--minutes", type=int, default=8)
+    journal.add_argument("--lines", type=int, choices=range(1, 4001), metavar="1..4000", default=2000)
+    journal.add_argument("--limit", type=int, default=10)
+    journal.add_argument("--json", action="store_true")
     boot = commands.add_parser("boot", help="confronta la stessa finestra dalla partenza")
     boot.add_argument("--backups", help="directory delle copie FSM per gli avvii usciti dalla storia recente")
     boot.add_argument("--compare", type=int, choices=range(1, 11), default=3)
@@ -474,7 +484,7 @@ def main(argv=None):
     cutoff = getattr(args, "threshold", None)
     if cutoff is not None and (not math.isfinite(cutoff) or cutoff <= 0):
         parser.error("--threshold deve essere positivo e finito")
-    if hasattr(args, "unit"):
+    if getattr(args, "unit", None) is not None:
         try:
             split_unit(args.unit)
         except ValueError as error:
