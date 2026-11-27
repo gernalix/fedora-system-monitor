@@ -17,7 +17,12 @@ Il riepilogo conserva copertura, uptime, disponibilità dei contatori e primi
 cinque per misura. Cento per cento CPU equivale a un core. Le operazioni al
 minuto sono letture e scritture del livello a blocchi, incluso zram quando
 contabilizzato. Un dispositivo cifrato e il suo disco sono contati una volta.
-La memoria è la carica del cgroup, cache inclusa. Per i job conclusi il journal fornisce
+Per le unità attive, FSM sottrae dalla carica del cgroup una stima prudente
+della cache di file inattiva. Le pagine sporche, in scrittura e quelle mappate
+o condivise restano nel conteggio. Se i dati sono incompleti, FSM usa la carica
+totale. `case --memory` mostra anche il totale. La classifica RAM usa i campioni
+della stessa definizione, e la soglia relativa si ricalibra al cambio di base.
+Per i job conclusi il journal fornisce
 la CPU dell’intera esecuzione e, quando disponibile, il picco di RAM. Se più
 esecuzioni della stessa unità terminano in un minuto, FSM conserva il picco
 maggiore. Due finestre con picchi di almeno 2.048 MiB aprono un avviso.

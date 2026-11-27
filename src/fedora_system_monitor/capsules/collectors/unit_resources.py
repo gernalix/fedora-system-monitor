@@ -8,6 +8,7 @@ from pathlib import Path
 
 from . import unit_repairs
 from ..config import DEFAULT_CONFIG
+from ..resource_rescue.pressure import fields
 from .common import external
 from .model import CollectionResult, record
 from .periodic import _parse_systemctl_show
@@ -23,6 +24,16 @@ FAILED = "d9b373ed55a64feb8242e02dbe79a49c"
 LIMITS = {k: v for k, v in DEFAULT_CONFIG["unit_resources"].items() if isinstance(v, (int, float))}
 COMPLETION_METRICS = ("completed_cpu_seconds", "completed_memory_peak_mib")
 RELATIVE_FLOORS = {"cpu_percent": 20, "io_ops_min": 1500, "io_mib_s": 10, "memory_mib": 512}
+MEMORY_ADJUSTED = "memory_clean_inactive"
+
+
+def clean_inactive_file(total, stats):
+    """Estimate the inactive file cache available without writeback or unmapping."""
+    keys = ("inactive_file", "file_dirty", "file_writeback", "file_mapped", "shmem")
+    if any(key not in stats for key in keys) or not 0 <= stats["inactive_file"] <= total:
+        return None
+    inactive, dirty, writeback, mapped, shared = (int(stats[key]) for key in keys)
+    return max(0, inactive - dirty - writeback - mapped - shared)
 
 
 def leaf_devices(devices):
@@ -81,6 +92,9 @@ def read_cgroups(root=CGROUP, devices=DEVICES):
                             sample[key] = int(dict(line.split() for line in raw.splitlines())["usage_usec"])
                         elif key == "memory":
                             sample[key] = int(raw)
+                            inactive = clean_inactive_file(sample[key], fields(path / "memory.stat"))
+                            if inactive is not None:
+                                sample[MEMORY_ADJUSTED] = inactive
                         else:
                             sample["io"], sample["io_bytes"] = block_counters(raw, physical)
                     except (FileNotFoundError, PermissionError, KeyError, ValueError):
@@ -146,7 +160,7 @@ def journal_window(config, since, until):
 def rates(sample, previous, seconds):
     values = {}
     if "memory" in sample:
-        values["memory_mib"] = sample["memory"] / 1048576
+        values["memory_mib"] = (sample["memory"] - sample.get(MEMORY_ADJUSTED, 0)) / 1048576
     if not seconds or sample.get("inode") != previous.get("inode"):
         return values
     if "cpu" in sample and "cpu" in previous and sample["cpu"] >= previous["cpu"]:
@@ -201,7 +215,9 @@ def assess(config, previous, samples, journal, *, boot, now, wall, skipped):
     result = CollectionResult("minute")
     for unit in sorted(samples.keys() | (journal or {}).keys() | old_findings.keys()):
         snapshot = samples.get(unit, {})
-        values = rates(snapshot, prior.get(unit, {}), elapsed if continuous else 0)
+        previous_sample = prior.get(unit, {})
+        values = rates(snapshot, previous_sample, elapsed if continuous else 0)
+        memory_changed = (MEMORY_ADJUSTED in snapshot) != (MEMORY_ADJUSTED in previous_sample)
         if journal is not None and continuous:
             activity = journal.get(unit, {})
             values.update({key + "_min": activity.get(key, 0) * 60 / elapsed
@@ -234,7 +250,10 @@ def assess(config, previous, samples, journal, *, boot, now, wall, skipped):
             # observed samples. Freeze it during a breach to avoid learning a leak.
             reference = None
             if key in RELATIVE_FLOORS and snapshot:
-                count, reference = prior.get(unit, {}).get("baseline", {}).get(key, (0, None))
+                if key == "memory_mib" and memory_changed:
+                    count = 0
+                else:
+                    count, reference = previous_sample.get("baseline", {}).get(key, (0, None))
                 if count >= 15 and key not in overrides:
                     limit = min(limit, max(RELATIVE_FLOORS[key], 4 * reference))
                 if value is not None and value < limit:
@@ -254,7 +273,8 @@ def assess(config, previous, samples, journal, *, boot, now, wall, skipped):
             calm = value is not None and value < limit * .8
             # A recreated cgroup needs fresh continuous evidence for rates.
             run = old.get("run", 0) if continuous else 0
-            if key in RELATIVE_FLOORS and snapshot.get("inode") != prior.get(unit, {}).get("inode"):
+            if ((key in RELATIVE_FLOORS and snapshot.get("inode") != previous_sample.get("inode"))
+                    or (key == "memory_mib" and memory_changed)):
                 run = 0
             if hot:
                 run = max(run, 0) + 1
@@ -270,19 +290,23 @@ def assess(config, previous, samples, journal, *, boot, now, wall, skipped):
             if active or hot:
                 findings.setdefault(unit, {})[key] = {"run": sustained, "open": active, "seen": wall}
             if (active and value is not None) or (opened and not active):
+                details = {"active": active, "limit": round(limit, 2), "samples": abs(sustained),
+                           "baseline": round(reference, 2) if reference is not None else None,
+                           "window_seconds": round(elapsed, 2), "boot_id": boot}
+                if key == "memory_mib" and "memory" in snapshot:
+                    details["memory_total_mib"] = round(snapshot["memory"] / 1048576, 2)
+                    details["memory_basis"] = "minus_clean_inactive" if MEMORY_ADJUSTED in snapshot else "total"
                 result.metrics.append(record(60, "service", "service.resource." + key, round(value, 2),
                     key, source="unit_resource_scanner", device_id=unit,
-                    severity="warning" if active else "info",
-                    details={"active": active, "limit": round(limit, 2), "samples": abs(sustained),
-                             "baseline": round(reference, 2) if reference is not None else None,
-                             "window_seconds": round(elapsed, 2), "boot_id": boot}))
+                    severity="warning" if active else "info", details=details))
     result.metrics.append(record(60, "service", "service.resource_scan", len(samples), "cgroups",
         source="unit_resource_scanner", details={"boot_id": boot, "uptime_seconds": round(now),
             "system": sum(u.startswith("system:") for u in samples),
             "user": sum(u.startswith("user:") for u in samples), "skipped": skipped,
             "observed": {k: sum(k in s for s in samples.values()) for k in ("cpu", "io", "memory")},
             "journal_units": len(journal) if journal is not None else None,
-            "continuous": continuous, "top": {k: sorted(v, reverse=True)[:5] for k,v in peaks.items()}}))
+            "continuous": continuous, "memory_basis": "minus_clean_inactive_when_available",
+            "top": {k: sorted(v, reverse=True)[:5] for k,v in peaks.items()}}))
     return result, {"boot": boot, "mono": now, "wall": wall, "samples": samples, "findings": findings}
 
 

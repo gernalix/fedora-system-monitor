@@ -4,6 +4,7 @@ from pathlib import Path
 import time
 
 from ..resource_rescue.pressure import fields, psi
+from ..collectors.unit_resources import clean_inactive_file
 from .resource_pid_trace import group_path
 
 
@@ -14,6 +15,9 @@ def memory_report(unit, *, proc=Path("/proc")):
     cpu = time.process_time()
     stat = fields(directory / "memory.stat")
     counts = {"current": int((directory / "memory.current").read_text())}
+    inactive = clean_inactive_file(counts["current"], stat)
+    if inactive is not None:
+        counts.update(clean_inactive_file=inactive, counted=counts["current"] - inactive)
     for key in ("anon", "file", "kernel", "shmem", "active_file", "inactive_file", "file_dirty"):
         if key in stat:
             counts[key] = stat[key]

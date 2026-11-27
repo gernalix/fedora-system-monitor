@@ -46,6 +46,48 @@ class UnitResources(unittest.TestCase):
         self.assertEqual(row["value"], 30)
         self.assertEqual(row["details"]["limit"], 20)
 
+    def test_memory_ignores_only_clean_inactive_file_cache(self):
+        mib = 1048576
+        stats = {"inactive_file": 2048 * mib, "file_dirty": 128 * mib, "file_writeback": 64 * mib,
+                 "file_mapped": 64 * mib, "shmem": 64 * mib}
+        self.assertEqual(scanner.clean_inactive_file(2300 * mib, stats), 1728 * mib)
+        self.assertIsNone(scanner.clean_inactive_file(1500 * mib, stats))
+        self.assertIsNone(scanner.clean_inactive_file(2300 * mib, {"inactive_file": 2048 * mib}))
+        state = {"boot": "test", "mono": 0, "samples": {
+            self.unit: {"inode": 1, "baseline": {"memory_mib": (30, 200)}}},
+            "findings": {self.unit: {"memory_mib": {"open": True}}}}
+        outcomes = []
+        for minute, counted in enumerate((572, 572, 2350, 2350, 2350), start=1):
+            sample = {"inode": 1, "memory": (counted + 1728) * mib,
+                      scanner.MEMORY_ADJUSTED: 1728 * mib}
+            metrics, state = scanner.assess({}, state, {self.unit: sample}, None, boot="test",
+                                            now=minute * 60, wall=minute * 60 + 1000, skipped=0)
+            outcomes.append([(row["value"], row["details"]["active"], row["details"]["memory_total_mib"])
+                             for row in metrics.metrics if row["name"] == "service.resource.memory_mib"])
+            if minute == 1:
+                self.assertEqual(state["samples"][self.unit]["baseline"]["memory_mib"], (1, 572))
+        self.assertEqual(outcomes, [[(572, True, 2300)], [(572, False, 2300)], [], [], [(2350, True, 4078)]])
+
+    def test_live_cgroup_memory_includes_raw_charge_and_adjustment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "cgroup"
+            devices = Path(tmp) / "devices"
+            devices.mkdir()
+            cgroup = root / "test.service"
+            cgroup.mkdir(parents=True)
+            (cgroup / "memory.current").write_text("2500000\n")
+            (cgroup / "memory.stat").write_text(
+                "inactive_file 1400000\nfile_dirty 200000\nfile_mapped 300000\nfile_writeback 0\nshmem 0\n")
+            samples, skipped = scanner.read_cgroups(root, devices)
+            self.assertEqual(skipped, 0)
+            sample = samples["system:test.service"]
+            self.assertEqual(sample["memory"], 2500000)
+            self.assertEqual(sample[scanner.MEMORY_ADJUSTED], 900000)
+            (cgroup / "memory.stat").unlink()
+            samples, skipped = scanner.read_cgroups(root, devices)
+            self.assertEqual(skipped, 0)
+            self.assertEqual(scanner.rates(samples["system:test.service"], {}, 0)["memory_mib"], 2500000 / 1048576)
+
     def test_short_lived_jobs_between_samples(self):
         state = {}
         for minute in range(6):

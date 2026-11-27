@@ -15,7 +15,7 @@ import time
 
 from ..collectors import unit_repairs
 from ..collectors.common import operator_identity
-from ..collectors.unit_resources import BOOT, LIMITS, RELATIVE_FLOORS, STATE, rates
+from ..collectors.unit_resources import BOOT, LIMITS, MEMORY_ADJUSTED, RELATIVE_FLOORS, STATE, rates
 from ..config import load_config
 from . import _connection
 
@@ -36,8 +36,15 @@ def history(db, metric, minutes, now):
         ORDER BY timestamp_utc DESC LIMIT ?
     """, (iso(now - minutes * 60).replace("+00:00", "Z"), minutes + 1))
     frames = []
+    memory_basis = None
     for stamp, raw in rows:
         detail = json.loads(raw)
+        if metric == "memory_mib":
+            basis = detail.get("memory_basis", "total")
+            if memory_basis is None:
+                memory_basis = basis
+            elif basis != memory_basis:
+                break
         frames.append((stamp, {unit: value for value, unit in detail["top"].get(metric, [])}))
     return frames
 
@@ -110,6 +117,8 @@ def observed(prior, current, elapsed, metric, unit=None):
             continue
         prev = old.get(key)
         if not prev or snap.get("inode") != prev.get("inode"):
+            continue
+        if metric == "memory_mib" and (MEMORY_ADJUSTED in snap) != (MEMORY_ADJUSTED in prev):
             continue
         value = rates(snap, prev, elapsed).get(metric)
         if value is not None:

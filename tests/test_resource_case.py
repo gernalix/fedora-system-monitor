@@ -12,6 +12,21 @@ from fedora_system_monitor.capsules.reporting import resource_pid_trace as trace
 
 
 class ResourceCaseTests(unittest.TestCase):
+    def test_memory_history_stops_at_the_accounting_change(self):
+        unit = "system:test.service"
+        with closing(sqlite3.connect(":memory:")) as db:
+            db.execute("CREATE TABLE periodic_metrics(category,name,timestamp_utc,details_json)")
+            old = {"top": {"memory_mib": [[2154, unit]], "io_ops_min": [[300, unit]]}}
+            new = {"memory_basis": "minus_clean_inactive_when_available",
+                   "top": {"memory_mib": [[269, unit]], "io_ops_min": [[200, unit]]}}
+            for end, sample in ((60, old), (120, new)):
+                db.execute("INSERT INTO periodic_metrics VALUES('service','service.resource_scan',?,?)",
+                           (cases.triage.iso(end).replace("+00:00", "Z"), json.dumps(sample)))
+            memory = cases.triage.history(db, "memory_mib", 5, 130)
+            self.assertEqual([point[1] for point in memory], [{unit: 269}])
+            io = cases.triage.history(db, "io_ops_min", 5, 130)
+            self.assertEqual([point[1] for point in io], [{unit: 200}, {unit: 300}])
+
     def journal(self, windows, *, state="recovered", seen=280, metric="failed_runs"):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder, "monitor.db")
