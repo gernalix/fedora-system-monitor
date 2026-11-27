@@ -140,6 +140,10 @@ def _load_runtime(args: argparse.Namespace, *, database: bool = True) -> tuple[d
 
 
 def _print(data: Any, args: argparse.Namespace, *, output_format: str | None = None) -> None:
+    if (output_format is None and args.command == "collect" and args.scope == "fast"
+            and not args.json and _stdout_is_journal()):
+        # journald creates a separate record per line, including nested heartbeat fields.
+        output_format = "json-line"
     print(render(data, output_format=output_format or ("json" if args.json else "text")))
 
 

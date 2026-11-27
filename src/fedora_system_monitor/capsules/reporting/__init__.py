@@ -488,6 +488,8 @@ def export_rows(
 
 def render(data: Any, *, output_format: str = "text") -> str:
     sanitized = _sanitize(data)
+    if output_format == "json-line":
+        return json.dumps(sanitized, separators=(",", ":"), default=str)
     if output_format == "json":
         return json.dumps(sanitized, indent=2, sort_keys=True, default=str)
     if output_format == "csv":

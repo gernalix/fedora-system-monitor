@@ -30,6 +30,30 @@ from fedora_system_monitor.capsules.notifications import NotificationResult
 class AppTests(unittest.TestCase):
     config = Path(__file__).resolve().parents[1] / "config/fedora-system-monitor.toml"
 
+    def test_fast_journal_keeps_complete_sanitized_receipt_on_one_line(self) -> None:
+        module = "fedora_system_monitor.capsules.runtime.coordinator"
+        receipt = {"results": [{"scope": "minute", "outcome": "partial", "errors": ["first\nsecond"]}],
+                   "heartbeats": [{"attempted": True, "delivered": False, "status": "failed",
+                                   "error": "Bearer example"}]}
+        with tempfile.TemporaryDirectory() as temp, patch(module + "._collect_command", return_value=receipt):
+            def run(scope, journal, *flags):
+                output = io.StringIO()
+                with patch(module + "._stdout_is_journal", return_value=journal), redirect_stdout(output):
+                    rc = main(["--config", str(self.config), "--database", str(Path(temp) / "db"),
+                               "collect", scope, *flags])
+                self.assertEqual(rc, 0)
+                return output.getvalue()
+
+            compact = run("fast", True)
+            self.assertEqual(len(compact.splitlines()), 1)
+            decoded = json.loads(compact)
+            self.assertEqual(decoded["results"], receipt["results"])
+            self.assertEqual(decoded["heartbeats"], [{**receipt["heartbeats"][0], "error": "Bearer [REDACTED]"}])
+            explicit = run("fast", True, "--json")
+            self.assertEqual(json.loads(explicit), json.loads(compact))
+            self.assertGreater(len(explicit.splitlines()), 1)
+            self.assertEqual(run("fast", False), run("minute", True))
+
     def test_kuma_runtime_cli_is_read_only_and_non_secret(self) -> None:
         output = io.StringIO()
         descriptor = {
