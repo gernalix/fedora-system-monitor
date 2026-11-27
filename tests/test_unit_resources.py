@@ -96,6 +96,23 @@ class UnitResources(unittest.TestCase):
                                            wall=minute*60+1000, skipped=0)
         self.assertTrue(any(m["name"] == "service.resource.completed_cpu_seconds" for m in result.metrics))
 
+    def test_ended_unit_recovers_live_gauges_after_two_proven_idle_windows(self):
+        other = "system:another.service"
+        state = {"boot": "test", "mono": 0, "samples": {self.unit: {"inode": 1}, other: {"inode": 2}},
+                 "findings": {self.unit: {name: {"open": True} for name in (
+                     "io_ops_min", "memory_mib", "completed_cpu_seconds", "failed_runs")}}}
+        for minute, (journal, skipped) in enumerate((({}, 0), ({}, 0), (None, 0), ({}, 1), ({}, 0), ({}, 0)), 1):
+            metrics, state = scanner.assess({}, state, {other: {"inode": 2}}, journal,
+                                            boot="test", now=minute * 60, wall=minute * 60 + 1000,
+                                            skipped=skipped)
+            recovered = {row["name"] for row in metrics.metrics if row["device_id"] == self.unit
+                         and row["details"]["active"] is False}
+            if minute < 6:
+                self.assertFalse(recovered)
+            else:
+                self.assertEqual(recovered, {"service.resource.io_ops_min", "service.resource.memory_mib"})
+        self.assertEqual(set(state["findings"][self.unit]), {"completed_cpu_seconds", "failed_runs"})
+
     def test_running_failure_recovery_requires_continuous_invocation_and_journal(self):
         state = {"findings": {self.unit: {"failed_runs": {"open": True}}}}
         evidence = []

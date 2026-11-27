@@ -52,7 +52,11 @@ io_ops_min = 1500
 ```
 
 Un avviso contiene identità, valore, limite e finestra. Il rientro richiede
-due misure sotto l'80% del limite. Verificare anche una funzione reale del
+due misure sotto l'80% del limite. Per CPU, I/O e RAM di un cgroup terminato,
+due intervalli completi senza cgroup ai due estremi e senza attività nel
+journal confermano che il consumo è cessato. Gli avvisi sulle esecuzioni
+fallite e sui consumi dei job conclusi richiedono le rispettive prove.
+Verificare anche una funzione reale del
 servizio prima di dichiarare risolto il difetto. Per un guasto nuovo si
 individua la causa nel progetto proprietario, si prova lì la modifica e si
 confrontano esecuzioni equivalenti sul sistema.

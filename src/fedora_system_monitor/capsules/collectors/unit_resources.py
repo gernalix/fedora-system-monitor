@@ -255,10 +255,19 @@ def assess(config, previous, samples, journal, *, boot, now, wall, skipped):
         if not snapshot and not (journal or {}).get(unit):
             values.pop("starts_min", None)
             values.pop("restarts_min", None)
+        # A unit absent at both ends of a complete, quiet interval cannot
+        # sustain a live resource gauge. Keep completion and failure alerts
+        # dependent on their own positive recovery evidence.
+        idle_absence = (continuous and skipped == 0 and bool(samples) and bool(prior)
+                        and journal is not None and unit not in journal
+                        and not snapshot and not previous_sample)
         for key, default in LIMITS.items():
             old = old_findings.get(unit, {}).get(key, {})
             limit = overrides.get(key, policy.get(key, default))
             value = values.get(key)
+            absent_gauge = idle_absence and key in RELATIVE_FLOORS and old.get("open", False)
+            if absent_gauge:
+                value = 0
             # Learn a quiet reference per unit and counter over at least 15
             # observed samples. Freeze it during a breach to avoid learning a leak.
             reference = None
@@ -306,6 +315,8 @@ def assess(config, previous, samples, journal, *, boot, now, wall, skipped):
                 details = {"active": active, "limit": round(limit, 2), "samples": abs(sustained),
                            "baseline": round(reference, 2) if reference is not None else None,
                            "window_seconds": round(elapsed, 2), "boot_id": boot}
+                if absent_gauge:
+                    details["observation"] = "absent_cgroup_and_quiet_journal"
                 if key == "memory_mib" and "memory" in snapshot:
                     details["memory_total_mib"] = round(snapshot["memory"] / 1048576, 2)
                     details["memory_basis"] = "minus_clean_inactive" if MEMORY_ADJUSTED in snapshot else "total"
