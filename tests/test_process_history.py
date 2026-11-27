@@ -71,6 +71,23 @@ class ProcessHistoryTests(unittest.TestCase):
         self.assertEqual(found[0]['unit'],'prompt-history-sync.service')
         self.assertNotIn('/user.slice',json.dumps(found))
 
+    def test_identity_lookup_reuses_the_last_nullable_duplicate(self):
+        path = proc(self.root)
+        (path / 'status').unlink()
+        snapshot = self.scan(persist=False)
+        row = snapshot['rows'][0]
+        fields = ('boot_id','pid','start_ticks','uid','user','name','unit')
+        identity = tuple(row[k] for k in fields)
+        with self.db._transaction() as c:
+            insert = 'INSERT INTO process_identities(boot_id,pid,start_ticks,uid,user,name,unit) VALUES(?,?,?,?,?,?,?)'
+            c.execute(insert, identity)
+            expected = c.execute(insert, identity).lastrowid
+            c.execute(insert, (identity[0], identity[1], identity[2]+1, *identity[3:]))
+        self.db.insert_process_snapshot(snapshot, OPTIONS)
+        rows = self.db.query('SELECT identity_id FROM process_samples')
+        self.assertEqual([r['identity_id'] for r in rows], [expected])
+        self.assertEqual(self.db.query('SELECT COUNT(*) n FROM process_identities')[0]['n'], 3)
+
     def test_unavailable_zero_reset_exit_pid_reuse_and_reboot(self):
         p=proc(self.root);self.scan();self.advance()
         proc(self.root);r=self.scan()['rows'][0]

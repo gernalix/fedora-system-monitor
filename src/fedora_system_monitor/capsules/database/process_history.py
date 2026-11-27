@@ -1,5 +1,6 @@
 """Compact process history in the monitor's existing database; no generic metrics."""
 from datetime import datetime, timezone
+import json
 
 SCHEMA = (
     """CREATE TABLE IF NOT EXISTS process_scans (
@@ -48,9 +49,12 @@ def persist(connection, snapshot):
     scan = connection.execute('''INSERT INTO process_scans
         (timestamp,boot_id,complete,visible,unreadable,duration_ms) VALUES(?,?,?,?,?,?)''',
         tuple(snapshot[k] for k in ('timestamp','boot_id','complete','visible','unreadable','duration_ms'))).lastrowid
-    # Metadata is usually unchanged for thousands of samples; cache once per batch.
+    # A PID can be reused after exit or reboot. Restrict index probes to PIDs
+    # present now, retaining the full metadata key (including NULL fields).
+    pids = sorted({row['pid'] for row in snapshot['rows']})
     identities = {tuple(r[1:]): r[0] for r in connection.execute(
-        'SELECT id,boot_id,pid,start_ticks,uid,user,name,unit FROM process_identities')}
+        """SELECT id,boot_id,pid,start_ticks,uid,user,name,unit FROM process_identities
+           WHERE pid IN (SELECT value FROM json_each(?)) ORDER BY id""", (json.dumps(pids),))}
     values = []
     for row in snapshot['rows']:
         key = tuple(row[k] for k in ('boot_id','pid','start_ticks','uid','user','name','unit'))
