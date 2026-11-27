@@ -144,3 +144,44 @@ verifica di ogni coppia unità/metrica viene registrata atomicamente nello stato
 privato dell’utente, sotto `fedora-system-monitor/resource-triage`. I comandi
 usano il timer e la telemetria esistenti. Per l’uso diretto dal checkout
 anteporre `scripts/` ai due nomi di comando.
+
+### Una diagnosi ripetibile con pochi dati
+
+`fsm-resources case --json` sceglie l’avviso aperto più urgente con la stessa
+priorità di `next`. Restituisce ID, unità, misura e soglia, quante volte figura
+nei primi cinque, picco osservato, tre PID per CPU, ricetta e ultima verifica
+della coppia unità/metrica. Il timer fast continua a raccogliere i dati. La
+diagnosi legge il database su richiesta. Per esaminare un consumo specifico:
+
+```sh
+fsm-resources case --metric io_ops_min --json
+fsm-resources case --id 123 --io-seconds 15 --json
+fsm-resources case --id 123 --verify --json
+```
+
+Sostituire 123 con l’ID restituito. Il secondo comando campiona ogni secondo
+gli eseguibili nel cgroup diretto, comprende i nuovi PID osservati e indica
+il costo CPU del controllo. Tenere conto di processi più brevi dell’intervallo,
+sottogruppi delegati, permessi e I/O ereditato dai figli attesi. I byte per
+eseguibile servono all’attribuzione e possono sovrapporsi. Le operazioni al
+minuto restano quelle misurate sul cgroup. Eseguire il comando tramite
+`systemd-run --user --wait --pipe --collect --quiet` quando lo si avvia
+dallo stesso gruppo in esame.
+
+Dopo una correzione, `--verify` confronta tre finestre intere per le misure
+del cgroup. Per avvii, riavvii, fallimenti e lavori conclusi consulta le
+misure registrate per l’unità e richiede due riscontri e la transizione di
+rientro dello scanner per quello specifico avviso. Una chiusura manuale o
+l’assenza del job lasciano l’esito insufficiente. L’uscita vale 0 per rientro,
+1 per consumo persistente o prova funzionale fallita, 2 per dati insufficienti.
+Il campo `probe` indica se è stata verificata la funzione del servizio.
+Per la dashboard della cronologia prompt viene controllato anche il cambio di
+ciclo. Usare `--timeout 1200` per attendere il suo aggiornamento periodico.
+
+Per confrontare due versioni dell’archivio comandi installato, eseguire
+`scripts/fsm-benchmark-command-archive` prima e dopo l’intervento. Ogni volta
+il comando avvia un servizio utente transitorio, produce tre catture locali
+di 38.400 byte di testo di prova, verifica il replay di stdout e output
+combinato e restituisce CPU, durata e operazioni a blocchi con le mediane.
+Un replay incompleto rende la prova inutilizzabile. L’archivio applica la
+conservazione ordinaria ai tre eventi.

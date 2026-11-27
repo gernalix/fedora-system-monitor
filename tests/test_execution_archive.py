@@ -574,10 +574,12 @@ class ProcessAdapterTest(unittest.TestCase):
         self.assertEqual(_command_name("command nohup COLOR=blue /usr/bin/printf safe"), "printf")
 
     def test_rdc_separated_streams_over_4k_child_fts_and_replay(self):
+        # FTS indexes the combined replay. Delimit the token in the child write
+        # even when a chunk of stderr immediately precedes it.
         program = ("import os,subprocess;"
                    "os.write(1,b'PUBLIC_STDOUT_START\\n'+b'o'*5000+b'\\n');"
                    "os.write(2,b'PUBLIC_STDERR_START\\n'+b'e'*5000+b'\\n');"
-                   "subprocess.run(['/usr/bin/printf','PUBLIC_CHILD_FRAME\\n'])")
+                   "subprocess.run(['/usr/bin/printf','\\nPUBLIC_CHILD_FRAME\\n'])")
         result = self.command("rdc", f"{shlex.quote(sys.executable)} -c {shlex.quote(program)}",
                               capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)

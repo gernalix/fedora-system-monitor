@@ -1,0 +1,84 @@
+#!/usr/bin/python3 -I
+"""Measure the installed command recorder with fixed public output and verify replay."""
+from contextlib import closing
+import json
+from pathlib import Path
+import resource
+import sqlite3
+import statistics
+import subprocess
+import sys
+import time
+
+FIXTURE = b"FSM public fixture line\n" * 1600
+
+
+def block_operations(cgroup, devices):
+    fields = cgroup.joinpath("io.stat").read_text().splitlines()
+    total = 0
+    for line in fields:
+        device, *entries = line.split()
+        if device in devices:
+            counters = dict(entry.split("=") for entry in entries)
+            total += int(counters.get("rios", 0)) + int(counters.get("wios", 0))
+    return total
+
+
+def measure():
+    home = Path.home()
+    sys.path.insert(0, str(home / ".local/libexec/fsm-execution-archive"))
+    from execution_archive import Archive
+    archive = Archive()
+    if not archive.enabled():
+        raise ValueError("Archivio comandi disattivato")
+    devices = {p.name for p in Path("/sys/dev/block").iterdir()
+               if (p / "slaves").is_dir() and not any((p / "slaves").iterdir())}
+    group = next(line[3:] for line in Path("/proc/self/cgroup").read_text().splitlines() if line.startswith("0::"))
+    cgroup = Path("/sys/fs/cgroup") / group.lstrip("/")
+    command = "/usr/bin/python3 -c 'import os; os.write(1,b\"FSM public fixture line\\n\"*1600)'"
+    rows = []
+    for _ in range(3):
+        begin = time.time()
+        before = resource.getrusage(resource.RUSAGE_CHILDREN)
+        blocks = block_operations(cgroup, devices)
+        start = time.monotonic()
+        with subprocess.Popen([str(home / ".local/bin/fsm-ea-codex-bash"), "-c", command],
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE) as child:
+            try:
+                stdout, stderr = child.communicate(timeout=60)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.communicate()
+                raise
+        wall = time.monotonic() - start
+        io = block_operations(cgroup, devices) - blocks
+        after = resource.getrusage(resource.RUSAGE_CHILDREN)
+        if child.returncode or stderr or stdout != FIXTURE:
+            raise ValueError("Output della prova diverso dal campione previsto")
+        uri = (archive.root / "index.sqlite3").as_uri() + "?mode=ro"
+        with closing(sqlite3.connect(uri, uri=True)) as db:
+            event = db.execute("""SELECT manifest FROM events WHERE source='codex' AND started>=?
+                AND pid=? AND exit_code=0 AND state='complete' AND coverage='process-streams'
+                ORDER BY started DESC LIMIT 1""", (begin, child.pid)).fetchone()
+        if event is None:
+            raise ValueError("Cattura della prova assente")
+        manifest = json.loads((archive.root / event[0]).read_text())
+        if any(archive.read(manifest, stream) != FIXTURE for stream in ("stdout", "output")):
+            raise ValueError("Replay della prova diverso dall'originale")
+        rows.append(dict(cpu=round(after.ru_utime + after.ru_stime - before.ru_utime - before.ru_stime, 3),
+                         seconds=round(wall, 3), block_ops=io))
+    print(json.dumps(dict(bytes_per_run=len(FIXTURE), replay_verified=len(rows), runs=rows,
+                          median={key:statistics.median(r[key] for r in rows) for key in rows[0]})))
+
+
+if __name__ == "__main__":
+    if len(sys.argv) == 1:
+        raise SystemExit(subprocess.call(["systemd-run", "--user", "--quiet", "--pipe", "--wait",
+                                          "--collect", str(Path(__file__).resolve()), "--measure"]))
+    if sys.argv[1:] != ["--measure"]:
+        raise SystemExit("Uso: fsm-benchmark-command-archive")
+    try:
+        measure()
+    except (OSError, ValueError, ImportError, sqlite3.Error, subprocess.TimeoutExpired) as exc:
+        print(str(exc), file=sys.stderr)
+        raise SystemExit(2)

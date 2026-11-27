@@ -155,9 +155,9 @@ def probe(command):
         return True, hashlib.sha256(output.read()).digest()
 
 
-def next_incident(db, recipes, metric_filter=None):
+def next_incident(db, recipes, metric_filter=None, *, summary_only=False):
     records = db.execute("""
-        SELECT device_id,name,last_seen_utc,details_json FROM alerts
+        SELECT id,device_id,name,last_seen_utc,details_json FROM alerts
         WHERE status='active' AND source='unit_resource_scanner'
     """)
     candidates = []
@@ -172,13 +172,15 @@ def next_incident(db, recipes, metric_filter=None):
         metric = row["name"].removeprefix("service.resource.")
         if metric_filter and metric != metric_filter:
             continue
-        candidates.append(dict(unit=unit, metric=metric, value=value, threshold=limit,
+        candidates.append(dict(id=row["id"], unit=unit, metric=metric, value=value, threshold=limit,
                                ratio=round(value/limit, 3), last_seen=row["last_seen_utc"],
                                fresh=0 <= now-seen <= 180))
     if not candidates:
         return {"status": "NESSUN_AVVISO_APERTO"}
     candidates.sort(key=lambda r: (not r["fresh"], -r["ratio"], r["unit"], r["metric"]))
     item = candidates[0]
+    if summary_only:
+        return {"incident": item}
     saved = db.execute("SELECT state_json FROM dedup_state WHERE namespace='collector' AND state_key=?",
                        (unit_repairs.STATE,)).fetchone()
     attempt = json.loads(saved[0]).get(item["unit"], {}) if saved else {}
@@ -343,6 +345,9 @@ def last_verification(unit, metric):
 def run(args):
     config = load_config(args.config)
     policy = config["unit_resources"]
+    if args.command == "case":
+        from .resource_case import report
+        return report(args, policy, operator_identity(config)[2])
     if args.command == "verify":
         result, code = verification(args.db, args, policy)
         result["ended"] = iso(time.time())
@@ -398,7 +403,15 @@ def main(argv=None):
     inspect = commands.add_parser("inspect", help="campioni storici e PID del gruppo")
     queue = commands.add_parser("next", help="incidente FSM aperto con maggiore superamento relativo")
     verify = commands.add_parser("verify", help="misura finestre complete dopo una correzione")
-    for cmd in (ranking, inspect, queue, verify):
+    case = commands.add_parser("case", help="riepilogo compatto o verifica dello stesso incidente dopo una modifica")
+    case.add_argument("--id", type=int, help="ID stabile dell’avviso FSM")
+    case.add_argument("--io-seconds", type=int, choices=range(1, 61), metavar="1..60",
+                      help="campiona i membri diretti del cgroup una volta al secondo")
+    case.add_argument("--verify", action="store_true", help="verifica dopo una modifica, richiede --id")
+    case.add_argument("--metric", choices=tuple(LIMITS), help="filtra la selezione automatica")
+    case.add_argument("--minutes", type=int, default=15)
+    case.add_argument("--timeout", type=int, default=450)
+    for cmd in (ranking, inspect, queue, verify, case):
         cmd.add_argument("--db", default=DEFAULT_DB)
         cmd.add_argument("--config", default="/etc/fedora-system-monitor/config.toml")
         cmd.add_argument("--json", action="store_true")
@@ -435,6 +448,10 @@ def main(argv=None):
         parser.error("Identità incompleta. Esempi: system:example.service, user:1000:example.scope")
     if args.command == "verify" and (args.probe == [] or (args.expect_change and not args.probe)):
         parser.error("--expect-change richiede --probe seguito dal comando del proprietario")
+    if args.command == "case" and args.verify and args.io_seconds:
+        parser.error("--io-seconds va usato nella diagnosi, prima della verifica")
+    if args.command == "case" and ((args.verify and not args.id) or (args.id is not None and (args.id < 1 or args.metric))):
+        parser.error("case --verify richiede --id positivo; usare --metric solo per scegliere un caso")
     if args.command == "rank" and not args.full and args.samples != 1:
         parser.error("--samples richiede --full con rank")
     try:
