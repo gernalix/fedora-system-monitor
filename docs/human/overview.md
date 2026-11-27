@@ -35,6 +35,11 @@ Aggiungere `--json` produce output per automazione. `export` supporta `json`,
 ## Frequenze
 
 Il timer rapido si attiva ogni minuto e accorpa il lavoro dovuto a 5 e 15 minuti.
+Nel journal del timer giornaliero FSM riporta lo stato del riepilogo, i conteggi
+di serie e gruppi di eventi, gli esiti della manutenzione e gli eventuali
+errori. SQLite conserva il riepilogo integrale nella tabella `summaries`.
+La CLI interattiva e l’output esplicito `--json` mantengono il dettaglio.
+
 Esistono inoltre timer orario, giornaliero alle 03:15 e settimanale domenica alle
 04:15, con tolleranza e ritardo casuale. Le modifiche alle directory software
 sono event-driven tramite una path unit.
