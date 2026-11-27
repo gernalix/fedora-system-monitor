@@ -13,6 +13,20 @@ from fedora_system_monitor.capsules.database.process_history import SCHEMA
 
 
 class FollowupTests(unittest.TestCase):
+    def test_transition_crossing_a_second_matches_only_within_its_scan(self):
+        with closing(sqlite3.connect(":memory:")) as db:
+            db.row_factory = sqlite3.Row
+            db.executescript("""
+                CREATE TABLE collector_runs(name,started_at_utc,finished_at_utc);
+                INSERT INTO collector_runs VALUES('minute','04:16:15','04:16:18');
+                CREATE TABLE alerts(id,alert_key,first_seen_utc,recovered_at_utc);
+                INSERT INTO alerts VALUES(1,'health','04:05:19','04:16:17');
+            """)
+            self.assertEqual(follow.transition_case_id(db, "health", "04:16:18", False), 1)
+            self.assertIsNone(follow.transition_case_id(db, "health", "04:16:19", False))
+            db.execute("INSERT INTO alerts VALUES(2,'health','04:16:16','04:16:17')")
+            self.assertIsNone(follow.transition_case_id(db, "health", "04:16:18", False))
+
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)

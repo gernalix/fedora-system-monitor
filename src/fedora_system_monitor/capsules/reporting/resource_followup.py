@@ -113,6 +113,21 @@ def verify(args, item, check):
     return dict(intervention=label, token=token, **result), code
 
 
+def transition_case_id(db, alert_key, stamp, opened):
+    column = "first_seen_utc" if opened else "recovered_at_utc"
+    query = f"SELECT id FROM alerts WHERE alert_key=? AND {column} BETWEEN ? AND ? LIMIT 2"
+    rows = db.execute(query, (alert_key, stamp, stamp)).fetchall()
+    if not rows:
+        # The scanner records the alert first, then its transition event. These
+        # writes can land in different seconds of the same completed minute run.
+        run = db.execute("""SELECT started_at_utc,finished_at_utc FROM collector_runs
+            WHERE name='minute' AND started_at_utc<=?
+            ORDER BY started_at_utc DESC LIMIT 1""", (stamp,)).fetchone()
+        if run and run["finished_at_utc"] and stamp <= run["finished_at_utc"]:
+            rows = db.execute(query, (alert_key, run["started_at_utc"], stamp)).fetchall()
+    return rows[0]["id"] if len(rows) == 1 else None
+
+
 def changes(args):
     """Independent append-only event/receipt cursors avoid timestamp ties and late checks."""
     with _connection(args.db) as db, ledger() as local:
@@ -141,16 +156,13 @@ def changes(args):
             detail = json.loads(r["details_json"])
             opened = r["name"] == "alert_opened"
             stamp = r["timestamp_utc"]
-            column = "first_seen_utc" if opened else "recovered_at_utc"
-            case = db.execute(f"""SELECT id FROM alerts WHERE alert_key=?
-                AND {column}=? ORDER BY id DESC LIMIT 1""",
-                (detail["alert_key"], stamp)).fetchone()
+            case_id = transition_case_id(db, detail["alert_key"], stamp, opened)
             relapse = opened and db.execute("""SELECT 1 FROM alerts WHERE alert_key=?
                 AND recovered_at_utc<=? AND first_seen_utc<? LIMIT 1""",
                 (detail["alert_key"],stamp,stamp)).fetchone()
             events.append(dict(time=stamp, kind="RICADUTA" if relapse else "APERTO" if opened else "RIENTRATO",
                                unit=r["device_id"], metric=detail["name"].removeprefix("service.resource."),
-                               case_id=case["id"] if case else None))
+                               case_id=case_id))
             event_id = r["id"]
         if len(events)<args.limit:
             event_id = max(event_id, db.execute("SELECT coalesce(max(id),0) FROM events").fetchone()[0])
