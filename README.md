@@ -69,10 +69,16 @@ Vedere [overview](docs/human/overview.md),
 The separate account-level collector in `scripts/telegram_history_collector.py` reads only the peer in the local `TELEGRAM_CHAT` setting and writes text/metadata to the private `gernalix/telegram-notification-history` repository. Install its isolated runtime and disabled user units with `bash scripts/install-telegram-history-runtime.sh`; fill `~/.config/fedora-telegram-history/collector.env` locally, then bootstrap the Telethon account session explicitly with:
 
 ```bash
-~/.local/libexec/fedora-telegram-history/venv/bin/python ~/.local/libexec/fedora-telegram-history/telegram_history_collector.py login --config ~/.config/fedora-telegram-history/collector.env
+runtime="$HOME/.local/libexec/fedora-telegram-history"
+flock --shared "$runtime/.dependency-update.lock" env PYTHONPATH="$runtime/packages" \
+  /usr/bin/python3 -S -P -B "$runtime/telegram_history_collector.py" login \
+  --config "$HOME/.config/fedora-telegram-history/collector.env"
 ```
 
 After successful login, enable the timer with `systemctl --user enable --now telegram-notification-history.timer`. The periodic service never starts an interactive login. Credentials, session files, and binary media stay outside Git.
+
+The three Telegram services use the same flat package directory and share its
+update lock with FEU. The installer keeps the preceding directory for recovery.
 
 ## Sviluppo
 

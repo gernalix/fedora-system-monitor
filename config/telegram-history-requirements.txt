@@ -1,1 +1,1 @@
-Telethon==1.46.0
+Telethon>=1.46.0,<2
