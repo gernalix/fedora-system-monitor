@@ -171,6 +171,44 @@ class ArchiveTest(unittest.TestCase):
         self.assertTrue((self.a.events / event["id"] / "manifest.json").exists())
         self.assertEqual(len(self.a.query("public")), 1)
 
+    def test_quota_cache_measures_open_and_unknown_files_and_refreshes_sealed(self):
+        sealed = self.event()
+        live = self.a.begin(kind="command", source="diagnostic", label="demo", pid=os.getpid(), capture=True)
+        extra = self.a.events / sealed["id"] / "manual"
+        # Keep the same ledger record but change bytes out of band.
+        extra.write_bytes(b"x" * 4096)
+        (self.a.events / live["id"] / "working").write_bytes(b"w" * 716)
+        (self.a.events / "stray").write_bytes(b"outside")
+        with self.a.lock():
+            self.assertEqual(self.a.usage()+4096, self.a._tree_bytes(self.root))
+        with contextlib.closing(self.a.connect()) as conn, conn:
+            conn.execute("UPDATE quota_scan SET checked=checked-901")
+        with self.a.lock():
+            self.assertEqual(self.a.usage(), self.a._tree_bytes(self.root))
+        # Already captured but subsequently removed bytes must never cause an eviction.
+        extra.unlink()
+        with self.a.lock():
+            self.a.config["quota_bytes"] = self.a._tree_bytes(self.root) + 512
+            self.a._maintain()
+        self.assertTrue((self.a.events/sealed["id"]).exists())
+
+    def test_dead_lock_owner_forces_recount_on_first_use(self):
+        event = self.event()
+        code = """import os,sys
+from pathlib import Path
+from fedora_system_monitor.capsules.execution_archive import Archive
+a=Archive(Path(sys.argv[1]))
+with a.lock():
+    (a.events/sys.argv[2]/'manual').write_bytes(b'x'*1000)
+    os._exit(19)
+"""
+        child = subprocess.run([sys.executable,"-c",code,str(self.root),event["id"]], check=False)
+        self.assertEqual(child.returncode,19)
+        self.assertGreater((self.root/"archive.lock").stat().st_size,0)
+        with self.a.lock():
+            self.assertEqual(self.a.usage(), self.a._tree_bytes(self.root))
+        self.assertEqual((self.root/"archive.lock").stat().st_size,0)
+
     def test_sealed_event_and_retention_stamp_are_committed_together(self):
         with mock.patch.object(self.a, "_maintain"):
             event = self.event()

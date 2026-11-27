@@ -139,6 +139,7 @@ class Zstd:
 
 class Archive:
     def __init__(self, root: Path | None = None):
+        self._locked_quota = False
         self.root = root or root_path()
         private_dir(self.root)
         self.events = self.root / "events"
@@ -152,7 +153,7 @@ class Archive:
             raise ValueError("event limit exceeds bounded recovery budget")
 
     @contextlib.contextmanager
-    def lock(self):
+    def lock(self, *, recount=False):
         with private_file(self.root / "archive.lock", "ab") as f:
             deadline = time.monotonic() + .15
             while True:
@@ -163,7 +164,17 @@ class Archive:
                     if time.monotonic() >= deadline:
                         raise RuntimeError("archive busy") from None
                     time.sleep(.005)
-            yield
+            # flock dies with its owner. A nonempty lock file survives a killed
+            # writer and invalidates the derived size ledger at the next entry.
+            interrupted = os.fstat(f.fileno()).st_size != 0
+            os.ftruncate(f.fileno(), 1)
+            try:
+                self._refresh_quota(force=interrupted or recount)
+                self._locked_quota = True
+                yield
+                os.ftruncate(f.fileno(), 0)
+            finally:
+                self._locked_quota = False
 
     def connect(self):
         db = self.root / "index.sqlite3"
@@ -188,6 +199,8 @@ class Archive:
         CREATE VIRTUAL TABLE IF NOT EXISTS search USING fts5(id UNINDEXED,text);
         CREATE TABLE IF NOT EXISTS sealed_times(
           id TEXT PRIMARY KEY, stamp TEXT NOT NULL, ended REAL NOT NULL);
+        CREATE TABLE IF NOT EXISTS sealed_sizes(id TEXT PRIMARY KEY, bytes INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS quota_scan(singleton INTEGER PRIMARY KEY, boot TEXT, checked REAL);
         """)
         for p in (self.root / "index.sqlite3-wal", self.root / "index.sqlite3-shm"):
             with contextlib.suppress(FileNotFoundError):
@@ -313,7 +326,9 @@ class Archive:
                 if usage is None:
                     usage = self.usage()
                 if usage + len(data) + 128 > self.config["quota_bytes"]:
-                    break
+                    usage = self._tree_bytes(self.root)
+                    if usage + len(data) + 128 > self.config["quota_bytes"]:
+                        break
                 timing = f"{max(0, delay):.6f} {len(data)}\n".encode()
                 with private_file(path / f"{stream}.raw", "ab") as f:
                     f.write(data)
@@ -369,6 +384,9 @@ class Archive:
                 (path / f"{name}.zst").unlink(missing_ok=True)
             m.update(files={}, bytes=0, coverage="metadata-only", content_gap=reason)
             atomic_json(path / "manifest.json", m)
+            if m["state"] != "active":
+                with contextlib.closing(self.connect()) as conn, conn:
+                    conn.execute("DELETE FROM sealed_sizes WHERE id=?", (m["id"],))
 
     def read(self, m: dict, name: str) -> bytes:
         item = m["files"][name]
@@ -408,6 +426,10 @@ class Archive:
                 if original["id"] == m["id"] and original["state"] != "active":
                     conn.execute("INSERT OR REPLACE INTO sealed_times VALUES(?,?,?)",
                                  (m["id"], stamp, original["ended"]))
+                    conn.execute("INSERT OR REPLACE INTO sealed_sizes VALUES(?,?)",
+                                 (m["id"], self._tree_bytes(self.events / m["id"])))
+                else:
+                    conn.execute("DELETE FROM sealed_sizes WHERE id=?", (m["id"],))
                 # New IDs have no prior FTS row. Its id column is UNINDEXED,
                 # so an unconditional deletion reads the whole text archive.
                 existing = conn.execute("SELECT 1 FROM events WHERE id=?", (m["id"],)).fetchone()
@@ -423,7 +445,7 @@ class Archive:
 
     def recover(self, *, rebuild: bool = False) -> int:
         count = 0
-        with self.lock():
+        with self.lock(recount=True):
             conn = self.connect()
             try:
                 indexed = {r[0] for r in conn.execute("SELECT id FROM events")}
@@ -474,16 +496,61 @@ class Archive:
             self._maintain()
         return count
 
-    def usage(self) -> int:
+    @staticmethod
+    def _tree_bytes(root: Path, *, skip=None) -> int:
         total = 0
-        directories = [self.root]
+        directories = [root]
         while directories:
             with os.scandir(directories.pop()) as entries:
                 for entry in entries:
+                    if skip is not None and entry.path == skip:
+                        continue
                     if entry.is_dir(follow_symlinks=False):
                         directories.append(entry.path)
                     elif entry.is_file(follow_symlinks=False):
                         total += entry.stat(follow_symlinks=False).st_size
+        return total
+
+    def _refresh_quota(self, *, force: bool) -> None:
+        boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+        now = time.clock_gettime(time.CLOCK_BOOTTIME)
+        with contextlib.closing(self.connect()) as conn, conn:
+            last = conn.execute("SELECT boot,checked FROM quota_scan WHERE singleton=1").fetchone()
+            if not force and last and last[0] == boot and 0 <= now-last[1] < 900:
+                return
+            existing = dict(conn.execute("SELECT id,bytes FROM sealed_sizes"))
+            stamps = dict(conn.execute("SELECT id,stamp FROM sealed_times"))
+            updates = []
+            with os.scandir(self.events) as entries:
+                for entry in entries:
+                    if entry.name not in stamps or not entry.is_dir(follow_symlinks=False):
+                        continue
+                    try:
+                        info = os.stat(os.path.join(entry.path, "manifest.json"), follow_symlinks=False)
+                    except FileNotFoundError:
+                        continue
+                    if manifest_stamp(info) != stamps[entry.name]:
+                        continue
+                    size = self._tree_bytes(Path(entry.path))
+                    if existing.pop(entry.name, None) != size:
+                        updates.append((entry.name, size))
+            conn.executemany("DELETE FROM sealed_sizes WHERE id=?", ((key,) for key in existing))
+            conn.executemany("INSERT OR REPLACE INTO sealed_sizes VALUES(?,?)", updates)
+            conn.execute("INSERT OR REPLACE INTO quota_scan VALUES(1,?,?)", (boot,now))
+
+    def usage(self) -> int:
+        if not self._locked_quota:
+            return self._tree_bytes(self.root)
+        with contextlib.closing(self.connect()) as conn:
+            sealed = dict(conn.execute("SELECT id,bytes FROM sealed_sizes"))
+        total = self._tree_bytes(self.root, skip=os.fspath(self.events))
+        with os.scandir(self.events) as entries:
+            for entry in entries:
+                if entry.is_dir(follow_symlinks=False):
+                    size = sealed.get(entry.name)
+                    total += self._tree_bytes(Path(entry.path)) if size is None else size
+                elif entry.is_file(follow_symlinks=False):
+                    total += entry.stat(follow_symlinks=False).st_size
         return total
 
     def _maintain(self) -> None:
@@ -516,8 +583,13 @@ class Archive:
                     conn.executemany("INSERT OR REPLACE INTO sealed_times VALUES(?,?,?)", updates)
         cutoff = time.time() - self.config["retention_days"] * 86400
         for ended, event_id, path in sorted(sealed):
-            if ended >= cutoff and self.usage() <= self.config["quota_bytes"]:
-                break
+            if ended >= cutoff:
+                if self.usage() <= self.config["quota_bytes"]:
+                    break
+                # A manually shortened sealed file could make the cached sum
+                # too high. Require a fresh count before pruning an original.
+                if self._tree_bytes(self.root) <= self.config["quota_bytes"]:
+                    break
             # The cache is rebuildable. Only the original authorizes deletion.
             with open(os.path.join(path, "manifest.json"), encoding="utf-8") as stream:
                 original = json.load(stream)
@@ -531,6 +603,7 @@ class Archive:
                 with conn:
                     conn.execute("DELETE FROM events WHERE id=?", (event_id,))
                     conn.execute("DELETE FROM sealed_times WHERE id=?", (event_id,))
+                    conn.execute("DELETE FROM sealed_sizes WHERE id=?", (event_id,))
                     conn.execute("DELETE FROM search WHERE id=?", (event_id,))
             finally:
                 conn.close()
