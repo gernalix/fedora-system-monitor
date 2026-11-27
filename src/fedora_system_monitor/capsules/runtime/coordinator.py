@@ -562,6 +562,9 @@ def _maintenance_daily(config: dict[str, Any], db: Database) -> dict[str, Any]:
         int(retention["backup_weekly_count"]),
         int(retention["backup_monthly_count"]),
     )
+    # Keep first-time index construction off the login/minute collector path.
+    # The regular independent, integrity-checked backup above precedes the DDL.
+    db.ensure_daily_summary_index()
     return {
         "summary": summary,
         "backup": backup_path.name,

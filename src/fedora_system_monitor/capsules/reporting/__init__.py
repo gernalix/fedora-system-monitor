@@ -14,6 +14,7 @@ from typing import Any, Iterable
 from zoneinfo import ZoneInfo
 
 from fedora_system_monitor.capsules.config import redact_text
+from fedora_system_monitor.capsules.database.shared import DAILY_OTHER_SERIES
 
 
 ALLOWED_EXPORT_TABLES = {
@@ -401,7 +402,19 @@ def build_daily_summary(
     start = datetime.combine(local_date, datetime.min.time(), tzinfo=zone).astimezone(timezone.utc)
     end = datetime.combine(local_date + timedelta(days=1), datetime.min.time(), tzinfo=zone).astimezone(timezone.utc)
     with _connection(path) as connection:
-        latest = _latest_metrics(connection)
+        # MAX(id) preserves insertion order when observations arrive late.
+        # These disjoint groups also work on historical backups without indexes.
+        selected = _rows(connection, f"""
+            SELECT m.* FROM periodic_metrics AS m
+            JOIN (
+                SELECT MAX(id) AS latest_id FROM periodic_metrics
+                WHERE {DAILY_OTHER_SERIES} GROUP BY name, device_id
+                UNION ALL
+                SELECT MAX(id) AS latest_id FROM periodic_metrics
+                WHERE name='service.active' AND device_id IS NOT NULL GROUP BY device_id
+            ) AS latest ON latest.latest_id=m.id
+            ORDER BY m.category, m.name, m.device_id
+        """)
         events = _rows(
             connection,
             "SELECT category,name,severity,COUNT(*) AS count FROM events WHERE timestamp_utc>=? AND timestamp_utc<? GROUP BY category,name,severity ORDER BY category,name",
@@ -410,19 +423,6 @@ def build_daily_summary(
         opened = connection.execute("SELECT COUNT(*) FROM alerts WHERE first_seen_utc>=? AND first_seen_utc<?", (start.isoformat(), end.isoformat())).fetchone()[0]
         resolved = connection.execute("SELECT COUNT(*) FROM alerts WHERE recovered_at_utc>=? AND recovered_at_utc<?", (start.isoformat(), end.isoformat())).fetchone()[0]
         active = connection.execute("SELECT COUNT(*) FROM alerts WHERE status='active'").fetchone()[0]
-    by_name = {(item["name"], item["device_id"]): item for item in latest}
-    selected_names = {
-        "memory.used_percent",
-        "swap.used_percent",
-        "temperature.cpu_c",
-        "temperature.nvme_c",
-        "network.internet_reachable",
-        "wifi.connected",
-        "filesystem.free_percent",
-        "service.active",
-        "software.updates_available",
-    }
-    selected = [item for (name, _), item in by_name.items() if name in selected_names]
     health = "healthy" if active == 0 else "attention"
     return {
         "day": target,

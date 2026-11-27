@@ -8,6 +8,14 @@ from typing import Any
 
 from ..config import redact_text
 
+# Fixed SQL shared by the optional daily index and its reader. The existing
+# service index already covers non-NULL service devices on schema v7.
+DAILY_OTHER_SERIES = """name IN (
+    'memory.used_percent', 'swap.used_percent', 'temperature.cpu_c', 'temperature.nvme_c',
+    'network.internet_reachable', 'wifi.connected', 'filesystem.free_percent',
+    'software.updates_available'
+) OR (name='service.active' AND device_id IS NULL)"""
+
 _SEVERITY_RANK = {"debug": 0, "info": 1, "warning": 2, "critical": 3, "emergency": 4}
 _SECRET_KEYS = {
     "api_key",

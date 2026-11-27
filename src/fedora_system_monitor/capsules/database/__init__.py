@@ -25,7 +25,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from ..config import redact_text
 from .alerts import AlertStorageMixin
 from .retention import RetentionStorageMixin, DEFAULT_METRIC_RETENTION_DAYS, _percentile_95
-from .shared import StorageError, _json_dumps, _json_loads, _SEVERITY_RANK
+from .shared import DAILY_OTHER_SERIES, StorageError, _json_dumps, _json_loads, _SEVERITY_RANK
 
 
 SCHEMA_VERSION = 7
@@ -1363,6 +1363,14 @@ class Database(AlertStorageMixin, RetentionStorageMixin):
                 connection.executemany("DELETE FROM events WHERE id=?", ((item,) for item in duplicate_ids))
                 removed += len(duplicate_ids)
         return {"duplicates_removed": removed, "cursors_seeded": seeded}
+
+    def ensure_daily_summary_index(self) -> None:
+        """Build the optional report index in daily maintenance after a verified backup."""
+        with self._transaction() as connection:
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_metrics_daily_other_latest "
+                f"ON periodic_metrics(name, device_id) WHERE {DAILY_OTHER_SERIES}"
+            )
 
     def backup(self, destination: str | Path) -> Path:
         """Create a consistent online SQLite backup and return its path."""

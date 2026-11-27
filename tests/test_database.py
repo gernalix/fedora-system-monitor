@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import patch
 
 from fedora_system_monitor.capsules.database import Database, SCHEMA_VERSION, StorageError
+from fedora_system_monitor.capsules.reporting import build_daily_summary
 
 
 class DatabaseTests(unittest.TestCase):
@@ -654,6 +655,30 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(alerts, [{"alert_key": "active-old", "status": "active"}])
         self.assertEqual(result["events_deleted"], 2)
         self.assertEqual(result["alerts_deleted"], 1)
+
+    def test_daily_summary_preserves_latest_insert_per_name_and_nullable_device(self) -> None:
+        names = ("memory.used_percent", "swap.used_percent", "temperature.cpu_c",
+                 "temperature.nvme_c", "network.internet_reachable", "wifi.connected",
+                 "filesystem.free_percent", "service.active", "software.updates_available")
+        self.db.insert_metrics([
+            {"name": name, "device_id": device, "category": "original", "value": 1}
+            for name in (*names, "unrequested.metric") for device in (None, "a", "b")
+        ], collected_at="2026-11-25T12:00:00Z")
+        self.db.insert_metrics([
+            {"name": name, "device_id": "a", "category": "late", "value": 2} for name in names
+        ], collected_at="2026-11-24T12:00:00Z")
+        reference = self.db.query("""
+            SELECT m.* FROM periodic_metrics m JOIN (
+                SELECT MAX(id) AS latest_id FROM periodic_metrics GROUP BY name,device_id
+            ) latest ON latest.latest_id=m.id ORDER BY m.category,m.name,m.device_id
+        """)
+        expected = [row for row in reference if row["name"] in names]
+        self.assertTrue(any(r["device_id"] is None and r["name"] == "service.active" for r in expected))
+        before = build_daily_summary(self.database_path)
+        self.assertEqual(before["current"], expected)
+        self.db.ensure_daily_summary_index()
+        self.db.ensure_daily_summary_index()
+        self.assertEqual(build_daily_summary(self.database_path), before)
 
     def test_summary_backup_integrity_and_index_checks(self) -> None:
         start = datetime(2026, 7, 9, tzinfo=timezone.utc)
