@@ -85,3 +85,17 @@ class FollowupTests(unittest.TestCase):
         self.assertEqual((new["covered_seconds"],new["scans"]), (120,4))
         self.assertEqual(new["first_desktop_observations_seconds"], {"chrome":10})
         self.assertEqual(new["unit_cpu_percent"][0]["consecutive_high"],2)
+        # Exercise the normal CLI path against a second, retained DB after raw rows expire.
+        saved = self.folder/"monitor-19700101T010000Z.sqlite3"
+        with closing(sqlite3.connect(self.args.db)) as live, closing(sqlite3.connect(saved)) as backup:
+            live.backup(backup)
+            with live:
+                live.execute("DELETE FROM process_samples")
+                live.execute("DELETE FROM process_scans")
+        self.args.backups = self.folder
+        recovered,_ = boot.compare(self.args)
+        first, missing = recovered["boots"]
+        self.assertEqual(first["process_source"], saved.name)
+        self.assertEqual(first["unit_cpu_percent"], new["unit_cpu_percent"])
+        self.assertIsNone(missing["process_source"])
+        self.assertEqual(missing["scans"],0)

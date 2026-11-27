@@ -1,5 +1,7 @@
 """Compare retained boot windows without starting a sampler."""
-from datetime import datetime
+from datetime import datetime, timezone
+from pathlib import Path
+import sqlite3
 import json
 from . import _connection
 from . import resource_triage as triage
@@ -93,13 +95,53 @@ def window(db, boot, recorded, minutes, limit):
                 unit_io_ops_min=ranked(block,limit,6000))
 
 
+def retained_copies(path):
+    copies = []
+    for entry in Path(path).glob("monitor-????????T??????Z.sqlite3"):
+        try:
+            stamp = datetime.strptime(entry.stem, "monitor-%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+        copies.append((stamp.timestamp(), entry))
+    return sorted(copies)
+
+
+def recover_window(report, copies, minutes, limit):
+    """Prefer the nearest completed snapshot. Never restore or copy a database."""
+    report["process_source"] = "database" if report["scans"] else None
+    if report["scans"]:
+        return
+    start = datetime.fromisoformat(report["boot_recorded"]).timestamp()
+    # Bound probes even when the directory contains years of backups.
+    candidates = [p for t,p in copies if start+minutes*60 <= t <= start+7*86400][:3]
+    for path in candidates:
+        try:
+            with _connection(path) as saved:
+                found = window(saved, report["boot_id"], report["boot_recorded"], minutes, limit)
+        except (sqlite3.Error, OSError) as exc:
+            report.setdefault("backup_errors", []).append(dict(file=path.name, kind=type(exc).__name__))
+            continue
+        if not found["scans"]:
+            continue
+        if report["io_top5_frames"] >= found["io_top5_frames"]:
+            found.update(io_top5_frames=report["io_top5_frames"], unit_io_ops_min=report["unit_io_ops_min"])
+        report.update(found, process_source=path.name)
+        return
+
+
 def compare(args):
     reports = []
+    backup_dir = getattr(args, "backups", None)
+    if not backup_dir and Path(args.db).resolve() == Path(triage.DEFAULT_DB):
+        backup_dir = Path(args.db).parent / "backups"
+    copies = retained_copies(backup_dir) if backup_dir else []
     with _connection(args.db) as db:
         for r in db.execute("""SELECT timestamp_utc,details_json FROM events WHERE category='system'
                 AND name='system_boot' ORDER BY timestamp_utc DESC LIMIT ?""",(args.compare,)):
             boot = json.loads(r["details_json"]).get("boot_id")
             if boot:
-                reports.append(window(db,boot,r["timestamp_utc"],args.minutes,args.limit))
+                report = window(db,boot,r["timestamp_utc"],args.minutes,args.limit)
+                recover_window(report, copies, args.minutes, args.limit)
+                reports.append(report)
     measured = sum(bool(r["scans"] or r["io_top5_frames"]) for r in reports)
     return dict(minutes=args.minutes, requested_boots=args.compare, measured_boots=measured, boots=reports), 0 if measured else 2

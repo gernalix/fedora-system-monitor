@@ -415,6 +415,7 @@ def main(argv=None):
     changes.add_argument("--minutes", type=int, default=15)
     changes.add_argument("--limit", type=int, default=50)
     boot = commands.add_parser("boot", help="confronta la stessa finestra dalla partenza")
+    boot.add_argument("--backups", help="directory delle copie FSM per gli avvii usciti dalla storia recente")
     boot.add_argument("--compare", type=int, choices=range(1, 11), default=3)
     boot.add_argument("--minutes", type=int, choices=range(1,61), default=15)
     boot.add_argument("--limit", type=int, default=5)
