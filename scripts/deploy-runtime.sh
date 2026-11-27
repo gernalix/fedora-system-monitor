@@ -10,6 +10,7 @@ LIB_PARENT=/usr/local/libexec
 LIB=$LIB_PARENT/fedora-system-monitor
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
 
+printf 'FSM: verifica del checkout e preparazione del runtime in corso.\n' >&2
 if ! git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     printf 'Runtime-only deploy requires a Git checkout: %s\n' "$ROOT" >&2
     exit 1
@@ -89,6 +90,7 @@ p.write_text(json.dumps(value)+'\n');os.chmod(p,0o644)
 PYHOST
 command -v restorecon >/dev/null && restorecon -RF "$LIB" /usr/local/bin/fedora-system-monitor || true
 
+printf 'FSM: verifica della configurazione e dell’integrità del database installato in corso. Su archivi grandi può richiedere alcuni minuti.\n' >&2
 if ! /usr/local/bin/fedora-system-monitor config-check >/dev/null \
     || ! /usr/local/bin/fedora-system-monitor db-check >/dev/null; then
     FAILED="$LIB_PARENT/.fedora-system-monitor.failed-$STAMP"
