@@ -637,20 +637,34 @@ _SHOW_PROPERTIES = (
 )
 
 
-def _show_unit(systemctl: str, identity: UnitIdentity, *, user_account: str | None = None) -> tuple[dict[str, str], str | None]:
-    if "@." in identity.unit:
-        return {}, "template_unit_requires_instance"
+_SHOW_BATCH_SIZE = 256
+
+
+def _show_units(
+    systemctl: str, scope: str, units: list[str], *, user_account: str | None = None,
+) -> dict[str, tuple[dict[str, str], str | None]]:
+    observed: dict[str, tuple[dict[str, str], str | None]] = {
+        unit: ({}, "template_unit_requires_instance") for unit in units if "@." in unit
+    }
+    requested = [unit for unit in dict.fromkeys(units) if unit not in observed]
+    if not requested:
+        return observed
+
+    def with_manager_error(reason: str) -> dict[str, tuple[dict[str, str], str | None]]:
+        observed.update((unit, ({}, reason)) for unit in requested)
+        return observed
+
     command = [systemctl]
-    if identity.scope == "user":
+    if scope == "user":
         if os.geteuid() == 0:
             # systemctl --user from a root-owned collector would query root's
             # missing user bus, not the account that owns the service.
             if not user_account:
-                return {}, "user_scope_requires_explicit_account"
+                return with_manager_error("user_scope_requires_explicit_account")
             try:
                 uid = pwd.getpwnam(user_account).pw_uid
             except KeyError:
-                return {}, "user_scope_account_missing"
+                return with_manager_error("user_scope_account_missing")
             command = [
                 "runuser", "--user", user_account, "--", "env",
                 f"XDG_RUNTIME_DIR=/run/user/{uid}",
@@ -660,21 +674,29 @@ def _show_unit(systemctl: str, identity: UnitIdentity, *, user_account: str | No
         elif user_account:
             try:
                 if os.geteuid() != pwd.getpwnam(user_account).pw_uid:
-                    return {}, "user_scope_account_mismatch"
+                    return with_manager_error("user_scope_account_mismatch")
             except KeyError:
-                return {}, "user_scope_account_missing"
+                return with_manager_error("user_scope_account_missing")
         command.append("--user")
-    command += ["show", identity.unit, "--no-pager"]
-    command += [f"--property={name}" for name in _SHOW_PROPERTIES]
-    result = subprocess.run(command, text=True, capture_output=True, timeout=15, check=False)
-    if result.returncode:
-        return {}, redact_text(result.stderr).strip() or f"systemctl_exit_{result.returncode}"
-    values = {}
-    for line in result.stdout.splitlines():
-        if "=" in line:
-            key, value = line.split("=", 1)
-            values[key] = value
-    return values, None
+    command += ["show", "--no-pager", "--property=Id,Names," + ",".join(_SHOW_PROPERTIES), "--"]
+    for start in range(0, len(requested), _SHOW_BATCH_SIZE):
+        batch = requested[start:start + _SHOW_BATCH_SIZE]
+        result = subprocess.run([*command, *batch], text=True, capture_output=True, timeout=15, check=False)
+        error = (
+            redact_text(result.stderr).strip() or f"systemctl_exit_{result.returncode}"
+            if result.returncode else "unit_missing_from_systemctl_output"
+        )
+        by_name = {}
+        for block in result.stdout.split("\n\n"):
+            values = dict(line.split("=", 1) for line in block.splitlines() if "=" in line)
+            canonical_name = values.pop("Id", "")
+            aliases = values.pop("Names", "").split()
+            if canonical_name and "LoadState" in values:
+                for name in (canonical_name, *aliases):
+                    by_name[name] = values
+        for unit in batch:
+            observed[unit] = (by_name[unit], None) if unit in by_name else ({}, error)
+    return observed
 
 
 def _unit_class(identity: UnitIdentity, values: Mapping[str, str]) -> str:
@@ -713,6 +735,13 @@ def build_runtime_snapshot(
     if user_unit_dir:
         env["USER_UNIT_DIR"] = str(user_unit_dir)
     identities = discover_units(collector, environment=env)
+    units_by_scope: dict[str, list[str]] = {}
+    for identity in identities:
+        units_by_scope.setdefault(identity.scope, []).append(identity.unit)
+    live_by_scope = {
+        scope: _show_units(systemctl, scope, names, user_account=user_account)
+        for scope, names in units_by_scope.items()
+    }
     connection = None
     if database.exists():
         connection = sqlite3.connect(f"file:{database}?mode=ro&immutable=1", uri=True)
@@ -720,11 +749,7 @@ def build_runtime_snapshot(
     units = []
     try:
         for identity in identities:
-            values, error = (
-                _show_unit(systemctl, identity, user_account=user_account)
-                if identity.scope == "user" and user_account
-                else _show_unit(systemctl, identity)
-            )
+            values, error = live_by_scope[identity.scope][identity.unit]
             coverage, coverage_reason = ("UNKNOWN", error) if error else ("PASS", None)
             checkpoint = None
             total = success = 0

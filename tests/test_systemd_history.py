@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from fedora_system_monitor.capsules.database import Database
 from fedora_system_monitor.capsules.systemd_history import (
-    DEFAULT_COLLECTOR, UnitIdentity, _show_unit, build_runtime_snapshot, history_status, import_history,
+    DEFAULT_COLLECTOR, UnitIdentity, _show_units, build_runtime_snapshot, history_status, import_history,
 )
 
 
@@ -171,8 +171,12 @@ class SystemdHistoryTests(unittest.TestCase):
         connection.close()
         daemon = UnitIdentity("daemon.service", "system", None, "daemon.service")
         with patch("fedora_system_monitor.capsules.systemd_history.discover_units", return_value=CATALOG + [daemon]), patch(
-            "fedora_system_monitor.capsules.systemd_history._show_unit",
-            side_effect=lambda _binary, identity: ({"Type": "oneshot" if identity.unit == "backup.service" else "simple", "ActiveState": "active", "SubState": "running"}, None),
+            "fedora_system_monitor.capsules.systemd_history._show_units",
+            return_value={
+                "backup.service": ({"Type": "oneshot", "ActiveState": "active", "SubState": "running"}, None),
+                "backup.timer": ({"ActiveState": "active"}, None),
+                "daemon.service": ({"Type": "simple", "ActiveState": "active"}, None),
+            },
         ):
             result = build_runtime_snapshot(self.database, output=output)
         payload = json.loads(output.read_text(encoding="utf-8"))
@@ -191,29 +195,39 @@ class SystemdHistoryTests(unittest.TestCase):
         self.assertEqual(row["coverage"], "UNKNOWN")
         self.assertEqual(row["coverage_reason"], "template_unit_requires_instance")
 
-    def test_root_collects_user_scope_from_explicit_account_bus(self) -> None:
-        identity = UnitIdentity("activitywatch.service", "user", None, "activitywatch.service")
+    def test_root_queries_user_units_together_on_explicit_account_bus(self) -> None:
+        requested = ["activitywatch.service", "legacy.timer", "job@.service", "missing.service", "unreported.service"]
+        stdout = (
+            "Id=activitywatch.service\nNames=activitywatch.service\nLoadState=loaded\nActiveState=active\n"
+            "\nId=canonical.timer\nNames=canonical.timer legacy.timer\nLoadState=loaded\nActiveState=active\n"
+            "\nId=missing.service\nNames=missing.service\nLoadState=not-found\nActiveState=inactive\n"
+        )
         with patch("fedora_system_monitor.capsules.systemd_history.os.geteuid", return_value=0), patch(
             "fedora_system_monitor.capsules.systemd_history.pwd.getpwnam", return_value=SimpleNamespace(pw_uid=1000)
         ), patch(
             "fedora_system_monitor.capsules.systemd_history.subprocess.run",
-            return_value=SimpleNamespace(returncode=0, stdout="ActiveState=active\nUnitFileState=enabled\n", stderr=""),
+            return_value=SimpleNamespace(returncode=0, stdout=stdout, stderr=""),
         ) as run:
-            values, error = _show_unit("systemctl", identity, user_account="daniele")
-        self.assertIsNone(error)
-        self.assertEqual(values["ActiveState"], "active")
+            observed = _show_units("systemctl", "user", requested, user_account="daniele")
+        self.assertEqual(observed["activitywatch.service"], ({"LoadState": "loaded", "ActiveState": "active"}, None))
+        self.assertEqual(observed["legacy.timer"], ({"LoadState": "loaded", "ActiveState": "active"}, None))
+        self.assertEqual(observed["missing.service"], ({"LoadState": "not-found", "ActiveState": "inactive"}, None))
+        self.assertEqual(observed["job@.service"], ({}, "template_unit_requires_instance"))
+        self.assertEqual(observed["unreported.service"], ({}, "unit_missing_from_systemctl_output"))
+        run.assert_called_once()
         argv = run.call_args.args[0]
         self.assertEqual(argv[:5], ["runuser", "--user", "daniele", "--", "env"])
         self.assertIn("XDG_RUNTIME_DIR=/run/user/1000", argv)
         self.assertIn("DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus", argv)
         self.assertIn("--user", argv)
+        self.assertEqual(argv[argv.index("--", 5) + 1:], [unit for unit in requested if unit != "job@.service"])
 
     def test_root_without_explicit_account_does_not_query_root_bus(self) -> None:
-        identity = UnitIdentity("activitywatch.service", "user", None, "activitywatch.service")
+        unit = "activitywatch.service"
         with patch("fedora_system_monitor.capsules.systemd_history.os.geteuid", return_value=0), patch(
             "fedora_system_monitor.capsules.systemd_history.subprocess.run"
         ) as run:
-            values, error = _show_unit("systemctl", identity)
+            values, error = _show_units("systemctl", "user", [unit])[unit]
         self.assertEqual(values, {})
         self.assertEqual(error, "user_scope_requires_explicit_account")
         run.assert_not_called()
@@ -233,10 +247,11 @@ class SystemdHistoryTests(unittest.TestCase):
             connection.close()
         identity = UnitIdentity("activitywatch.service", "user", None, "activitywatch.service")
         with patch("fedora_system_monitor.capsules.systemd_history.discover_units", return_value=[identity]), patch(
-            "fedora_system_monitor.capsules.systemd_history._show_unit", return_value=({}, "user_manager_unavailable")
+            "fedora_system_monitor.capsules.systemd_history._show_units",
+            return_value={identity.unit: ({}, "user_manager_unavailable")},
         ) as show:
             build_runtime_snapshot(self.database, output=output, user_account="daniele")
-        show.assert_called_once_with("systemctl", identity, user_account="daniele")
+        show.assert_called_once_with("systemctl", "user", [identity.unit], user_account="daniele")
         row = json.loads(output.read_text())["units"][0]
         self.assertEqual(row["coverage"], "UNKNOWN")
         self.assertEqual(row["coverage_reason"], "user_manager_unavailable")
