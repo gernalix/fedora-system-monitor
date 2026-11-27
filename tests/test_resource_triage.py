@@ -35,6 +35,15 @@ class ResourceTriageTests(unittest.TestCase):
         cur["samples"][UNIT].pop("io")
         self.assertEqual(triage.observed(one, cur, 60, "io_ops_min"), {})
 
+    def test_targeted_pid_io_omits_disappeared_pid_and_sorts_by_actual_bytes(self):
+        rows = [dict(pid=i, name="process") for i in (1, 2, 3, 4)]
+        reads = [(0, 5), (9, 90), None, (3, 4), (8, 7), (13, 200), None]
+        with patch.object(triage, "pid_io_reading", side_effect=reads), patch.object(triage.time, "sleep"):
+            result = triage.process_io(rows, UNIT, 10, 10)
+        self.assertEqual((result["candidates"], result["measured"]), (4, 2))
+        self.assertEqual([r["pid"] for r in result["rows"]], [2, 1])
+        self.assertEqual(result["rows"][0]["write_bytes"], 110)
+
     def test_private_receipt_keeps_latest_verification_separate_by_metric(self):
         with tempfile.TemporaryDirectory() as temp, patch.dict("os.environ", {"XDG_STATE_HOME": temp}):
             data = dict(unit=UNIT, metric="cpu_percent", status="NON_RIENTRATO")

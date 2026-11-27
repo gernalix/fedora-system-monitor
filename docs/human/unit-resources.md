@@ -116,6 +116,10 @@ avviso aperto privilegiando la misura recente col maggiore rapporto fra valore
 e soglia. Mostra i PID ancora riconducibili all’unità, l’ultimo controllo
 salvato e l’eventuale ricetta di riparazione. `inspect` riporta CPU, memoria e
 letture/scritture in byte per i PID secondo la disponibilità dei contatori.
+Con `inspect --unit … --io-seconds 10` il programma misura su richiesta i
+byte letti e scritti dai PID già identificati, controllando identità e gruppo.
+I contatori del PID possono includere figli già attesi; le righe non vanno
+sommate alla cieca. Il report indica quanti PID sono stati misurati.
 L’attribuzione a una libreria richiede una diagnosi del processo interessato.
 
 Dopo la correzione eseguire, per esempio:

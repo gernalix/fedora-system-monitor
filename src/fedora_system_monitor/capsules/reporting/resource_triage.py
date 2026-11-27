@@ -245,37 +245,68 @@ def verification(path, args, policy):
                 samples=evidence, gaps=gaps), codes[status]
 
 
-def process_rows(db, unit, limit):
-    # Historical process identities retain the leaf unit. Require the same live
-    # boot, PID start time and cgroup manager before attributing a PID to it.
-    boot = BOOT.read_text().strip()
-    scan = db.execute("SELECT id,timestamp,boot_id FROM process_scans ORDER BY id DESC LIMIT 1").fetchone()
-    if not scan or scan["boot_id"] != boot or not 0 <= time.time() - scan["timestamp"] <= 120:
-        return []
+def same_process(row, unit):
     prefix, _, leaf = unit.rpartition(":")
+    proc = Path("/proc") / str(row["pid"])
+    try:
+        group = next(line[3:] for line in (proc / "cgroup").read_text().splitlines() if line.startswith("0::"))
+        parts = Path(group).parts
+        managers = [p[5:-8] for p in parts if p.startswith("user@") and p.endswith(".service") and p[5:-8].isdecimal()]
+        owner = "user:" + managers[-1] if managers else "system"
+        if leaf.startswith("user@") and leaf.endswith(".service") and leaf == parts[-1]:
+            owner = "system"
+        start = int((proc / "stat").read_text().rsplit(")", 1)[1].split()[19])
+        return prefix == owner and leaf in parts and start == row["start_ticks"]
+    except (OSError, StopIteration, IndexError, ValueError):
+        return False
+
+
+def process_rows(db, unit, limit):
+    scan = db.execute("SELECT id,timestamp,boot_id FROM process_scans ORDER BY id DESC LIMIT 1").fetchone()
+    if not scan or scan["boot_id"] != BOOT.read_text().strip() or not 0 <= time.time() - scan["timestamp"] <= 120:
+        return []
+    leaf = unit.rsplit(":", 1)[-1]
     rows = db.execute("""SELECT i.pid,i.start_ticks,i.name,s.cpu_percent,s.rss_bytes,
         s.read_delta,s.write_delta FROM process_samples s JOIN process_identities i ON i.id=s.identity_id
         WHERE s.scan_id=? AND i.unit=? ORDER BY s.cpu_percent DESC,i.pid""", (scan["id"], leaf))
     found = []
     for row in rows:
-        proc = Path("/proc") / str(row["pid"])
-        try:
-            group = next(line[3:] for line in (proc / "cgroup").read_text().splitlines() if line.startswith("0::"))
-            parts = Path(group).parts
-            managers = [p[5:-8] for p in parts if p.startswith("user@") and p.endswith(".service") and p[5:-8].isdecimal()]
-            owner = "user:" + managers[-1] if managers else "system"
-            # user@UID.service itself belongs to the system manager.
-            if leaf.startswith("user@") and leaf.endswith(".service") and leaf == parts[-1]:
-                owner = "system"
-            start = int((proc / "stat").read_text().rsplit(")", 1)[1].split()[19])
-            if prefix != owner or leaf not in parts or start != row["start_ticks"]:
-                continue
-        except (OSError, StopIteration, IndexError, ValueError):
-            continue
-        found.append({k: row[k] for k in ("pid", "name", "cpu_percent", "rss_bytes", "read_delta", "write_delta")})
-        if len(found) == limit:
-            break
+        if same_process(row, unit):
+            found.append(dict(row))
+            if len(found) == limit:
+                break
     return found
+
+
+def pid_io_reading(row, unit):
+    try:
+        path = Path("/proc") / str(row["pid"]) / "io"
+        counters = dict(line.split(": ") for line in path.read_text().splitlines())
+        values = int(counters["read_bytes"]), int(counters["write_bytes"])
+    except (OSError, KeyError, ValueError):
+        return None
+    return values if same_process(row, unit) else None
+
+
+def process_io(rows, unit, seconds, limit):
+    start = time.monotonic()
+    first = {r["pid"]: pid_io_reading(r, unit) for r in rows}
+    measured = []
+    if any(counts is not None for counts in first.values()):
+        time.sleep(seconds)
+        for row in rows:
+            before = first[row["pid"]]
+            if before is None:
+                continue
+            after = pid_io_reading(row, unit)
+            if after is None:
+                continue
+            read, written = after[0] - before[0], after[1] - before[1]
+            if read >= 0 and written >= 0:
+                measured.append(dict(pid=row["pid"], name=row["name"], read_bytes=read, write_bytes=written))
+    measured.sort(key=lambda r: (-(r["read_bytes"] + r["write_bytes"]), r["pid"]))
+    return dict(elapsed_seconds=round(time.monotonic() - start, 3), candidates=len(rows),
+                measured=len(measured), rows=measured[:limit])
 
 
 def receipt_path(unit, metric):
@@ -323,10 +354,15 @@ def run(args):
             return next_incident(db, unit_repairs.configured_recipes(policy, uid), args.metric), 0
         frames = history(db, args.metric, args.minutes, time.time())
         if args.command == "inspect":
-            return dict(unit=args.unit, metric=args.metric, frames=len(frames),
-                        last_verification=last_verification(args.unit, args.metric),
-                        timeline=[dict(end=t, value=f.get(args.unit)) for t, f in frames],
-                        processes_by_cpu=process_rows(db, args.unit, args.limit)), 0
+            processes = process_rows(db, args.unit, None if args.io_seconds else args.limit)
+    if args.command == "inspect":
+        result = dict(unit=args.unit, metric=args.metric, frames=len(frames),
+                      last_verification=last_verification(args.unit, args.metric),
+                      timeline=[dict(end=t, value=f.get(args.unit)) for t, f in frames],
+                      processes_by_cpu=processes[:args.limit])
+        if args.io_seconds:
+            result["sampled_pid_io"] = process_io(processes, args.unit, args.io_seconds, args.limit)
+        return result, 0
     coverage = "top5"
     if args.full:
         frames = []
@@ -369,6 +405,8 @@ def main(argv=None):
     for cmd in (ranking, inspect, verify):
         cmd.add_argument("--metric", choices=METRICS, default="io_ops_min")
         cmd.add_argument("--minutes", type=int, default=15)
+    inspect.add_argument("--io-seconds", type=int, choices=range(1, 61), metavar="1..60",
+                         help="misura su richiesta i byte I/O dei PID già identificati da FSM")
     queue.add_argument("--metric", choices=tuple(LIMITS), help="filtra i soli avvisi di questa metrica")
     for cmd in (inspect, verify):
         cmd.add_argument("--unit", required=True)
