@@ -77,6 +77,44 @@ class AppTests(unittest.TestCase):
             self.assertEqual(result, 0)
             self.assertEqual(json.loads(output.getvalue())["schema_version"], SCHEMA_VERSION)
 
+    def test_daily_worker_receipt_preserves_full_result_and_diagnostics(self) -> None:
+        summary = {"day": "2026-11-27", "health": "attention", "active_alerts": 2,
+                   "current": [{"device_id": "fixture"}], "event_counts": [{"count": 42}]}
+        stored = {"scope": "daily", "outcome": "partial", "errors": ["fixture"],
+                  "maintenance": {"summary": summary, "db_check": {"ok": True}}}
+        with tempfile.TemporaryDirectory() as temp:
+            for compact in (False, True):
+                output = io.StringIO()
+                args = ["--config", str(self.config), "--database", str(Path(temp) / "db"),
+                        "collect-worker", "daily", "--json"]
+                if compact:
+                    args.append("--journal-receipt")
+                with patch("fedora_system_monitor.capsules.runtime.coordinator._run_scope", return_value=stored), redirect_stdout(output):
+                    self.assertEqual(main(args), 0)
+                result = json.loads(output.getvalue())
+                if compact:
+                    self.assertEqual(result["maintenance"]["summary"], {
+                        "day": "2026-11-27", "health": "attention", "active_alerts": 2,
+                        "current_series": 1, "event_groups": 1})
+                    self.assertEqual(result["errors"], ["fixture"])
+                    self.assertEqual(result["maintenance"]["db_check"], {"ok": True})
+                else:
+                    self.assertEqual(result, stored)
+        self.assertEqual(summary["current"], [{"device_id": "fixture"}])
+
+    def test_daily_coordinator_requests_receipt_only_for_text_journal(self) -> None:
+        module = "fedora_system_monitor.capsules.runtime.coordinator"
+        reply = CommandResult((), 0, '{"scope":"daily","outcome":"ok"}', "", 1)
+        with tempfile.TemporaryDirectory() as temp:
+            db = Database(Path(temp) / "db")
+            try:
+                for journal, as_json in ((False, False), (True, False), (True, True)):
+                    with patch(module + "._stdout_is_journal", return_value=journal), patch(module + ".run_command", return_value=reply) as runner:
+                        _run_isolated_scope(Namespace(config=self.config, json=as_json), "daily", {}, db)
+                    self.assertEqual("--journal-receipt" in runner.call_args.args[0], journal and not as_json)
+            finally:
+                db.close()
+
     def test_collect_worker_persists_fixture_minute_metrics(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             database = Path(temp) / "monitor.sqlite3"

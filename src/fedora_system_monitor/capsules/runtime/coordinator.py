@@ -701,6 +701,30 @@ def _run_scope(scope: str, config: dict[str, Any], db: Database) -> dict[str, An
         raise
 
 
+def _stdout_is_journal() -> bool:
+    stream = os.environ.get("JOURNAL_STREAM")
+    if not stream:
+        return False
+    try:
+        stat = os.fstat(sys.stdout.fileno())
+    except (OSError, ValueError):
+        return False
+    return stream == f"{stat.st_dev}:{stat.st_ino}"
+
+
+def _daily_journal_receipt(result: dict[str, Any]) -> dict[str, Any]:
+    # The complete snapshot has already been committed to summaries and collector_runs.
+    maintenance = result.get("maintenance") or {}
+    summary = maintenance.get("summary")
+    if not isinstance(summary, dict):
+        return result
+    fields = ("day", "health", "active_alerts", "new_alerts", "resolved_alerts")
+    header = {field: summary[field] for field in fields if field in summary}
+    header["current_series"] = len(summary.get("current", []))
+    header["event_groups"] = len(summary.get("event_counts", []))
+    return {**result, "maintenance": {**maintenance, "summary": header}}
+
+
 def _run_isolated_scope(args: argparse.Namespace, scope: str, config: dict[str, Any], db: Database) -> dict[str, Any]:
     deadlines = {
         "minute": 45,
@@ -724,6 +748,9 @@ def _run_isolated_scope(args: argparse.Namespace, scope: str, config: dict[str, 
         scope,
         "--json",
     ]
+    journal_receipt = scope == "daily" and not getattr(args, "json", False) and _stdout_is_journal()
+    if journal_receipt:
+        command.append("--journal-receipt")
     result = run_command(command, timeout=deadlines[scope], max_output=2_000_000)
     if result.ok:
         try:
@@ -734,7 +761,7 @@ def _run_isolated_scope(args: argparse.Namespace, scope: str, config: dict[str, 
             return payload
     persisted = _latest_persisted_scope_result(db, scope, boundary_id)
     if persisted is not None:
-        return persisted
+        return _daily_journal_receipt(persisted) if journal_receipt else persisted
     reason = "collector deadline exceeded" if result.timed_out else "collector subprocess failed"
     diagnostics = _subprocess_diagnostics(result)
     db.record_collector_run(
@@ -1561,6 +1588,8 @@ def execute(args: argparse.Namespace) -> int:
             output = _collect_command(args, config, db)
         elif args.command == "collect-worker":
             output = _run_scope(args.scope, config, db)
+            if args.scope == "daily" and args.journal_receipt:
+                output = _daily_journal_receipt(output)
         elif args.command == "daemon":
             return _daemon(config, db)
         elif args.command == "hook":
