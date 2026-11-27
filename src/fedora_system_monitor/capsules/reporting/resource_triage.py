@@ -405,6 +405,7 @@ def main(argv=None):
     verify = commands.add_parser("verify", help="misura finestre complete dopo una correzione")
     case = commands.add_parser("case", help="riepilogo compatto o verifica dello stesso incidente dopo una modifica")
     case.add_argument("--id", type=int, help="ID stabile dell’avviso FSM")
+    case.add_argument("--memory", action="store_true", help="misura RAM, swap, pressione e PSS dei membri diretti")
     case.add_argument("--io-seconds", type=int, choices=range(1, 61), metavar="1..60",
                       help="campiona i membri diretti del cgroup una volta al secondo")
     case.add_argument("--verify", action="store_true", help="verifica dopo una modifica, richiede --id")
@@ -448,8 +449,8 @@ def main(argv=None):
         parser.error("Identità incompleta. Esempi: system:example.service, user:1000:example.scope")
     if args.command == "verify" and (args.probe == [] or (args.expect_change and not args.probe)):
         parser.error("--expect-change richiede --probe seguito dal comando del proprietario")
-    if args.command == "case" and args.verify and args.io_seconds:
-        parser.error("--io-seconds va usato nella diagnosi, prima della verifica")
+    if args.command == "case" and args.verify and (args.io_seconds or args.memory):
+        parser.error("--io-seconds e --memory sono opzioni di diagnosi")
     if args.command == "case" and ((args.verify and not args.id) or (args.id is not None and (args.id < 1 or args.metric))):
         parser.error("case --verify richiede --id positivo; usare --metric solo per scegliere un caso")
     if args.command == "rank" and not args.full and args.samples != 1:

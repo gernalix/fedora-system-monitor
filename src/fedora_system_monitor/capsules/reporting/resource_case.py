@@ -6,7 +6,7 @@ import time
 from types import SimpleNamespace
 
 from ..collectors import unit_repairs
-from . import _connection, resource_pid_trace
+from . import _connection, resource_pid_trace, resource_memory
 from . import resource_triage as triage
 
 
@@ -100,6 +100,8 @@ def report(args, policy, uid):
     if not args.verify:
         if args.io_seconds and item["state"] == "active" and item["recent"]:
             item["pid_io"] = resource_pid_trace.attribution(item["unit"], args.io_seconds)
+        if args.memory and item["state"] == "active" and item["recent"]:
+            item["memory"] = resource_memory.memory_report(item["unit"])
         return item, 0
     if item["metric"] in triage.METRICS:
         probe = None

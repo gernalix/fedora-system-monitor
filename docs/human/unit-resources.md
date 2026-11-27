@@ -185,3 +185,14 @@ di 38.400 byte di testo di prova, verifica il replay di stdout e output
 combinato e restituisce CPU, durata e operazioni a blocchi con le mediane.
 Un replay incompleto rende la prova inutilizzabile. L’archivio applica la
 conservazione ordinaria ai tre eventi.
+
+Per gli avvisi di memoria usare `fsm-resources case --metric memory_mib --memory`.
+Il dettaglio mostra la carica del cgroup, la memoria anonima, quella associata a
+file, lo swap, la RAM disponibile sull’host e la percentuale di stallo completo
+per memoria (PSI a 60 secondi). Shmem, file attivi/inattivi e pagine sporche
+sono dettagli della contabilità del kernel e possono sovrapporsi.
+Le due classifiche raggruppano per eseguibile la memoria residente (PSS) e
+quella in swap (SwapPss), ripartendo le pagine condivise. Riguardano i PID
+diretti leggibili. Il comando indica copertura e costo della misura, limitata a
+256 PID e con un budget di un secondo per avviare le letture. La raccolta
+periodica continua a usare i soli contatori del cgroup.
