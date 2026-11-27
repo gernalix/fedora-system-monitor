@@ -6,8 +6,11 @@ keeps the existing API, WAL transactions and conservative alert retention.
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from itertools import groupby
+from operator import itemgetter
 import hashlib
 import math
 import sqlite3
@@ -27,21 +30,47 @@ def _percentile_95(values: Sequence[float]) -> float | None:
     return ordered[index]
 
 
+@dataclass
+class _DailySeries:
+    values: list[float] = field(default_factory=list)
+    count: int = 0
+    duplicates: int = 0
+    warnings: int = 0
+    severity: str | None = None
+
+    def add(self, value: float | None, severity: str) -> None:
+        self.count += 1
+        if value is not None:
+            self.values.append(float(value))
+        rank = _SEVERITY_RANK.get(severity, 1)
+        if self.severity is None or rank > _SEVERITY_RANK.get(self.severity, 1):
+            self.severity = severity
+        if rank >= _SEVERITY_RANK["warning"]:
+            self.warnings += 1
+
+
 class RetentionStorageMixin:
     def _aggregate_metrics(
         self,
         connection: sqlite3.Connection,
-        rows: Sequence[sqlite3.Row],
+        rows: Iterable[sqlite3.Row],
     ) -> int:
-        grouped: dict[tuple[Any, ...], list[sqlite3.Row]] = defaultdict(list)
-        for row in rows:
-            instant = self._coerce_datetime(row["timestamp_utc"])
-            bucket = instant.replace(hour=0, minute=0, second=0, microsecond=0)
-            key = (
-                bucket, row["cadence_seconds"], row["hostname"], row["category"], row["name"],
-                row["unit"], row["source"], row["device_id"],
-            )
-            grouped[key].append(row)
+        # The cadence/time index delivers rows ordered by timestamp, then rowid.
+        # At each instant the last row for a series wins. Retain only numerical
+        # values across instants for exact percentiles and counter deltas.
+        grouped: dict[tuple[Any, ...], _DailySeries] = defaultdict(_DailySeries)
+        for timestamp, batch in groupby(rows, key=itemgetter("timestamp_utc")):
+            bucket = self._coerce_datetime(timestamp).replace(hour=0, minute=0, second=0, microsecond=0)
+            latest = {}
+            for row in batch:
+                key = (bucket, row["cadence_seconds"], row["hostname"], row["category"], row["name"],
+                       row["unit"], row["source"], row["device_id"])
+                series = grouped[key]
+                if key in latest:
+                    series.duplicates += 1
+                latest[key] = (row["value"], row["severity"])
+            for key, (value, severity) in latest.items():
+                grouped[key].add(value, severity)
 
         cumulative_names = {
             "interface_rx_bytes",
@@ -50,39 +79,22 @@ class RetentionStorageMixin:
             "disk_writes_completed",
         }
         count = 0
-        for key, raw_samples in grouped.items():
+        for key, series in grouped.items():
             bucket, cadence, hostname, category, name, unit, source, device_id = key
             bucket_end = bucket + timedelta(days=1)
             bucket_utc, bucket_local = self._timestamps(bucket)
             bucket_end_utc, _ = self._timestamps(bucket_end)
-            by_timestamp: dict[str, sqlite3.Row] = {}
-            for row in raw_samples:
-                timestamp = str(row["timestamp_utc"])
-                previous = by_timestamp.get(timestamp)
-                if previous is None or int(row["id"]) > int(previous["id"]):
-                    by_timestamp[timestamp] = row
-            samples = sorted(
-                by_timestamp.values(),
-                key=lambda row: (str(row["timestamp_utc"]), int(row["id"])),
-            )
-            duplicates_discarded = len(raw_samples) - len(samples)
-            values = [float(row["value"]) for row in samples if row["value"] is not None]
-            severity = max(
-                (str(row["severity"]) for row in samples),
-                key=lambda item: _SEVERITY_RANK.get(item, 1),
-            )
-            problematic = min(86400, sum(
-                int(cadence)
-                for row in samples
-                if _SEVERITY_RANK.get(str(row["severity"]), 1) >= _SEVERITY_RANK["warning"]
-            ))
+            duplicates_discarded = series.duplicates
+            values = series.values
+            severity = series.severity
+            problematic = min(86400, int(cadence) * series.warnings)
             identity = [bucket_utc, cadence, hostname, category, name, unit, source, device_id]
             aggregate_key = hashlib.sha256(_json_dumps(identity).encode("utf-8")).hexdigest()
             minimum = min(values) if values else None
             maximum = max(values) if values else None
             average = sum(values) / len(values) if values else None
             p95 = _percentile_95(values)
-            sample_count = len(samples)
+            sample_count = series.count
             expected_samples = max(1, 86400 // max(1, int(cadence)))
             metric_kind = (
                 "cumulative_counter"
@@ -345,13 +357,13 @@ class RetentionStorageMixin:
                 with self._transaction() as connection:
                     expired = connection.execute(
                         """
-                        SELECT * FROM periodic_metrics
+                        SELECT timestamp_utc,cadence_seconds,hostname,category,name,unit,source,
+                               device_id,value,severity FROM periodic_metrics
                         WHERE cadence_seconds = ? AND timestamp_utc >= ? AND timestamp_utc < ?
+                        ORDER BY timestamp_utc,id
                         """,
                         (cadence, bucket_start_utc, bucket_end_utc),
-                    ).fetchall()
-                    if not expired:
-                        continue
+                    )
                     result["aggregates_written"] += self._aggregate_metrics(connection, expired)
                     cursor = connection.execute(
                         """

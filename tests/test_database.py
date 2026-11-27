@@ -543,9 +543,11 @@ class DatabaseTests(unittest.TestCase):
         batch_sizes: list[int] = []
         original = self.db._aggregate_metrics
 
-        def record_batch(connection: sqlite3.Connection, rows: object) -> int:
-            batch_sizes.append(len(rows))  # type: ignore[arg-type]
-            return original(connection, rows)  # type: ignore[arg-type]
+        def record_batch(connection: sqlite3.Connection, rows: sqlite3.Cursor) -> int:
+            self.assertIsInstance(rows, sqlite3.Cursor)
+            batch = list(rows)
+            batch_sizes.append(len(batch))
+            return original(connection, batch)
 
         with patch.object(self.db, "_aggregate_metrics", side_effect=record_batch):
             self.db.apply_retention(
