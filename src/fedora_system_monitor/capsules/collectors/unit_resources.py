@@ -25,27 +25,34 @@ COMPLETION_METRICS = ("completed_cpu_seconds", "completed_memory_peak_mib")
 RELATIVE_FLOORS = {"cpu_percent": 20, "io_ops_min": 1500, "io_mib_s": 10, "memory_mib": 512}
 
 
-def block_counters(raw, physical):
-    ops, size = {}, {}
+def leaf_devices(devices):
+    # Do not charge dm-crypt and its backing device for the same operation.
+    return {d.name for d in devices.iterdir()
+            if (d / "slaves").is_dir() and not any((d / "slaves").iterdir())}
+
+
+def block_rows(raw, physical):
     for line in raw.splitlines():
         device, *entries = line.split()
         if device in physical:
             values = dict(entry.split("=") for entry in entries)
-            # Linux omits this entire group of four fields when all are zero.
-            # Device identity and optional controller statistics can still appear.
+            # Linux omits the entire group of four fields when all are zero.
             if not values.keys() & {"rios", "wios", "rbytes", "wbytes"}:
-                ops[device] = size[device] = 0
-                continue
-            ops[device] = int(values["rios"]) + int(values["wios"])
-            size[device] = int(values["rbytes"]) + int(values["wbytes"])
+                yield device, 0, 0, 0, 0
+            else:
+                yield device, int(values["rios"]), int(values["wios"]), int(values["rbytes"]), int(values["wbytes"])
+
+
+def block_counters(raw, physical):
+    ops, size = {}, {}
+    for device, reads, writes, read_bytes, write_bytes in block_rows(raw, physical):
+        ops[device] = reads + writes
+        size[device] = read_bytes + write_bytes
     return ops, size
 
 
 def read_cgroups(root=CGROUP, devices=DEVICES):
-    # Select leaf block devices once so dm-crypt and its backing disk do
-    # not both charge the same operation. Missing accounting stays unknown.
-    physical = {d.name for d in devices.iterdir()
-                if (d / "slaves").is_dir() and not any((d / "slaves").iterdir())}
+    physical = leaf_devices(devices)
     samples = {}
     skipped = 0
 

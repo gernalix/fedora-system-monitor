@@ -6,6 +6,9 @@ import subprocess
 import time
 
 
+from ..collectors.unit_resources import DEVICES, block_rows, leaf_devices
+
+
 def group_path(unit):
     manager, name = unit.rsplit(":", 1)
     if manager not in ("system", f"user:{os.getuid()}"):
@@ -40,6 +43,34 @@ def snapshot(directory, relative):
     return data, skipped
 
 
+def device_snapshot(directory, devices=DEVICES):
+    try:
+        physical = leaf_devices(devices)
+        raw = (directory / "io.stat").read_text()
+        return {(device, (devices / device).resolve(strict=True).name): (r, w, rb, wb)
+                for device, r, w, rb, wb in block_rows(raw, physical)}
+    except (OSError, KeyError, ValueError):
+        return None
+
+
+def device_changes(before, after, elapsed):
+    report = dict(status="unavailable", devices=[])
+    if before is None or after is None:
+        return report
+    report["status"] = "complete" if before.keys() == after.keys() else "partial"
+    for key in before.keys() & after.keys():
+        reads, writes, read_bytes, write_bytes = (b-a for a,b in zip(before[key], after[key]))
+        if min(reads, writes, read_bytes, write_bytes) < 0:
+            report["status"] = "partial"
+            continue
+        device, name = key
+        report["devices"].append(dict(device=device, name=name, reads=reads, writes=writes,
+                                      read_bytes=read_bytes, write_bytes=write_bytes,
+                                      ops_min=round((reads+writes)*60/elapsed, 2)))
+    report["devices"].sort(key=lambda row: (-row["ops_min"], row["device"]))
+    return report
+
+
 def attribution(unit, seconds):
     directory, relative = group_path(unit)
     stat = directory.stat()
@@ -47,6 +78,8 @@ def attribution(unit, seconds):
     first_tick = time.clock_gettime(time.CLOCK_BOOTTIME) * ticks
     start = time.monotonic()
     cpu = time.process_time()
+    before = device_snapshot(directory)
+    device_start = time.monotonic()
     last, skipped = snapshot(directory, relative)
     totals = {}
     gaps = 0
@@ -71,7 +104,11 @@ def attribution(unit, seconds):
         # the last scan. A migrated/unreadable older process needs a baseline.
         first_tick = time.clock_gettime(time.CLOCK_BOOTTIME) * ticks
         last = current
+    after = device_snapshot(directory)
+    devices = device_changes(before, after, time.monotonic()-device_start)
+    if directory.stat().st_ino != stat.st_ino:
+        raise ValueError("Cgroup ricreato durante la misura")
     ranked = sorted(totals, key=lambda name: (-(totals[name]["read_bytes"] + totals[name]["write_bytes"]), name))
     return dict(elapsed=round(time.monotonic()-start, 3), observer_cpu=round(time.process_time()-cpu, 4),
-                unreadable_observations=skipped, baseline_gaps=gaps,
+                unreadable_observations=skipped, baseline_gaps=gaps, block_io=devices,
                 executables=[dict(name=name, **totals[name]) for name in ranked[:5]])

@@ -57,3 +57,30 @@ class ResourceCaseTests(unittest.TestCase):
             self.assertEqual(result["executables"], [dict(name="bar",read_bytes=30,write_bytes=0),
                                                      dict(name="foo",read_bytes=10,write_bytes=6)])
             self.assertEqual((result["baseline_gaps"], result["unreadable_observations"]), (1,1))
+
+    def test_device_cost_excludes_stacked_devices_and_separates_zram(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            dev = root / "dev"
+            dev.mkdir()
+            for name, number in (("nvme0n1", "259:0"), ("dm-0", "252:0"), ("zram0", "251:0")):
+                (root / name / "slaves").mkdir(parents=True)
+                (dev / number).symlink_to(root / name)
+            (root / "dm-0/slaves/nvme0n1").touch()
+            stat = root / "io.stat"
+            stat.write_text("259:0 cost.usage=0\n252:0 cost.usage=0\n251:0 cost.usage=0\n")
+            before = trace.device_snapshot(root, dev)
+            stat.write_text("259:0 rios=3 wios=1 rbytes=30 wbytes=10\n"
+                            "252:0 rios=3 wios=1 rbytes=30 wbytes=10\n"
+                            "251:0 rios=6 wios=0 rbytes=60 wbytes=0\n")
+            after = trace.device_snapshot(root, dev)
+            report = trace.device_changes(before, after, 30)
+            self.assertEqual(report["status"], "complete")
+            self.assertEqual([(v["name"], v["ops_min"]) for v in report["devices"]],
+                             [("zram0", 12), ("nvme0n1", 8)])
+            self.assertEqual(report["devices"][1]["write_bytes"], 10)
+            self.assertEqual(trace.device_changes(after, before, 30), dict(status="partial", devices=[]))
+            self.assertEqual(trace.device_changes({}, after, 30), dict(status="partial", devices=[]))
+            stat.unlink()
+            self.assertIsNone(trace.device_snapshot(root, dev))
+            self.assertEqual(trace.device_changes(before, None, 30), dict(status="unavailable", devices=[]))

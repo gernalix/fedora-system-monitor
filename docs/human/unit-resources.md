@@ -165,7 +165,11 @@ fsm-resources case --id 123 --verify --json
 
 Sostituire 123 con l’ID restituito. Il secondo comando campiona ogni secondo
 gli eseguibili nel cgroup diretto, comprende i nuovi PID osservati e indica
-il costo CPU del controllo. Tenere conto di processi più brevi dell’intervallo,
+il costo CPU del controllo. Nella stessa finestra, `pid_io.block_io` elenca
+letture, scritture, byte e operazioni al minuto per dispositivo del cgroup.
+Per esempio, `zram0` indica RAM compressa, `nvme0n1` un dispositivo NVMe.
+Lo stato `partial` indica un dispositivo comparso, scomparso o con contatori
+azzerati. `unavailable` indica che i contatori non erano leggibili. Tenere conto di processi più brevi dell’intervallo,
 sottogruppi delegati, permessi e I/O ereditato dai figli attesi. I byte per
 eseguibile servono all’attribuzione e possono sovrapporsi. Le operazioni al
 minuto restano quelle misurate sul cgroup. Eseguire il comando tramite
