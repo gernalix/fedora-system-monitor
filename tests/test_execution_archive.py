@@ -136,6 +136,27 @@ class ArchiveTest(unittest.TestCase):
         self.assertFalse((self.a.events / sealed["id"]).exists())
         self.assertTrue((self.a.events / live["id"]).exists())
 
+    def test_batch_charges_timing_bytes_and_stops_at_first_rejected_frame(self):
+        m = self.a.begin(kind="command", source="diagnostic", label="demo", pid=os.getpid(), capture=True)
+        self.a.config["quota_bytes"] = 100 + 3 + 4 + 128
+        with mock.patch.object(self.a, "usage", return_value=100) as measure:
+            self.a.append_frames(m, [("output", b"abc", .01), ("stdout", b"abcd", .02)])
+            self.assertEqual(m["coverage"], "truncated")
+            self.assertEqual(m["bytes"], 3)
+            self.a.append(m, b"no later frame", .03)
+            measure.assert_called_once_with()
+        path = self.a.events / m["id"]
+        self.assertEqual((path / "output.raw").read_bytes(), b"abc")
+        self.assertEqual((path / "timing.raw").read_bytes(), b"0.010000 3\n")
+        self.assertFalse((path / "stdout.raw").exists())
+
+    def test_batch_validates_all_streams_before_writing_any_frame(self):
+        m = self.a.begin(kind="command", source="diagnostic", label="demo", pid=os.getpid(), capture=True)
+        with self.assertRaises(ValueError):
+            self.a.append_frames(m, [("output", b"ok", 0), ("input", b"excluded", .1)])
+        self.assertEqual(m["bytes"], 0)
+        self.assertFalse((self.a.events / m["id"] / "output.raw").exists())
+
     def test_retention_cache_and_reindex_preserve_original_event(self):
         event = self.event()
         with self.a.lock():

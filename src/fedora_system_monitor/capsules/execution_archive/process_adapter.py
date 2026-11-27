@@ -152,24 +152,24 @@ def run(source: str, args: list[str], root: Path | None = None) -> int:
     tails = {"stdout": b"", "stderr": b""}
     previous = {"output": time.monotonic(), "stdout": time.monotonic(), "stderr": time.monotonic()}
 
-    def store(stream: str, data: bytes, stamp: float) -> None:
-        nonlocal storage_failed
-        if storage_failed or sensitive:
-            return
-        try:
-            archive.append(m, data, max(0, stamp - previous["output"]), stream="output")
-            previous["output"] = stamp
-            archive.append(m, data, max(0, stamp - previous[stream]), stream=stream)
-            previous[stream] = stamp
-        except STORAGE_ERRORS:
-            storage_failed = True
-
     def flush(target: int = 0) -> None:
-        nonlocal pending_bytes
-        while pending and pending_bytes > target:
-            stream, data, stamp = pending.pop(0)
+        nonlocal pending_bytes, storage_failed
+        frames = []
+        consumed = 0
+        for stream, data, stamp in pending:
+            if pending_bytes <= target:
+                break
             pending_bytes -= len(data)
-            store(stream, data, stamp)
+            consumed += 1
+            frames.append(("output", data, max(0, stamp - previous["output"])))
+            frames.append((stream, data, max(0, stamp - previous[stream])))
+            previous["output"] = previous[stream] = stamp
+        del pending[:consumed]
+        if frames and not storage_failed and not sensitive:
+            try:
+                archive.append_frames(m, frames)
+            except STORAGE_ERRORS:
+                storage_failed = True
 
     if capture:
         sel = selectors.DefaultSelector()

@@ -275,29 +275,42 @@ class Archive:
             return m, True
 
     def append(self, m: dict, data: bytes, delay: float, *, stream: str = "output") -> None:
+        self.append_frames(m, [(stream, data, delay)])
+
+    def append_frames(self, m: dict, frames: list[tuple[str, bytes, float]]) -> None:
+        """Append already screened frames under one quota check and archive lock."""
         clocks = {"output": "timing", "input": "input_timing",
                   "stdout": "stdout_timing", "stderr": "stderr_timing"}
-        if stream not in clocks or (stream == "input" and not (m.get("consent") or {}).get("input")):
-            raise ValueError("unapproved stream")
-        if m["coverage"] not in {"output-only", "visible-pty", "process-streams", "remote-streams", "truncated"} or not data:
+        for stream, _, _ in frames:
+            if stream not in clocks or (stream == "input" and not (m.get("consent") or {}).get("input")):
+                raise ValueError("unapproved stream")
+        if m["coverage"] not in {"output-only", "visible-pty", "process-streams", "remote-streams"}:
             return
+        if not any(data for _, data, _ in frames):
+            return
+        path = self.events / m["id"]
         with self.lock():
-            if (m["bytes"] + len(data) > self.config["event_bytes"] or
-                    self.usage() + len(data) + 128 > self.config["quota_bytes"]):
-                m["coverage"] = "truncated"
-                atomic_json(self.events / m["id"] / "manifest.json", m)
+            usage = None
+            for stream, data, delay in frames:
+                if not data:
+                    continue
+                if m["bytes"] + len(data) > self.config["event_bytes"]:
+                    break
+                if usage is None:
+                    usage = self.usage()
+                if usage + len(data) + 128 > self.config["quota_bytes"]:
+                    break
+                timing = f"{max(0, delay):.6f} {len(data)}\n".encode()
+                with private_file(path / f"{stream}.raw", "ab") as f:
+                    f.write(data)
+                with private_file(path / f"{clocks[stream]}.raw", "ab") as f:
+                    f.write(timing)
+                m["bytes"] += len(data)
+                usage += len(data) + len(timing)
+            else:
                 return
-            # Once truncated, don't create a discontinuous replay stream.
-            if m["coverage"] == "truncated":
-                return
-            path = self.events / m["id"]
-            with private_file(path / f"{stream}.raw", "ab") as f:
-                f.write(data)
-                f.flush()
-            with private_file(path / f"{clocks[stream]}.raw", "ab") as f:
-                f.write(f"{max(0, delay):.6f} {len(data)}\n".encode())
-                f.flush()
-            m["bytes"] += len(data)
+            m["coverage"] = "truncated"
+            atomic_json(path / "manifest.json", m)
 
     def finish(self, m: dict, code: int | None, *, interrupted: bool = False) -> None:
         with self.lock():
