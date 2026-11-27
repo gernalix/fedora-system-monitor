@@ -9,11 +9,14 @@ STATE = "service.resource_repairs.v1"
 CLIPMD = "clipboard-markdown-links-remote.service"
 
 
+def configured_recipes(policy, uid):
+    return {f"user:{uid}:{CLIPMD}": {"restarts_min": "clipboard-markdown-links-remote-repair.service"},
+            **policy.get("repairs", {})}
+
+
 def reconcile(result, findings, config, db):
-    policy = config.get("unit_resources", {})
     _, _, uid = operator_identity(config)
-    recipes = {f"user:{uid}:{CLIPMD}": {"restarts_min": "clipboard-markdown-links-remote-repair.service"},
-               **policy.get("repairs", {})}
+    recipes = configured_recipes(config.get("unit_resources", {}), uid)
     attempts = db.get_state(STATE, {}, namespace="collector")
 
     def event(unit, name, outcome, details):

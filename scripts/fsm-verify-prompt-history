@@ -1,0 +1,28 @@
+#!/usr/bin/python3 -I
+"""Verify a complete scheduled refresh of the local activity dashboard."""
+import json
+from pathlib import Path
+import sys
+from urllib.request import build_opener, ProxyHandler, HTTPRedirectHandler
+
+class LocalOnly(HTTPRedirectHandler):
+    def redirect_request(self, *args):
+        return None
+
+def receipt():
+    opener = build_opener(ProxyHandler({}), LocalOnly)
+    with opener.open("http://127.0.0.1:47831/api/activity?period=7", timeout=4) as reply:
+        data = json.loads(reply.read(65536))
+    if data.get("refresh_error") is not False or len(data.get("days", [])) != 7 or not data.get("generated_at"):
+        raise ValueError("Dashboard priva di un aggiornamento valido")
+    print(data["generated_at"])
+
+if __name__ == "__main__":
+    if sys.argv[1:] == ["--receipt"]:
+        receipt()
+    else:
+        import os
+        script = Path(__file__).resolve()
+        command = script.with_name("fsm-resources")
+        os.execv(command, [str(command), "verify", "--unit", f"user:{os.getuid()}:prompt-history-dashboard.service",
+                           "--timeout", "1200", "--expect-change", *sys.argv[1:], "--probe", str(script), "--receipt"])

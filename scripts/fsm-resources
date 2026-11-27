@@ -1,0 +1,9 @@
+#!/usr/bin/python3 -I
+"""Consult the project-owned reporting code without a privileged installation."""
+from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from fedora_system_monitor.capsules.reporting.resource_triage import main
+
+raise SystemExit(main())

@@ -90,3 +90,53 @@ hanno aggiunto in mediana 1,25 ms CPU e 1,27 ms di parete per campione. La
 scansione /proc originale durava in mediana 129,86 ms. Il confronto include
 aggregazione, rilettura dello stato, scrittura in SQLite temporanea e valutazione
 delle metriche. Il costo sul database di produzione può variare.
+
+## Classifica e verifica da terminale
+
+Dal checkout Fedora, `scripts/fsm-resources rank` mostra le unità dell’ultimo
+campione ordinate per operazioni I/O al minuto. Il riepilogo storico contiene
+i primi cinque per metrica. Un punto interrogativo indica un valore fuori
+classifica o assente. I conteggi delle presenze e dei superamenti storici sono
+limiti inferiori. La colonna SOPRA usa il limite configurato per unità o la
+soglia indicata con `--threshold`.
+
+```sh
+fsm-resources rank --order persistent --minutes 15
+fsm-resources rank --order peak --metric cpu_percent
+fsm-resources rank --full --limit 1000 --json
+fsm-resources rank --full --samples 15 --order persistent
+fsm-resources next --metric io_ops_min
+fsm-resources inspect --unit user:1000:prompt-history-dashboard.service
+```
+
+La classifica completa attende il prossimo campione del timer in funzione e
+confronta i contatori di tutte le unità misurabili. Il JSON include il dettaglio
+per dispositivo per distinguere SSD e zram. Il comando `next` sceglie un
+avviso aperto privilegiando la misura recente col maggiore rapporto fra valore
+e soglia. Mostra i PID ancora riconducibili all’unità, l’ultimo controllo
+salvato e l’eventuale ricetta di riparazione. `inspect` riporta CPU, memoria e
+letture/scritture in byte per i PID secondo la disponibilità dei contatori.
+L’attribuzione a una libreria richiede una diagnosi del processo interessato.
+
+Dopo la correzione eseguire, per esempio:
+
+```sh
+fsm-resources verify --unit system:example.service --metric cpu_percent --samples 3
+fsm-verify-prompt-history --json
+```
+
+La verifica legge finestre intere successive al comando e applica il margine
+di rientro di FSM, comprese le soglie adattive. Un cambio di cgroup, un salto
+di campionamento o un contatore mancante interrompe la serie. Il controllo
+funzionale opzionale si passa come ultimo argomento con `--probe PROGRAMMA ARG...`.
+Per un lavoro periodico, `--expect-change` chiede al controllo di restituire un
+identificativo stabile per ciclo e attende anche il campione successivo al suo
+cambio. Il comando dedicato alla dashboard usa la data di generazione dei dati
+serviti e attende fino a 20 minuti. Il contenuto della risposta resta privato.
+
+Il codice di uscita di `verify` vale 0 per il rientro osservato, 1 per consumi
+ancora alti o test funzionale fallito, 2 per prove insufficienti. L’ultima
+verifica di ogni coppia unità/metrica viene registrata atomicamente nello stato
+privato dell’utente, sotto `fedora-system-monitor/resource-triage`. I comandi
+usano il timer e la telemetria esistenti. Per l’uso diretto dal checkout
+anteporre `scripts/` ai due nomi di comando.
