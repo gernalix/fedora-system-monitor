@@ -88,3 +88,22 @@ The remaining peer/archive paths and authenticated session files retain their
 native custody. Existing watchers retain their startup snapshot until a normal
 restart. Disabled timers stay disabled; verification must not initiate login,
 collect chat data or send messages. Fedora desktop keyring must be unlocked.
+
+### Verifiche degli interventi e confronto all’avvio
+
+Usare il comando utente `fsm-resources` sullo stesso database del campionatore. Il timer esistente continua a raccogliere le misure. Per scegliere un incidente ordinare con `rank --metric io_ops_min --order persistent` oppure usare `next` per il superamento relativo più alto fra le metriche.
+
+```bash
+fsm-resources case --id 4625 --verify --background --intervention archive-b04470a
+fsm-resources case --id 4625
+fsm-resources case --id 4625 --receipt TOKEN
+fsm-resources changes --minutes 15
+fsm-resources changes --cursor CURSORE
+fsm-resources boot --minutes 15 --compare 3
+```
+
+Avviare la verifica subito dopo la modifica. La stessa etichetta per lo stesso incidente restituisce lo stesso token. Un intervento diverso riceve una nuova etichetta. Il processo systemd utente termina alla fine della verifica. La ricevuta conserva il valore dell’avviso al momento della richiesta, le misure successive e l’esito del controllo funzionale. Aggiungere come ultimo argomento `--probe /percorso/assoluto/del/controllo` per eseguire il test del servizio. Il codice di uscita indica l’esito. Per un ciclo cgroup identificabile dall’output del controllo si può aggiungere `--expect-change` prima di `--probe`. Il valore economico di un intervento va misurato con lo stesso carico prima e dopo. I campioni del cgroup comprendono anche altre attività del gruppo.
+
+`changes` restituisce il cursore per la lettura successiva dello stesso database e dello stesso archivio utente, anche quando non ci sono novità. Conservare il cursore dopo aver consumato il risultato. Una ricaduta è una nuova apertura per la stessa unità e metrica dopo un rientro documentato. La storia degli interventi è privata in `$XDG_STATE_HOME/fedora-system-monitor/resource-triage/interventions.sqlite3` (default `~/.local/state`).
+
+`boot` usa i record di avvio e i campioni conservati. Il picco CPU somma i processi con intervalli osservabili nella stessa unità (basename) e 100% equivale a un core. La persistenza riporta i campioni consecutivi ad almeno un core o 6.000 operazioni a blocchi/min. I dati I/O storici coprono le prime cinque unità di ciascun campione. I secondi coperti escludono gli intervalli fra scansioni superiori a 90 secondi. I nomi delle app desktop riconosciute indicano la prima presenza osservata, inclusi gli avvii automatici. Una finestra priva di dati rimane esplicita.

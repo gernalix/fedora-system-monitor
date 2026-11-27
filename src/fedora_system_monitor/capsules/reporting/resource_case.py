@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 from ..collectors import unit_repairs
 from . import _connection, resource_pid_trace, resource_memory
+from . import resource_followup
 from . import resource_triage as triage
 
 
@@ -85,14 +86,28 @@ def report(args, policy, uid):
                 return result, 0
             case_id = result["incident"]["id"]
         item = read_alert(db, case_id)
+        if args.receipt:
+            receipt = resource_followup.latest(args, item, args.receipt)
+            if not receipt:
+                raise ValueError("Ricevuta assente per questo incidente")
+            return receipt, receipt.get("exit_code", 0)
         if not args.verify:
             frames = triage.history(db, item["metric"], args.minutes, time.time())
             points = [frame[item["unit"]] for _, frame in frames if item["unit"] in frame]
             age = time.time() - datetime.fromisoformat(item["seen"]).timestamp()
+            last = resource_followup.latest(args, item)
+            if last is None:
+                # Legacy receipts are per series. Show one only if it identifies this case.
+                try:
+                    legacy = json.loads(triage.receipt_path(item["unit"], item["metric"]).read_text())
+                except (OSError, ValueError):
+                    legacy = {}
+                if isinstance(legacy, dict) and legacy.get("case_id") == case_id and legacy.get("unit") == item["unit"] and legacy.get("metric") == item["metric"]:
+                    last = legacy
             item.update(recent=0 <= age <= 180, recorded_frames=len(frames), seen_in_top5=len(points),
                         peak_in_top5=max(points, default=None),
                         recipe=recipes.get(item["unit"], {}).get(item["metric"]),
-                        last_check=triage.last_verification(item["unit"], item["metric"]))
+                        last_check=last)
             if item["state"] == "active" and item["recent"]:
                 item["processes_by_cpu"] = [
                     {key: row[key] for key in ("pid", "name", "cpu_percent")}
@@ -103,17 +118,28 @@ def report(args, policy, uid):
         if args.memory and item["state"] == "active" and item["recent"]:
             item["memory"] = resource_memory.memory_report(item["unit"])
         return item, 0
+    return resource_followup.verify(args, item, lambda: measure(args, policy, uid, item))
+
+
+def measure(args, policy, uid, item):
     if item["metric"] in triage.METRICS:
-        probe = None
-        if item["unit"] == f"user:{uid}:prompt-history-dashboard.service":
+        probe = args.probe
+        expect_change = args.expect_change
+        if not probe and item["unit"] == f"user:{uid}:prompt-history-dashboard.service":
             script = Path(__file__).resolve().parents[4] / "scripts/fsm-verify-prompt-history"
             probe = [str(script), "--receipt"]
+            expect_change = True
         check = SimpleNamespace(unit=item["unit"], metric=item["metric"], minutes=args.minutes,
                                 samples=3, threshold=None, timeout=args.timeout, probe=probe,
-                                expect_change=bool(probe))
+                                expect_change=expect_change)
         result, code = triage.verification(args.db, check, policy)
     else:
+        if args.expect_change:
+            raise ValueError("--expect-change richiede una metrica cgroup")
         result, code = journal_verification(args, item)
-    result.update(case_id=case_id, ended=triage.iso(time.time()))
-    result["receipt"] = triage.save_receipt(result)
+        if args.probe:
+            ok, _ = triage.probe(args.probe)
+            result["probe"] = {"passed": ok}
+            if not ok:
+                result["status"], code = "TEST_FUNZIONALE_FALLITO", 1
     return result, code

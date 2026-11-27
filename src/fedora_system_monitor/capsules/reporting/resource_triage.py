@@ -343,6 +343,12 @@ def last_verification(unit, metric):
 
 
 def run(args):
+    if args.command == "changes":
+        from .resource_followup import changes
+        return changes(args)
+    if args.command == "boot":
+        from .resource_boot import compare
+        return compare(args)
     config = load_config(args.config)
     policy = config["unit_resources"]
     if args.command == "case":
@@ -404,6 +410,20 @@ def main(argv=None):
     queue = commands.add_parser("next", help="incidente FSM aperto con maggiore superamento relativo")
     verify = commands.add_parser("verify", help="misura finestre complete dopo una correzione")
     case = commands.add_parser("case", help="riepilogo compatto o verifica dello stesso incidente dopo una modifica")
+    changes = commands.add_parser("changes", help="transizioni e verifiche dopo il cursore")
+    changes.add_argument("--cursor")
+    changes.add_argument("--minutes", type=int, default=15)
+    changes.add_argument("--limit", type=int, default=50)
+    boot = commands.add_parser("boot", help="confronta la stessa finestra dalla partenza")
+    boot.add_argument("--compare", type=int, choices=range(1, 11), default=3)
+    boot.add_argument("--minutes", type=int, choices=range(1,61), default=15)
+    boot.add_argument("--limit", type=int, default=5)
+    case.add_argument("--background", action="store_true")
+    case.add_argument("--intervention", help="etichetta univoca per intervento nello stesso caso")
+    case.add_argument("--receipt", help="legge una specifica verifica del caso tramite token")
+    case.add_argument("--expect-change", action="store_true")
+    case.add_argument("--probe", nargs=argparse.REMAINDER, help="controllo funzionale, ultimo argomento")
+    case.add_argument("--worker", help=argparse.SUPPRESS)
     case.add_argument("--id", type=int, help="ID stabile dell’avviso FSM")
     case.add_argument("--memory", action="store_true", help="misura RAM, swap, pressione e PSS dei membri diretti")
     case.add_argument("--io-seconds", type=int, choices=range(1, 61), metavar="1..60",
@@ -412,7 +432,7 @@ def main(argv=None):
     case.add_argument("--metric", choices=tuple(LIMITS), help="filtra la selezione automatica")
     case.add_argument("--minutes", type=int, default=15)
     case.add_argument("--timeout", type=int, default=450)
-    for cmd in (ranking, inspect, queue, verify, case):
+    for cmd in (ranking, inspect, queue, verify, case, changes, boot):
         cmd.add_argument("--db", default=DEFAULT_DB)
         cmd.add_argument("--config", default="/etc/fedora-system-monitor/config.toml")
         cmd.add_argument("--json", action="store_true")
@@ -447,8 +467,12 @@ def main(argv=None):
         parser.error("--threshold deve essere positivo e finito")
     if hasattr(args, "unit") and not re.fullmatch(r"(system:|user:[0-9]+:)[^/:]+\.(service|scope)", args.unit):
         parser.error("Identità incompleta. Esempi: system:example.service, user:1000:example.scope")
-    if args.command == "verify" and (args.probe == [] or (args.expect_change and not args.probe)):
+    if args.command in ("case", "verify") and (args.probe == [] or (args.expect_change and not args.probe)):
         parser.error("--expect-change richiede --probe seguito dal comando del proprietario")
+    if args.command == "case" and ((args.background or args.intervention or args.worker or args.probe) and not args.verify or args.background and args.worker):
+        parser.error("--background e --intervention richiedono case --verify")
+    if args.command == "case" and args.receipt and (not args.id or args.verify or args.memory or args.io_seconds):
+        parser.error("--receipt richiede soltanto un ID di incidente")
     if args.command == "case" and args.verify and (args.io_seconds or args.memory):
         parser.error("--io-seconds e --memory sono opzioni di diagnosi")
     if args.command == "case" and ((args.verify and not args.id) or (args.id is not None and (args.id < 1 or args.metric))):
