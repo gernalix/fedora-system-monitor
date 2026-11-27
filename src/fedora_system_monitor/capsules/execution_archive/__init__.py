@@ -15,6 +15,7 @@ import os
 import re
 import shutil
 import sqlite3
+import stat
 import time
 import uuid
 from pathlib import Path
@@ -54,19 +55,26 @@ def private_dir(path: Path) -> None:
     if path.is_symlink():
         raise ValueError("symlink refused")
     path.mkdir(mode=0o700, parents=True, exist_ok=True)
-    if path.stat().st_uid != os.getuid():
+    info = path.stat()
+    if info.st_uid != os.getuid():
         raise ValueError("foreign owner refused")
-    path.chmod(0o700)
+    if stat.S_IMODE(info.st_mode) != 0o700:
+        path.chmod(0o700)
 
 
 def private_file(path: Path, mode: str = "wb"):
     flags = os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW
     flags |= os.O_APPEND if "a" in mode else os.O_TRUNC
     fd = os.open(path, flags, 0o600)
-    if os.fstat(fd).st_uid != os.getuid():
+    try:
+        info = os.fstat(fd)
+        if info.st_uid != os.getuid():
+            raise ValueError("foreign file refused")
+        if stat.S_IMODE(info.st_mode) != 0o600:
+            os.fchmod(fd, 0o600)
+    except BaseException:
         os.close(fd)
-        raise ValueError("foreign file refused")
-    os.fchmod(fd, 0o600)
+        raise
     return os.fdopen(fd, mode)
 
 
@@ -82,6 +90,10 @@ def atomic_json(path: Path, value: dict) -> None:
         os.fsync(fd)
     finally:
         os.close(fd)
+
+
+def manifest_stamp(info: os.stat_result) -> str:
+    return f"{info.st_dev}/{info.st_ino}/{info.st_size}/{info.st_mtime_ns}/{info.st_ctime_ns}"
 
 
 def fingerprint(pid: int) -> str:
@@ -160,7 +172,8 @@ class Archive:
         if not db.exists():
             with private_file(db):
                 pass
-        db.chmod(0o600)
+        if stat.S_IMODE(db.stat().st_mode) != 0o600:
+            db.chmod(0o600)
         conn = sqlite3.connect(db, timeout=2)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
@@ -176,9 +189,10 @@ class Archive:
         CREATE TABLE IF NOT EXISTS sealed_times(
           id TEXT PRIMARY KEY, stamp TEXT NOT NULL, ended REAL NOT NULL);
         """)
-        for p in (db, self.root / "index.sqlite3-wal", self.root / "index.sqlite3-shm"):
-            if p.exists():
-                p.chmod(0o600)
+        for p in (self.root / "index.sqlite3-wal", self.root / "index.sqlite3-shm"):
+            with contextlib.suppress(FileNotFoundError):
+                if stat.S_IMODE(p.stat().st_mode) != 0o600:
+                    p.chmod(0o600)
         return conn
 
     def enabled(self) -> bool:
@@ -383,9 +397,17 @@ class Archive:
                 continue
             readable = ANSI.sub("", self.read(m, stream).decode("utf-8", "replace"))
             text += " " + "".join(c for c in readable if c.isprintable() or c in "\n\t")
+        # Both derived indexes describe the same sealed original. Commit them
+        # together so routine retention does not require a second WAL commit.
+        with (self.events / m["id"] / "manifest.json").open(encoding="utf-8") as stream:
+            stamp = manifest_stamp(os.fstat(stream.fileno()))
+            original = json.load(stream)
         conn = self.connect()
         try:
             with conn:
+                if original["id"] == m["id"] and original["state"] != "active":
+                    conn.execute("INSERT OR REPLACE INTO sealed_times VALUES(?,?,?)",
+                                 (m["id"], stamp, original["ended"]))
                 # New IDs have no prior FTS row. Its id column is UNINDEXED,
                 # so an unconditional deletion reads the whole text archive.
                 existing = conn.execute("SELECT 1 FROM events WHERE id=?", (m["id"],)).fetchone()
@@ -478,7 +500,7 @@ class Archive:
                         info = os.stat(manifest)
                     except FileNotFoundError:
                         continue
-                    stamp = f"{info.st_dev}/{info.st_ino}/{info.st_size}/{info.st_mtime_ns}/{info.st_ctime_ns}"
+                    stamp = manifest_stamp(info)
                     previous = known.get(entry.name)
                     if previous and previous[0] == stamp:
                         sealed.append((previous[1], entry.name, entry.path))

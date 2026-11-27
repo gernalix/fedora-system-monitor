@@ -16,7 +16,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from fedora_system_monitor.capsules.execution_archive import Archive, Zstd, atomic_json
+from fedora_system_monitor.capsules.execution_archive import Archive, Zstd, atomic_json, private_file
 from fedora_system_monitor.capsules.execution_archive.capture import request
 from fedora_system_monitor.capsules.execution_archive.process_adapter import _command_name
 from fedora_system_monitor.capsules.execution_archive.local_sources import (
@@ -170,6 +170,34 @@ class ArchiveTest(unittest.TestCase):
             self.a._maintain()
         self.assertTrue((self.a.events / event["id"] / "manifest.json").exists())
         self.assertEqual(len(self.a.query("public")), 1)
+
+    def test_sealed_event_and_retention_stamp_are_committed_together(self):
+        with mock.patch.object(self.a, "_maintain"):
+            event = self.event()
+        with contextlib.closing(self.a.connect()) as db:
+            cached = db.execute("SELECT ended FROM sealed_times WHERE id=?", (event["id"],)).fetchone()
+            self.assertEqual(cached[0], event["ended"])
+        with self.a.lock(), mock.patch("json.load", side_effect=AssertionError("unexpected cache miss")):
+            self.a._maintain()
+
+    def test_already_private_modes_are_preserved_and_loose_modes_repaired(self):
+        self.root.chmod(0o755)
+        Archive(self.root)
+        self.assertEqual(self.root.stat().st_mode & 0o7777, 0o700)
+        target = self.root / "privacy-test"
+        target.touch(mode=0o600)
+        with mock.patch("os.fchmod", side_effect=AssertionError("unexpected mode change")):
+            with private_file(target, "ab"):
+                pass
+        target.chmod(0o644)
+        with private_file(target, "ab"):
+            self.assertEqual(target.stat().st_mode & 0o7777, 0o600)
+        with contextlib.closing(self.a.connect()):
+            pass
+        database = self.root / "index.sqlite3"
+        database.chmod(0o644)
+        with contextlib.closing(self.a.connect()):
+            self.assertEqual(database.stat().st_mode & 0o7777, 0o600)
 
     def test_filters_and_tamper_fail_closed(self):
         m = self.event()
