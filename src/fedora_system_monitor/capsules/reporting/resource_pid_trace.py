@@ -6,11 +6,11 @@ import subprocess
 import time
 
 
-from ..collectors.unit_resources import DEVICES, block_rows, leaf_devices
+from ..collectors.unit_resources import DEVICES, block_rows, leaf_devices, split_unit
 
 
 def group_path(unit):
-    manager, name = unit.rsplit(":", 1)
+    manager, name = split_unit(unit)
     if manager not in ("system", f"user:{os.getuid()}"):
         raise ValueError("Il manager richiesto appartiene a un altro utente")
     cmd = ["systemctl"]

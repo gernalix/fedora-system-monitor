@@ -5,7 +5,6 @@ from datetime import datetime, timezone
 import json
 import math
 import os
-import re
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -15,7 +14,7 @@ import time
 
 from ..collectors import unit_repairs
 from ..collectors.common import operator_identity
-from ..collectors.unit_resources import BOOT, LIMITS, MEMORY_ADJUSTED, RELATIVE_FLOORS, STATE, rates
+from ..collectors.unit_resources import BOOT, LIMITS, MEMORY_ADJUSTED, RELATIVE_FLOORS, STATE, rates, split_unit
 from ..config import load_config
 from . import _connection
 
@@ -257,9 +256,9 @@ def verification(path, args, policy):
 
 
 def same_process(row, unit):
-    prefix, _, leaf = unit.rpartition(":")
     proc = Path("/proc") / str(row["pid"])
     try:
+        prefix, leaf = split_unit(unit)
         group = next(line[3:] for line in (proc / "cgroup").read_text().splitlines() if line.startswith("0::"))
         parts = Path(group).parts
         managers = [p[5:-8] for p in parts if p.startswith("user@") and p.endswith(".service") and p[5:-8].isdecimal()]
@@ -276,7 +275,7 @@ def process_rows(db, unit, limit):
     scan = db.execute("SELECT id,timestamp,boot_id FROM process_scans ORDER BY id DESC LIMIT 1").fetchone()
     if not scan or scan["boot_id"] != BOOT.read_text().strip() or not 0 <= time.time() - scan["timestamp"] <= 120:
         return []
-    leaf = unit.rsplit(":", 1)[-1]
+    _, leaf = split_unit(unit)
     rows = db.execute("""SELECT i.pid,i.start_ticks,i.name,s.cpu_percent,s.rss_bytes,
         s.read_delta,s.write_delta FROM process_samples s JOIN process_identities i ON i.id=s.identity_id
         WHERE s.scan_id=? AND i.unit=? ORDER BY s.cpu_percent DESC,i.pid""", (scan["id"], leaf))
@@ -475,8 +474,11 @@ def main(argv=None):
     cutoff = getattr(args, "threshold", None)
     if cutoff is not None and (not math.isfinite(cutoff) or cutoff <= 0):
         parser.error("--threshold deve essere positivo e finito")
-    if hasattr(args, "unit") and not re.fullmatch(r"(system:|user:[0-9]+:)[^/:]+\.(service|scope)", args.unit):
-        parser.error("Identità incompleta. Esempi: system:example.service, user:1000:example.scope")
+    if hasattr(args, "unit"):
+        try:
+            split_unit(args.unit)
+        except ValueError as error:
+            parser.error(str(error))
     if args.command in ("case", "verify") and (args.probe == [] or (args.expect_change and not args.probe)):
         parser.error("--expect-change richiede --probe seguito dal comando del proprietario")
     if args.command == "case" and ((args.background or args.intervention or args.worker or args.probe) and not args.verify or args.background and args.worker):

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -25,6 +26,14 @@ LIMITS = {k: v for k, v in DEFAULT_CONFIG["unit_resources"].items() if isinstanc
 COMPLETION_METRICS = ("completed_cpu_seconds", "completed_memory_peak_mib")
 RELATIVE_FLOORS = {"cpu_percent": 20, "io_ops_min": 1500, "io_mib_s": 10, "memory_mib": 512}
 MEMORY_ADJUSTED = "memory_clean_inactive"
+
+
+def split_unit(identity):
+    """Return the manager and exact name, including colons in D-Bus units."""
+    match = re.fullmatch(r"(system|user:[0-9]+):([^/\s\x00-\x1f\x7f]+\.(?:service|scope))", identity)
+    if match is None:
+        raise ValueError("Identità incompleta. Esempi: system:example.service, user:1000:example.scope")
+    return match.groups()
 
 
 def clean_inactive_file(total, stats):
@@ -177,10 +186,14 @@ def observe_running_services(config, findings, samples, journal):
     """Query only live services with an open failure and a quiet manager window."""
     managers = defaultdict(list)
     for unit, metrics in findings.items():
-        manager, _, name = unit.rpartition(":")
+        if not metrics.get("failed_runs", {}).get("open") or unit not in samples:
+            continue
+        try:
+            manager, name = split_unit(unit)
+        except ValueError:
+            continue
         activity = journal.get(unit, {})
-        if (metrics.get("failed_runs", {}).get("open") and unit in samples
-                and name.endswith(".service") and not any(activity.get(k) for k in ("failed_runs", "starts", "restarts"))):
+        if name.endswith(".service") and not any(activity.get(k) for k in ("failed_runs", "starts", "restarts")):
             managers[manager].append(name)
     for manager, names in managers.items():
         command = ["systemctl"]

@@ -12,6 +12,19 @@ from fedora_system_monitor.capsules.reporting import resource_pid_trace as trace
 
 
 class ResourceCaseTests(unittest.TestCase):
+    def test_cgroup_lookup_preserves_the_colon_in_a_dbus_service(self):
+        name = "dbus-:1.1-org.gnome.Nautilus@8.service"
+        relative = "/user.slice/user-1000.slice/user@1000.service/app.slice/" + name
+        reply = SimpleNamespace(returncode=0, stdout=relative + "\n")
+        with patch.object(trace.os, "getuid", return_value=1000), \
+                patch.object(trace.subprocess, "run", return_value=reply) as run:
+            path, group = trace.group_path("user:1000:" + name)
+            self.assertEqual((path.name, group), (name, relative))
+            self.assertEqual(run.call_args.args[0][-2:], ["--", name])
+            with self.assertRaisesRegex(ValueError, "altro utente"):
+                trace.group_path("user:1001:" + name)
+            run.assert_called_once()
+
     def test_memory_history_stops_at_the_accounting_change(self):
         unit = "system:test.service"
         with closing(sqlite3.connect(":memory:")) as db:
