@@ -681,6 +681,45 @@ class DatabaseTests(unittest.TestCase):
         self.db.ensure_daily_summary_index()
         self.db.ensure_daily_summary_index()
         self.assertEqual(build_daily_summary(self.database_path), before)
+        with self.db._transaction() as connection:
+            connection.execute("DROP INDEX idx_metrics_service_latest")
+        self.assertEqual(build_daily_summary(self.database_path), before)
+
+    def test_private_tmp_views_share_one_current_reading_per_filesystem_and_mount(self) -> None:
+        from fedora_system_monitor.capsules.collectors import periodic
+        from fedora_system_monitor.capsules.collectors.common import stable_hash
+        from fedora_system_monitor.capsules.reporting import metrics_report
+        from unittest.mock import patch
+
+        parent = "/root/var/tmp"
+        def root(instance):
+            return f"{parent}/systemd-private-{'a' * 32}-fedora-system-monitor-collect@fast.service-{instance}/tmp"
+
+        def add_view(filesystem, mount, view_root, legacy):
+            with patch.object(periodic, "_filesystem_source_id", return_value=filesystem):
+                current, _ = periodic._filesystem_device_id({"root": view_root}, mount)
+            device = filesystem + ":" + stable_hash(f"{view_root}|{mount}", "view") if legacy else current
+            self.db.insert_metrics({"name": "filesystem.free_percent", "source": "statvfs",
+                "device_id": device, "details": {"mount_point": mount, "filesystem_root": view_root,
+                                                "filesystem_id": filesystem}})
+            return current
+
+        first = add_view("fsuuid:a", "/var/tmp", root("ABC123"), True)
+        second = add_view("fsuuid:a", "/var/tmp", root("DEF456"), True)
+        self.assertEqual(first, second)
+        expected = self.db.query("SELECT MAX(id) AS id FROM periodic_metrics")[0]["id"]
+        legacy_rows = build_daily_summary(self.database_path)["current"]
+        self.assertEqual([r["id"] for r in legacy_rows], [expected])
+        self.assertEqual(add_view("fsuuid:a", "/var/tmp", parent, False), first)
+        distinct = {first, add_view("fsuuid:b", "/var/tmp", root("GHI789"), False),
+                    add_view("fsuuid:a", "/tmp", root("GHI789"), False),
+                    add_view("fsuuid:a", "/var/tmp", "/another/subvolume", False),
+                    add_view("fsuuid:a", "/var/tmp", root("GHI789").replace("fast.service", "fast.other"), False)}
+        rows = build_daily_summary(self.database_path)["current"]
+        self.assertEqual({r["device_id"] for r in rows}, distinct)
+        self.assertEqual(len(rows), 5)
+        self.assertEqual({r["id"] for r in metrics_report(self.database_path)}, {r["id"] for r in rows})
+        self.assertEqual(self.db.query("SELECT COUNT(*) AS n FROM periodic_metrics")[0]["n"], 7)
 
     def test_summary_backup_integrity_and_index_checks(self) -> None:
         start = datetime(2026, 7, 9, tzinfo=timezone.utc)

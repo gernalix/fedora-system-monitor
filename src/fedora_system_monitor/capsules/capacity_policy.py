@@ -2,10 +2,26 @@
 
 from __future__ import annotations
 
+import hashlib
+import re
 from typing import Any, Mapping
 
 
 GIB = 1024**3
+
+_COLLECTOR_PRIVATE_TMP = re.compile(
+    r"^(.*)/systemd-private-[0-9a-f]{32}-fedora-system-monitor-collect@"
+    r"[A-Za-z0-9_-]+\.service-[A-Za-z0-9]+/tmp$"
+)
+
+
+def filesystem_view_id(filesystem_id: str, root: str, mount_point: str) -> str:
+    # PrivateTmp mounts a fresh directory on every invocation. Its statvfs
+    # readings still describe the same backing filesystem at this mount.
+    if mount_point in ("/tmp", "/var/tmp") and (match := _COLLECTOR_PRIVATE_TMP.fullmatch(root)):
+        root = match[1] or "/"
+    digest = hashlib.sha256(f"{root}|{mount_point}".encode("utf-8", "replace")).hexdigest()[:20]
+    return f"{filesystem_id}:view:{digest}"
 
 
 def _nested(config: Mapping[str, Any], path: tuple[str, ...], default: Any) -> Any:

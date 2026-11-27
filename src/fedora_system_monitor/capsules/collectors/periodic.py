@@ -25,7 +25,7 @@ from .common import (
 )
 from .model import CADENCE_SECONDS, CollectionResult, record
 from fedora_system_monitor.capsules.activitywatch import correlate_activitywatch
-from fedora_system_monitor.capsules.capacity_policy import disk_capacity_level
+from fedora_system_monitor.capsules.capacity_policy import disk_capacity_level, filesystem_view_id
 
 
 PROC_ROOT = Path("/proc")
@@ -428,8 +428,7 @@ def _filesystem_source_id(source: str) -> str:
 def _filesystem_device_id(mount: Mapping[str, str], view_path: str) -> tuple[str, str]:
     source_id = _filesystem_source_id(mount.get("source", "unknown"))
     root = mount.get("root", "/")
-    view = stable_hash(f"{root}|{view_path}", "view").split(":", 1)[1]
-    return f"{source_id}:view:{view}", source_id
+    return filesystem_view_id(source_id, root, view_path), source_id
 
 
 def _mount_for_path(path: str, mounts: list[dict[str, str]]) -> dict[str, str] | None:

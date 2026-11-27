@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Iterable
 from zoneinfo import ZoneInfo
 
+from fedora_system_monitor.capsules.capacity_policy import filesystem_view_id
 from fedora_system_monitor.capsules.config import redact_text
 from fedora_system_monitor.capsules.database.shared import DAILY_OTHER_SERIES
 
@@ -48,20 +49,46 @@ def _rows(connection: sqlite3.Connection, sql: str, parameters: Iterable[Any] = 
     return [dict(row) for row in connection.execute(sql, tuple(parameters)).fetchall()]
 
 
+def _reported_view_id(device_id: str | None, raw_details: str) -> str | None:
+    try:
+        details = json.loads(raw_details)
+    except (TypeError, ValueError):
+        return device_id
+    if isinstance(details, dict):
+        filesystem = details.get("filesystem_id")
+        mount = details.get("mount_point")
+        root = details.get("filesystem_root")
+        if isinstance(filesystem, str) and mount in ("/tmp", "/var/tmp") and isinstance(root, str):
+            # Only remap identifiers emitted by the filesystem collector.
+            if isinstance(device_id, str) and device_id.startswith(filesystem + ":view:"):
+                return filesystem_view_id(filesystem, root, mount)
+    return device_id
+
+
+def _current_metric_rows(connection: sqlite3.Connection, latest_ids: str,
+                         parameters: Iterable[Any] = ()) -> list[dict[str, Any]]:
+    # Consider only the latest row per raw identity, then coalesce historical
+    # PrivateTmp aliases. Return the original row so its ID remains queryable.
+    connection.create_function("reported_view_id", 2, _reported_view_id, deterministic=True)
+    return _rows(connection, f"""
+            WITH latest(latest_id) AS (
+                {latest_ids}
+            ), current_ids(id) AS (
+                SELECT MAX(m.id) FROM latest JOIN periodic_metrics AS m ON m.id=latest.latest_id
+                GROUP BY m.name,
+                    CASE WHEN m.source='statvfs'
+                              AND instr(m.details_json,'systemd-private-')>0
+                         THEN reported_view_id(m.device_id,m.details_json) ELSE m.device_id END
+            )
+            SELECT m.* FROM current_ids JOIN periodic_metrics AS m ON current_ids.id=m.id
+            ORDER BY m.category, m.name, m.device_id
+        """, parameters)
+
+
 def _latest_metrics(connection: sqlite3.Connection, where: str = "1=1", parameters: Iterable[Any] = ()) -> list[dict[str, Any]]:
-    return _rows(
-        connection,
-        f"""
-        SELECT m.* FROM periodic_metrics m
-        JOIN (
-            SELECT name, device_id, MAX(id) AS latest_id
-            FROM periodic_metrics WHERE {where}
-            GROUP BY name, device_id
-        ) latest ON latest.latest_id=m.id
-        ORDER BY m.category, m.name, m.device_id
-        """,
-        parameters,
-    )
+    return _current_metric_rows(connection, f"""
+        SELECT MAX(id) FROM periodic_metrics WHERE {where} GROUP BY name, device_id
+    """, parameters)
 
 
 def status_report(path: str | Path) -> dict[str, Any]:
@@ -402,18 +429,21 @@ def build_daily_summary(
     start = datetime.combine(local_date, datetime.min.time(), tzinfo=zone).astimezone(timezone.utc)
     end = datetime.combine(local_date + timedelta(days=1), datetime.min.time(), tzinfo=zone).astimezone(timezone.utc)
     with _connection(path) as connection:
-        # MAX(id) preserves insertion order when observations arrive late.
-        # These disjoint groups also work on historical backups without indexes.
-        selected = _rows(connection, f"""
-            SELECT m.* FROM periodic_metrics AS m
-            JOIN (
-                SELECT MAX(id) AS latest_id FROM periodic_metrics
-                WHERE {DAILY_OTHER_SERIES} GROUP BY name, device_id
-                UNION ALL
-                SELECT MAX(id) AS latest_id FROM periodic_metrics
-                WHERE name='service.active' AND device_id IS NOT NULL GROUP BY device_id
-            ) AS latest ON latest.latest_id=m.id
-            ORDER BY m.category, m.name, m.device_id
+        # The partial service index can seek to the last row of each device.
+        # Historical databases without it need a single grouped scan.
+        service_where = "name='service.active' AND device_id IS NOT NULL"
+        service_latest = f"SELECT MAX(id) FROM periodic_metrics WHERE {service_where} GROUP BY device_id"
+        if connection.execute("SELECT 1 FROM sqlite_master WHERE type='index' "
+                              "AND name='idx_metrics_service_latest'").fetchone():
+            service_latest = f"""
+                SELECT (SELECT MAX(id) FROM periodic_metrics AS s
+                        WHERE {service_where} AND s.device_id=devices.device_id)
+                FROM (SELECT DISTINCT device_id FROM periodic_metrics WHERE {service_where}) AS devices"""
+        selected = _current_metric_rows(connection, f"""
+            SELECT MAX(id) AS latest_id FROM periodic_metrics
+            WHERE {DAILY_OTHER_SERIES} GROUP BY name, device_id
+            UNION ALL
+            {service_latest}
         """)
         events = _rows(
             connection,
