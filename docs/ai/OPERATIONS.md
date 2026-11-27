@@ -47,6 +47,7 @@ KUMA.mapping=memory,temperature,CPU,kernel,OOM,and lifecycle map to system
 KUMA.mapping=filesystem,SMART,I/O,read-only,mount,USB,and external device alerts map to storage
 KUMA.mapping=Internet,gateway,Wi-Fi,VPN,and NetworkManager alerts map to network
 KUMA.mapping=failed service,restart,and restart loop alerts map to services
+KUMA.standalone_running_job=A fresh standalone health receipt supplies freshness while its oneshot is activating, because minute sampling can miss intervening completions; stale receipts/samples, failed invocations and restart loops remain unhealthy
 KUMA.mapping=updates,DNF,Flatpak,inventory,and software transaction alerts map to software
 SECURITY.units=NoNewPrivileges,ProtectSystem strict,ProtectHome,ProtectKernelTunables,ProtectKernelModules,ProtectControlGroups,ProtectKernelLogs,ProtectHostname,ProtectClock,RestrictSUIDSGID,RestrictNamespaces,LockPersonality,and MemoryDenyWriteExecute
 SECURITY.capabilities=Base collectors receive CAP_DAC_READ_SEARCH,CAP_SETGID,and CAP_SETUID for read-only user inventory

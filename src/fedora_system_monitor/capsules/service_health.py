@@ -154,6 +154,14 @@ def send_service_heartbeats(
                     raise ValueError("stale report")
                 if not isinstance(report["message"], str) or not isinstance(report["healthy"], bool):
                     raise ValueError("invalid report")
+                if (custom.get("standalone") is True and details.get("running_oneshot") is True
+                        and active_state == "activating"):
+                    # A periodic sample can miss every completion of a short
+                    # job aligned with its own cadence. The fresh standalone
+                    # receipt supplies positive freshness evidence while it runs;
+                    # retain all service failure, sample and restart-loop checks.
+                    healthy = _healthy(row, {**details, "freshness_ok": True},
+                                       fresh=fresh, collector_failed=collector_failed)
                 healthy = healthy and report["healthy"]
                 message = report["message"][:3000]
                 if collector_failed or not fresh:

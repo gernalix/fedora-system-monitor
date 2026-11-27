@@ -295,6 +295,41 @@ class ServiceHealthTests(unittest.TestCase):
                     send_service_heartbeats(config, _DB([row]), now=now)
                 self.assertEqual(expected, sender.call_args.kwargs['healthy'])
 
+    def test_standalone_running_job_uses_fresh_report_despite_missed_completions(self):
+        now = datetime(2026, 11, 27, 2, 31, 21, tzinfo=timezone.utc)
+        identity = 'user:archive-health.service'
+        details = dict(active_state='activating', sub_state='start', result='success',
+                       running_oneshot=True, successful_inactive_oneshot=False,
+                       freshness_ok=False, last_success_age_seconds=180.55,
+                       freshness_seconds=180, restart_loop=False)
+        cases = [
+            ('fresh standalone receipt', {}, {}, True, 0, True),
+            ('ordinary job', {}, {}, False, 0, False),
+            ('failed invocation', {'result': 'exit-code'}, {}, True, 0, False),
+            ('restart loop', {'restart_loop': True}, {}, True, 0, False),
+            ('inactive stale job', {'active_state': 'inactive', 'running_oneshot': False,
+                                   'successful_inactive_oneshot': True}, {}, True, 0, False),
+            ('stale receipt', {}, {'observed_at': now.timestamp()-181}, True, 0, False),
+            ('unhealthy receipt', {}, {'healthy': False}, True, 0, False),
+            ('stale service sample', {}, {}, True, 181, False),
+        ]
+        for label, changed, report_changed, standalone, sample_age, expected in cases:
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary) / 'report.json'
+                report = dict(observed_at=now.timestamp(), healthy=True, message='Archive current')
+                report.update(report_changed)
+                path.write_text(json.dumps(report))
+                config = {'services': {'health_reports': {identity: {
+                    'path': str(path), 'standalone': standalone}}}}
+                row = dict(device_id=identity,
+                           timestamp_utc=(now-timedelta(seconds=sample_age)).isoformat(),
+                           details_json=json.dumps(details | changed))
+                with mock.patch('fedora_system_monitor.capsules.service_health.configured_push_keys',
+                                return_value={service_monitor_key(identity)}), \
+                     mock.patch('fedora_system_monitor.capsules.service_health.send_named_heartbeat') as sender:
+                    send_service_heartbeats(config, _DB([row]), now=now)
+                self.assertEqual(expected, sender.call_args.kwargs['healthy'])
+
     def test_service_sample_that_expires_during_sends_remains_down(self):
         start = datetime(2026, 10, 19, 17, 0, tzinfo=timezone.utc)
         identities = ['earlier.service', 'later.service']
