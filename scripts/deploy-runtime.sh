@@ -49,6 +49,7 @@ for asset in manifest.json popup.html popup.css popup.js model.js background.js;
 done
 install -d -m 0755 "$STAGE/scripts"
 install -m 0755 -o root -g root "$ROOT/scripts/systemd-journal-collector.sh" "$STAGE/scripts/systemd-journal-collector.sh"
+install -m 0644 -o root -g root "$ROOT/tools/reconcile_smartd.py" "$STAGE/scripts/reconcile_smartd.py"
 printf '%s\n' "$REVISION" > "$STAGE/.source-revision"
 
 /usr/bin/python3 -m compileall -q "$STAGE/fedora_system_monitor"
